@@ -1,0 +1,102 @@
+/* SAĞ PANEL (SOHBET ALANI) ANA İSKELETİ */
+.chat-area {
+  display: flex;
+  flex-direction: column; /* İçindekileri yukarıdan aşağıya diz */
+  flex: 1; /* Sağ tarafın tüm genişliğini kapla */
+  height: 100vh; /* Tam ekran yüksekliği */
+}
+.chat-header { 
+  padding: 15px 20px; 
+  background: #f0f2f5; 
+  display: flex; 
+  align-items: center; 
+  border-bottom: 1px solid #ddd; 
+  flex-shrink: 0; /*Mesajlar çoğalsa bile başlığın sıkışmasını engeller */
+}
+
+.messages-container { 
+  flex: 1; 
+  padding: 20px; 
+  overflow-y: auto; 
+  display: flex; 
+  flex-direction: column; 
+  gap: 10px; 
+  min-height: 0; /*Flexbox içindeki scroll (kaydırma) hatalarını çözer */
+}
+
+/* MESAJLARIN LİSTELENDİĞİ ORTA ALAN (SİHİRLİ KISIM) */
+.messages-list {
+  flex: 1; /* İŞTE ÇÖZÜM: Kalan tüm boşluğu kapla ve yazma kutusunu en alta it! */
+  overflow-y: auto; /* Mesajlar çoğalınca sadece burası kaysın (scroll) */
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+}
+
+.message-row { display: flex; width: 100%; }
+.message-row.me { justify-content: flex-end; }
+.message-row.them { justify-content: flex-start; }
+.message-bubble { 
+  max-width: 65%; 
+  padding: 8px 12px; 
+  border-radius: 8px; 
+  font-size: 15px; 
+  box-shadow: 0 1px 1px rgba(0,0,0,0.1); 
+  
+  word-break: break-word; 
+  white-space: pre-wrap;  
+}
+.me .message-bubble { background: #dcf8c6; border-top-right-radius: 0; }
+.them .message-bubble { background: #fff; border-top-left-radius: 0; }
+
+
+.input-area {
+  /* Zaten flex: 1 sayesinde en altta kalacak, ekstra bir sabitlemeye gerek yok */
+  padding: 15px 20px;
+  border-top: 1px solid #ddd;
+  display: flex;
+  gap: 10px;
+}
+
+.input-area input { flex: 1; padding: 12px; border: none; border-radius: 20px; outline: none; font-size: 15px; }
+.input-area button { background: #00a884; color: white; border: none; padding: 0 20px; border-radius: 20px; font-weight: bold; cursor: pointer; }
+.empty-chat-state { flex: 1; display: flex; justify-content: center; align-items: center; background: #f8f9fa; }
+.empty-chat-box { text-align: center; color: #888; }
+
+/* =========================================
+   ZAMAN VE TİK BİLGİSİ TASARIMI
+========================================= */
+
+/* Ortak iskelet */
+.message-meta {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  margin-top: 4px;
+}
+
+/* AYDINLIK MOD (LIGHT THEME) RENKLERİ */
+.them .message-meta { color: #8696a0; } /* Karşı tarafın saati: Gri */
+.me .message-meta { color: #667781; }   /* Benim açık yeşil balonumdaki saat: Koyu Gri (Okunabilir) */
+
+/* Tik işaretinin genel ayarı */
+.message-ticks { font-size: 13px; font-weight: bold; margin-left: 2px; }
+
+/* Okunmuş Mavi Tik Rengi (Aydınlık modda biraz daha koyu mavi iyi durur) */
+.message-ticks.read { color: #53bdeb; }
+
+
+/* =========================================
+   🌙 KARANLIK MOD (DARK THEME) RENKLERİ
+========================================= */
+
+/* Karanlık modda kendi koyu yeşil balonumun içindeki saat rengi: Beyazımsı */
+body.dark-theme .me .message-meta { color: rgba(255, 255, 255, 0.7); }
+
+/* Karanlık modda karşı tarafın saati */
+body.dark-theme .them .message-meta { color: #8696a0; }
+
+/* Karanlık modda Mavi Tik */
+body.dark-theme .message-ticks.read { color: #34b7f1; }

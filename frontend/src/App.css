@@ -1,0 +1,130 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+
+* { 
+  box-sizing: border-box; 
+  font-family: 'Inter', sans-serif; 
+  margin: 0; 
+  padding: 0; 
+}
+
+body { 
+  background-color: #f0f2f5; 
+  height: 100vh; 
+  overflow: hidden; 
+  transition: background-color 0.3s ease, color 0.3s ease; /* Temalar arası yumuşak animasyon */
+}
+
+/* --- ANA UYGULAMA İSKELETİ (TAM EKRAN) --- */
+.app-container { 
+  display: flex; 
+  height: 100vh; 
+  height: 100dvh; 
+  width: 100%; 
+  background: #fff; 
+  transition: background-color 0.3s ease;
+}
+
+/* --- MOBİL GERİ BUTONU (VARSAYILAN OLARAK GİZLİ) --- */
+.mobile-back-btn { 
+  display: none; 
+  background: none; 
+  border: none; 
+  font-size: 20px; 
+  cursor: pointer; 
+  margin-right: 12px; 
+  padding: 0; 
+}
+
+/* --- MOBİL VE TABLET UYUMU (RESPONSIVE) --- */
+@media screen and (max-width: 576px) {
+  .app-container { flex-direction: column; }
+  
+  /* SOHBET KAPALIYSA SIDEBAR'I TAM EKRAN YAP */
+  .sidebar { width: 100% !important; border-right: none; }
+  .chat-area { display: none !important; width: 100%; }
+
+  /* SOHBET AÇIKSA SIDEBAR'I GİZLE, SOHBETİ AÇ */
+  .app-container.chat-active .sidebar { display: none !important; }
+  .app-container.chat-active .chat-area { display: flex !important; }
+
+  .mobile-back-btn { display: block; }
+}
+
+
+/* =========================================
+   🌙 DARK MODE (KARANLIK MOD) RENK PALETİ
+========================================= */
+
+body.dark-theme { background-color: #111b21; color: #e9edef; }
+body.dark-theme .app-container { background: #111b21; }
+
+/* SOL PANEL (SIDEBAR) */
+body.dark-theme .sidebar { background: #111b21; border-right: 1px solid #222d34; }
+body.dark-theme .sidebar-header { background: #202c33; border-bottom: 1px solid #222d34; color: #e9edef; }
+body.dark-theme .sidebar-header span { color: #e9edef !important; } /* YENİ: Kullanıcı adını zorla beyaz yap */
+body.dark-theme .list-title { color: #8696a0; }
+body.dark-theme .user-item:hover { background: #202c33; }
+body.dark-theme .user-item.active { background: #2a3942; }
+body.dark-theme .user-name { color: #e9edef; }
+
+/* SAĞ PANEL (CHAT EKRANI) */
+body.dark-theme .chat-area { background: #0b141a; }
+body.dark-theme .chat-header { background: #202c33; border-bottom: 1px solid #222d34; color: #e9edef; }
+body.dark-theme .input-area { background: #202c33; }
+body.dark-theme .input-area input { background: #2a3942; color: #e9edef; }
+body.dark-theme .empty-chat-state { background: #111b21; }
+body.dark-theme .empty-chat-box { color: #8696a0; }
+
+/* MESAJ BALONCUKLARI */
+body.dark-theme .me .message-bubble { background: #005c4b; color: #e9edef; box-shadow: none; }
+body.dark-theme .them .message-bubble { background: #202c33; color: #e9edef; box-shadow: none; }
+
+/* AÇILIR PENCERELER (MODALS) */
+body.dark-theme .settings-overlay { background: rgba(0,0,0,0.7); }
+body.dark-theme .settings-modal { background: #111b21; color: #e9edef; }
+body.dark-theme .settings-header { background: #202c33; border-bottom: 1px solid #222d34; }
+body.dark-theme .settings-header h2 { color: #e9edef; }
+body.dark-theme .settings-section h4 { color: #8696a0; }
+body.dark-theme .settings-input-group input { background: #2a3942; border: 1px solid #222d34; color: #e9edef; }
+body.dark-theme .settings-body { border-color: #222d34; }
+body.dark-theme .settings-section { border-color: #222d34 !important; }
+
+/* ORTAK BUTON UYARLAMALARI (UI/Button.tsx) */
+body.dark-theme .custom-btn.outline { background: transparent; border-color: #8696a0; color: #e9edef !important; }
+body.dark-theme .custom-btn.outline:hover { background: #202c33; }
+body.dark-theme .custom-btn.ghost { color: #e9edef !important; }
+body.dark-theme .custom-btn.ghost:hover { background: #202c33; }
+/* GENEL ARAMA ÇUBUĞU TASARIMI (Aydınlık Mod) */
+.global-search-input {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid #ccc;
+  background-color: #f0f2f5;
+  outline: none;
+  font-size: 14px;
+  transition: all 0.3s ease;
+}
+
+.global-search-input:focus {
+  border-color: #00a884;
+  background-color: #fff;
+}
+
+/* KARANLIK MOD (DARK THEME) İÇİN ARAMA ÇUBUĞU */
+body.dark-theme .global-search-input {
+  background-color: #202c33;
+  border-color: #222d34;
+  color: #e9edef;
+}
+
+body.dark-theme .global-search-input:focus {
+  background-color: #2a3942;
+  border-color: #00a884;
+}
+
+/* Chat içindeki arama kutusunun arka planını dark moda uydurma */
+body.dark-theme .chat-search-bar {
+  background-color: #111b21 !important;
+  border-color: #222d34 !important;
+}
