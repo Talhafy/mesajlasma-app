@@ -1,17 +1,18 @@
 /* SAĞ PANEL (SOHBET ALANI) ANA İSKELETİ */
 .chat-area {
   display: flex;
-  flex-direction: column; /* İçindekileri yukarıdan aşağıya diz */
-  flex: 1; /* Sağ tarafın tüm genişliğini kapla */
-  height: 100vh; /* Tam ekran yüksekliği */
+  flex-direction: column; 
+  flex: 1; 
+  height: 100vh; 
 }
+
 .chat-header { 
   padding: 15px 20px; 
   background: #f0f2f5; 
   display: flex; 
   align-items: center; 
   border-bottom: 1px solid #ddd; 
-  flex-shrink: 0; /*Mesajlar çoğalsa bile başlığın sıkışmasını engeller */
+  flex-shrink: 0; 
 }
 
 .messages-container { 
@@ -21,16 +22,17 @@
   display: flex; 
   flex-direction: column; 
   gap: 10px; 
-  min-height: 0; /*Flexbox içindeki scroll (kaydırma) hatalarını çözer */
+  min-height: 0; 
 }
 
-/* MESAJLARIN LİSTELENDİĞİ ORTA ALAN (SİHİRLİ KISIM) */
+/* MESAJLARIN LİSTELENDİĞİ ORTA ALAN */
 .messages-list {
-  flex: 1; /* İŞTE ÇÖZÜM: Kalan tüm boşluğu kapla ve yazma kutusunu en alta it! */
-  overflow-y: auto; /* Mesajlar çoğalınca sadece burası kaysın (scroll) */
+  flex: 1; 
+  overflow-y: auto; 
   padding: 20px;
   display: flex;
   flex-direction: column;
+  gap: 8px; 
 }
 
 .message-row { display: flex; width: 100%; }
@@ -42,32 +44,60 @@
   border-radius: 8px; 
   font-size: 15px; 
   box-shadow: 0 1px 1px rgba(0,0,0,0.1); 
-  
   word-break: break-word; 
   white-space: pre-wrap;  
 }
 .me .message-bubble { background: #dcf8c6; border-top-right-radius: 0; }
 .them .message-bubble { background: #fff; border-top-left-radius: 0; }
 
-
 .input-area {
-  /* Zaten flex: 1 sayesinde en altta kalacak, ekstra bir sabitlemeye gerek yok */
   padding: 15px 20px;
   border-top: 1px solid #ddd;
   display: flex;
   gap: 10px;
 }
 
-.input-area input { flex: 1; padding: 12px; border: none; border-radius: 20px; outline: none; font-size: 15px; }
-.input-area button { background: #00a884; color: white; border: none; padding: 0 20px; border-radius: 20px; font-weight: bold; cursor: pointer; }
-.empty-chat-state { flex: 1; display: flex; justify-content: center; align-items: center; background: #f8f9fa; }
-.empty-chat-box { text-align: center; color: #888; }
+/* =========================================
+   BOŞ SOHBET EKRANI (EMPTY STATE) TASARIMI
+========================================= */
+
+/* Aydınlık Mod (Varsayılan) */
+.empty-chat-state { 
+  flex: 1; 
+  display: flex; 
+  flex-direction: column; 
+  align-items: center; 
+  justify-content: center; 
+  background-color: #f0f2f5; 
+}
+
+.empty-chat-state h2 { 
+  color: #41525d; 
+  font-weight: 300; 
+  margin-bottom: 10px;
+}
+
+.empty-chat-state p { 
+  color: #8696a0; 
+}
+
+/* 🌙 Karanlık Mod (Dark Theme) Entegrasyonu */
+body.dark-theme .empty-chat-state {
+  background-color: #222e35; /* Karanlık mod arkaplan rengi */
+}
+
+body.dark-theme .empty-chat-state h2 {
+  color: #e9edef; /* Karanlık modda başlık rengi (Açık Gri/Beyaz) */
+}
+
+body.dark-theme .empty-chat-state p {
+  color: #8696a0; /* Alt metin rengi karanlıkta da şık durur */
+}
 
 /* =========================================
    ZAMAN VE TİK BİLGİSİ TASARIMI
 ========================================= */
 
-/* Ortak iskelet */
 .message-meta {
   display: flex;
   justify-content: flex-end;
@@ -77,26 +107,36 @@
   margin-top: 4px;
 }
 
-/* AYDINLIK MOD (LIGHT THEME) RENKLERİ */
-.them .message-meta { color: #8696a0; } /* Karşı tarafın saati: Gri */
-.me .message-meta { color: #667781; }   /* Benim açık yeşil balonumdaki saat: Koyu Gri (Okunabilir) */
+.them .message-meta { color: #8696a0; } 
+.me .message-meta { color: #667781; }   
 
-/* Tik işaretinin genel ayarı */
 .message-ticks { font-size: 13px; font-weight: bold; margin-left: 2px; }
-
-/* Okunmuş Mavi Tik Rengi (Aydınlık modda biraz daha koyu mavi iyi durur) */
 .message-ticks.read { color: #53bdeb; }
-
 
 /* =========================================
    🌙 KARANLIK MOD (DARK THEME) RENKLERİ
 ========================================= */
 
-/* Karanlık modda kendi koyu yeşil balonumun içindeki saat rengi: Beyazımsı */
 body.dark-theme .me .message-meta { color: rgba(255, 255, 255, 0.7); }
-
-/* Karanlık modda karşı tarafın saati */
 body.dark-theme .them .message-meta { color: #8696a0; }
-
-/* Karanlık modda Mavi Tik */
 body.dark-theme .message-ticks.read { color: #34b7f1; }
+
+/* =========================================
+   GÜNCEL SOHBET ALANI VE AÇILIR MENÜ (MODAL) RENKLERİ
+========================================= */
+
+/* ☀️ Aydınlık Mod (Varsayılan) */
+.input-area { background-color: #f0f2f5; border-top: 1px solid #ddd; }
+.chat-input { background-color: #fff; color: #111b21; }
+.theme-modal { background-color: #ffffff; border: 1px solid #eaeaea; }
+.theme-modal-item { background-color: #f0f2f5; }
+.theme-text-main { color: #111b21 !important; }
+
+/* 🌙 Karanlık Mod (Dark Theme) */
+body.dark-theme .input-area { background-color: #202c33; border-top: 1px solid #2a3942; }
+body.dark-theme .chat-input { background-color: #2a3942; color: #d1d7db; }
+body.dark-theme .chat-input::placeholder { color: #8696a0; }
+
+body.dark-theme .theme-modal { background-color: #233138; border: 1px solid #2a3942; }
+body.dark-theme .theme-modal-item { background-color: #111b21; }
+body.dark-theme .theme-text-main { color: #e9edef !important; }

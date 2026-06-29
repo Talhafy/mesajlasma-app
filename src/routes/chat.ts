@@ -231,7 +231,6 @@ router.post('/conversations/:id/read', async (req, res) => {
     const { userId, emitReceipt } = req.body;
     const conversationId = req.params.id;
 
-    console.log(`[GÖRÜLDÜ BAŞLADI] Oda: ${conversationId} | Okuyan: ${userId}`);
 
     // 1. Odaya ait ve benim göndermediğim tüm mesajları çek
     const allMessages = await prisma.message.findMany({
@@ -246,8 +245,6 @@ router.post('/conversations/:id/read', async (req, res) => {
       const reads = msg.readByIds || [];
       return !reads.includes(userId);
     });
-
-    console.log(`[GÖRÜLDÜ] Güncellenecek okunmamış mesaj sayısı: ${unreadMessages.length}`);
 
     // 3. PostgreSQL'i Zorlayan Tekil Güncelleme (Push/Set yerine direkt eşitleme)
     for (const msg of unreadMessages) {
@@ -268,7 +265,6 @@ router.post('/conversations/:id/read', async (req, res) => {
       io.to(conversationId).emit('mesajlar_okundu', { conversationId, readByUserId: userId });
     }
 
-    console.log(`[GÖRÜLDÜ BAŞARILI] İşlem tamamlandı!`);
     res.status(200).json({ success: true, updatedCount: unreadMessages.length });
   } catch (error) {
     console.error("[GÖRÜLDÜ HATASI]:", error);
@@ -344,6 +340,153 @@ router.get('/messages/search', async (req, res) => {
   } catch (error) {
     console.error("Arama hatası:", error);
     res.status(500).json({ error: "Arama yapılamadı." });
+  }
+});
+
+// --- ZAMANLANMIŞ MESAJLAR İÇİN GEÇİCİ HAFIZA (RAM) ---
+const scheduledTimeouts = new Map(); // Kronometreleri tutar
+const scheduledMessagesData = new Map(); // Ekranda göstermek için mesaj içeriklerini tutar
+
+// 14. İLERİ TARİHLİ MESAJI VERİTABANINA KAYDETME API'Sİ
+router.post('/messages/schedule', async (req, res) => {
+  try {
+    const { conversationId, senderId, content, sendAt } = req.body;
+
+    // MANTIKSAL KONTROL 1: Boş veri kontrolü
+    if (!content || !content.trim()) {
+      return res.status(400).json({ error: "HATA: Boş mesaj zamanlayamazsınız!" });
+    }
+    if (!sendAt) {
+      return res.status(400).json({ error: "HATA: Lütfen geçerli bir tarih ve saat seçin!" });
+    }
+
+    const targetDate = new Date(sendAt);
+    // MANTIKSAL KONTROL 2: Geçersiz format kontrolü
+    if (isNaN(targetDate.getTime())) {
+      return res.status(400).json({ error: "HATA: Gönderilen tarih formatı geçersiz!" });
+    }
+
+    // MANTIKSAL KONTROL 3: Geçmiş zaman kontrolü
+    if (targetDate.getTime() <= Date.now()) {
+      return res.status(400).json({ error: "HATA: Geçmiş bir zamana mesaj ayarlayamazsınız!" });
+    }
+
+    // Her şey doğru, veritabanına kaydet (Sonsuz ileri tarih serbest!)
+    const scheduledMsg = await prisma.scheduledMessage.create({
+      data: {
+        content,
+        senderId,
+        conversationId,
+        sendAt: targetDate
+      }
+    });
+
+    res.status(200).json({ success: true, message: "Mesajınız veritabanına başarıyla güvenle kuruldu!" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Sistem hatası: Mesaj zamanlanamadı." });
+  }
+});
+
+// 15. BEKLEYEN ZAMANLANMIŞ MESAJLARI VERİTABANINDAN GETİRME
+router.get('/messages/scheduled/:conversationId', async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    
+    const pendingMessages = await prisma.scheduledMessage.findMany({
+      where: { conversationId },
+      orderBy: { sendAt: 'asc' } // En yakın zamanlı olan en üstte gözüksün
+    });
+    
+    res.status(200).json(pendingMessages);
+  } catch (error) {
+    res.status(500).json({ error: "Bekleyen mesajlar listelenemedi." });
+  }
+});
+
+// 16. ZAMANLANMIŞ MESAJI VERİTABANINDAN SİLEREK İPTAL ETME
+router.delete('/messages/schedule/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Önce mesaj var mı kontrol et
+    const exist = await prisma.scheduledMessage.findUnique({ where: { id } });
+    if (!exist) {
+      return res.status(404).json({ error: "HATA: İptal edilmek istenen mesaj zaten gönderilmiş veya bulunamadı!" });
+    }
+
+    await prisma.scheduledMessage.delete({ where: { id } });
+    res.status(200).json({ success: true, message: "Zamanlanmış görev veritabanından silindi, iptal başarılı!" });
+  } catch (error) {
+    res.status(500).json({ error: "İptal işlemi sırasında veritabanı hatası oluştu." });
+  }
+});
+
+// 17. ZAMANLANMIŞ MESAJI BEKLETMEDEN "ŞİMDİ GÖNDER" API'Sİ
+router.post('/messages/schedule/send-now/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // 1. Zamanlanmış mesajı bul
+    const sm = await prisma.scheduledMessage.findUnique({ where: { id } });
+    if (!sm) {
+      return res.status(404).json({ error: "Zamanlanmış mesaj bulunamadı veya zaten gönderilmiş." });
+    }
+
+    // 2. Gerçek mesaj tablosuna anında kaydet
+    const savedMessage = await prisma.message.create({
+      data: {
+        content: sm.content,
+        senderId: sm.senderId,
+        conversationId: sm.conversationId
+      },
+      include: { sender: { select: { username: true } } }
+    });
+
+    // 3. Zamanlayıcı tablosundan bu kaydı sil
+    await prisma.scheduledMessage.delete({ where: { id } });
+
+    // 4. Socket ile odadaki herkese CANLI olarak fırlat
+    const conversation = await prisma.conversation.findUnique({
+      where: { id: sm.conversationId },
+      include: { participants: true }
+    });
+
+    const targetRooms = [sm.conversationId];
+    if (conversation?.participants) {
+      conversation.participants.forEach(p => {
+        if (p.userId !== sm.senderId) targetRooms.push(p.userId);
+      });
+    }
+
+    const io = req.app.get('io');
+    io.to(targetRooms).emit('yeni_mesaj_geldi', savedMessage);
+
+    res.status(200).json({ success: true, message: "Mesaj bekletilmeden şimdi gönderildi!" });
+  } catch (error) {
+    res.status(500).json({ error: "Mesaj anında gönderilirken hata oluştu." });
+  }
+});
+
+// 18. ZAMANLANMIŞ MESAJIN İÇERİĞİNİ DÜZENLEME (EDIT) API'Sİ
+router.put('/messages/schedule/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { content } = req.body;
+
+    if (!content || !content.trim()) {
+      return res.status(400).json({ error: "Mesaj içeriği boş olamaz!" });
+    }
+
+    // Veritabanındaki zamanlanmış mesajın içeriğini güncelle
+    const updatedMessage = await prisma.scheduledMessage.update({
+      where: { id },
+      data: { content: content.trim() }
+    });
+
+    res.status(200).json({ success: true, updatedMessage });
+  } catch (error) {
+    res.status(500).json({ error: "Zamanlanmış mesaj güncellenirken hata oluştu." });
   }
 });
 export default router;

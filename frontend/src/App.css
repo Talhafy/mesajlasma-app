@@ -1,8 +1,10 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
-
+/* 👇 YENİ EKLENEN: En güncel emojileri internetten çeken Google Fontu 👇 */
+@import url('https://fonts.googleapis.com/css2?family=Noto+Color+Emoji&display=swap');
 * { 
   box-sizing: border-box; 
-  font-family: 'Inter', sans-serif; 
+  /* Noto Color Emoji'yi, yazılardan (Inter) hemen sonraya ekledik ki işletim sisteminden önce internetteki güncel fontu kullansın */
+  font-family: 'Inter', "Noto Color Emoji", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol"; 
   margin: 0; 
   padding: 0; 
 }
