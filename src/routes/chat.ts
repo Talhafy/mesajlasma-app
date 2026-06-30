@@ -126,6 +126,16 @@ router.post('/conversations/group', async (req, res) => {
         participants: { create: allMemberIds.map((id: string) => ({ userId: id })) }
       }
     });
+
+    // ANINDA BİLDİRİM: Hiçbir mesaj kaydı oluşturmadan, kurucu hariç tüm
+    // katılımcıların ekranına grubu canlı olarak düşürüyoruz. Her kullanıcı
+    // zaten kendi userId'si ile bir odaya katılmış durumda (bkz: App.tsx
+    // 'odaya_katil' -> currentUser.id), o yüzden direkt o odaya yayın yapıyoruz.
+    const io = req.app.get('io');
+    participantIds.forEach((userId: string) => {
+      io.to(userId).emit('grup_olusturuldu', newGroup);
+    });
+
     res.status(201).json(newGroup);
   } catch (error) { res.status(500).json({ error: "Grup oluşturulamadı." }); }
 });
@@ -179,32 +189,95 @@ router.put('/conversations/group/:id/name', async (req, res) => {
   }
 });
 
-//GRUPTAN KİŞİ ÇIKARTMA API'Sİ
+// --- 1. GRUPTAN KİŞİ ÇIKARTMA VE OTOMATİK SİLME ROBOTU ---
 router.delete('/conversations/group/:id/participants/:userId', async (req, res) => {
   try {
-    const { adminId } = req.query; // İsteği kim yapıyor?
+    const { id: groupId, userId } = req.params;
+    const { adminId } = req.query;
 
-    //Güvenlik: Grubu bul ve yetkiyi kontrol et
-    const group = await prisma.conversation.findUnique({ where: { id: req.params.id } });
-    if (group?.adminId !== adminId && req.params.userId !== adminId) {
+    const group = await prisma.conversation.findUnique({ where: { id: groupId } });
+    if (!group) return res.status(404).json({ error: "Grup bulunamadı." });
+
+    // Çıkaran kişi admin değilse ve kendi kendine çıkmıyorsa yetki hatası ver
+    if (group.adminId !== adminId && userId !== adminId) {
       return res.status(403).json({ error: "Sadece grup yöneticisi kişi çıkarabilir!" });
     }
 
+    // 1. Kişiyi gruptan veritabanında sil
     await prisma.participant.deleteMany({
-      where: { conversationId: req.params.id, userId: req.params.userId }
+      where: { conversationId: groupId, userId: userId }
     });
 
-    //Anlık Bildirim: Atılan kişiye sinyal gönder
     const io = req.app.get('io');
-    io.to(req.params.id).emit('gruptan_atildi', { 
-      groupId: req.params.id, 
-      removedUserId: req.params.userId 
+    io.to(groupId).emit('gruptan_atildi', { groupId, removedUserId: userId });
+
+    // 2. KUSURSUZ MANTIK: Grupta geriye kimse kaldı mı?
+    const remainingParticipants = await prisma.participant.findMany({
+      where: { conversationId: groupId }
     });
 
-    res.status(200).json({ message: "Kişi gruptan çıkarıldı." });
+    if (remainingParticipants.length === 0) {
+      // KİMSE KALMADI! Mesajları ve Grubu PostgreSQL'den tamamen yokediyoruz.
+      await prisma.message.deleteMany({ where: { conversationId: groupId } });
+      await prisma.conversation.delete({ where: { id: groupId } });
+      io.to(groupId).emit('grup_silindi', { groupId });
+    } 
+    else if (group.adminId === userId) {
+      // YÖNETİCİ ÇIKTI AMA İÇERDE İNSANLAR VAR! 
+      // İçeride kalan ilk kişiyi rastgele yeni yönetici yapıyoruz ki grup başıboş kalmasın.
+      const newAdminId = remainingParticipants[0].userId;
+      await prisma.conversation.update({
+        where: { id: groupId },
+        data: { adminId: newAdminId }
+      });
+      io.to(groupId).emit('grup_yonetici_degisti', { groupId, newAdminId });
+    }
+
+    res.status(200).json({ message: "İşlem başarılı." });
   } catch (error) { res.status(500).json({ error: "Kişi çıkarılamadı." }); }
 });
 
+// --- 2. GRUBA YENİ KİŞİ EKLEME API'Sİ ---
+router.post('/conversations/group/:id/participants', async (req, res) => {
+  try {
+    const { id: groupId } = req.params;
+    const { adminId, userIdsToAdd } = req.body;
+
+    const group = await prisma.conversation.findUnique({ where: { id: groupId } });
+    if (group?.adminId !== adminId) return res.status(403).json({ error: "Sadece yönetici kişi ekleyebilir." });
+
+    const data = userIdsToAdd.map((userId: string) => ({ userId, conversationId: groupId }));
+    await prisma.participant.createMany({ data, skipDuplicates: true });
+
+    const io = req.app.get('io');
+    userIdsToAdd.forEach((userId: string) => {
+      io.to(userId).emit('grup_olusturuldu', group); // Yeni gelen kişinin sol paneline sessizce düşür
+    });
+
+    res.status(200).json({ message: "Kişiler eklendi." });
+  } catch (error) { res.status(500).json({ error: "Ekleme başarısız." }); }
+});
+
+// --- 3. YÖNETİCİLİĞİ BAŞKASINA DEVRETME API'Sİ ---
+router.put('/conversations/group/:id/admin', async (req, res) => {
+  try {
+    const { id: groupId } = req.params;
+    const { currentAdminId, newAdminId } = req.body;
+
+    const group = await prisma.conversation.findUnique({ where: { id: groupId } });
+    if (group?.adminId !== currentAdminId) return res.status(403).json({ error: "Sadece kurucu yetki devredebilir." });
+
+    await prisma.conversation.update({
+      where: { id: groupId },
+      data: { adminId: newAdminId }
+    });
+
+    const io = req.app.get('io');
+    io.to(groupId).emit('grup_yonetici_degisti', { groupId, newAdminId });
+
+    res.status(200).json({ message: "Yönetici değiştirildi." });
+  } catch (error) { res.status(500).json({ error: "İşlem başarısız." }); }
+});
 //GRUBU KOMPLE SİLME API'Sİ
 router.delete('/conversations/group/:id', async (req, res) => {
   try {
@@ -271,38 +344,49 @@ router.post('/conversations/:id/read', async (req, res) => {
     res.status(500).json({ error: "Görüldü atılamadı." });
   }
 });
-//OKUNMAMIŞ MESAJ SAYILARINI GETİRME
+// --- DÜZELTİLMİŞ: OKUNMAMIŞ MESAJ SAYILARINI GETİRME API'Sİ ---
 router.get('/unread-counts', async (req, res) => {
   try {
     const { userId } = req.query;
 
-    // 1. KUSURSUZ MANTIK: Önce kullanıcının ŞU AN aktif olarak katılımcısı olduğu odaları bul!
+    // 1. Önce kullanıcının katılımcısı olduğu odaları bul
     const myParticipants = await prisma.participant.findMany({
       where: { userId: userId as string },
       select: { conversationId: true }
     });
     const validConversationIds = myParticipants.map(p => p.conversationId);
 
-    // 2. Sadece bu geçerli odalardaki, başkasının attığı mesajları getir
+    // 2. Mesajları getirirken, Odanın (Conversation) 'isGroup' bilgisini de Prisma'dan çekiyoruz!
     const allPossibleUnread = await prisma.message.findMany({
       where: {
         conversationId: { in: validConversationIds },
         senderId: { not: userId as string }
       },
-      select: { conversationId: true, senderId: true, readByIds: true }
+      select: { 
+        conversationId: true, 
+        senderId: true, 
+        readByIds: true,
+        conversation: { select: { isGroup: true } } // SİHİRLİ DOKUNUŞ BURASI
+      }
     });
 
-    // 3. JavaScript ile kesin filtreleme yap (Okuduklarımı çıkar)
+    // 3. Okuduklarımı filtreden çıkar
     const unreadMessages = allPossibleUnread.filter(msg => {
       const reads = msg.readByIds || [];
       return !reads.includes(userId as string);
     });
 
-    // 4. Sayıları topla ve Frontend'e gönder
+    // 4. HAYALET BİLDİRİMLERİ ENGELLEYEN AKILLI SAYAÇ
     const counts: Record<string, number> = {};
+    
     unreadMessages.forEach(msg => {
-      counts[msg.conversationId] = (counts[msg.conversationId] || 0) + 1;
-      counts[msg.senderId] = (counts[msg.senderId] || 0) + 1;
+      if (msg.conversation.isGroup) {
+        // EĞER GRUP MESAJIYSA: Sadece gruba +1 yaz. Kişiye asla dokunma!
+        counts[msg.conversationId] = (counts[msg.conversationId] || 0) + 1;
+      } else {
+        // EĞER ÖZEL MESAJSA (DM): O zaman gönderen kişiye (senderId) +1 yaz.
+        counts[msg.senderId] = (counts[msg.senderId] || 0) + 1;
+      }
     });
 
     res.status(200).json(counts);

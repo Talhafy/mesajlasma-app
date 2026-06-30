@@ -1,6 +1,6 @@
-import './Modals.css';
+import { useState } from 'react';
 import type { User } from '../../App';
-import Button from '../UI/Button';
+import './Modals.css';
 
 interface SettingsModalProps {
   setIsSettingsOpen: (isOpen: boolean) => void;
@@ -10,69 +10,153 @@ interface SettingsModalProps {
   setNewUsernameSettings: (val: string) => void;
   handleUpdateUsername: () => void;
   currentUser: User | null;
-  handleToggleReadReceipts: (isEnabled: boolean) => void; // App.tsx'ten gelecek yeni fonksiyon
+  handleToggleReadReceipts: (val: boolean) => void;
   oldPasswordSettings: string;
   setOldPasswordSettings: (val: string) => void;
   newPasswordSettings: string;
   setNewPasswordSettings: (val: string) => void;
   handleUpdatePassword: () => void;
   handleDeleteAccount: () => void;
+  cikisYap: () => void;
 }
 
-export default function SettingsModal({
-  setIsSettingsOpen, settingsMessage, setSettingsMessage, newUsernameSettings, setNewUsernameSettings,
-  handleUpdateUsername, currentUser, handleToggleReadReceipts, oldPasswordSettings, setOldPasswordSettings,
-  newPasswordSettings, setNewPasswordSettings, handleUpdatePassword, handleDeleteAccount
-}: SettingsModalProps) {
+export default function SettingsModal(props: SettingsModalProps) {
+  const [activeTab, setActiveTab] = useState<'profile' | 'account'>('profile');
+
   return (
-    <div className="settings-overlay">
-      <div className="settings-modal">
-        <div className="settings-header">
-          <h2>⚙️ Hesap Ayarları</h2>
-          <button className="close-btn" onClick={() => {setIsSettingsOpen(false); setSettingsMessage({type: '', text: ''})}}>✕</button>
+    <div className="settings-overlay" onClick={() => props.setIsSettingsOpen(false)}>
+      
+      <div className="settings-layout-container" onClick={(e) => e.stopPropagation()}>
+        
+        {/* SOL TARAFTAKİ SEKME MENÜSÜ */}
+        <div className="settings-sidebar">
+          <div className="settings-sidebar-header">
+            Ayarlar
+          </div>
+          
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', padding: '0 10px', flex: 1 }}>
+            <button 
+              onClick={() => { setActiveTab('profile'); props.setSettingsMessage({type: '', text: ''}); }}
+              className={`settings-tab-btn ${activeTab === 'profile' ? 'active' : ''}`}
+            >
+              <span>👤</span> Profil
+            </button>
+            <button 
+              onClick={() => { setActiveTab('account'); props.setSettingsMessage({type: '', text: ''}); }}
+              className={`settings-tab-btn ${activeTab === 'account' ? 'active' : ''}`}
+            >
+              <span>⚙️</span> Hesap
+            </button>
+          </div>
+
+          <div className="settings-sidebar-footer">
+            <button onClick={props.cikisYap} className="settings-logout-btn">
+              🚪 Çıkış Yap
+            </button>
+          </div>
         </div>
-        <div className="settings-body">
-          {settingsMessage.text && <div className={`settings-msg ${settingsMessage.type}`}>{settingsMessage.text}</div>}
-          
-          <div className="settings-section">
-            <h4>Kullanıcı Adı Değiştir</h4>
-            <div className="settings-input-group">
-              <input type="text" placeholder="Yeni Kullanıcı Adı" value={newUsernameSettings} onChange={(e) => setNewUsernameSettings(e.target.value)} />
-              <Button text="Güncelle" onClick={handleUpdateUsername} />
-            </div>
-          </div>
 
-          <div className="settings-section" style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '15px', marginBottom: '15px'}}>
-            <h4 style={{margin: 0}}>Görüldü Bilgisi (Mavi Tik)</h4>
-            <label style={{display: 'flex', alignItems: 'center', cursor: 'pointer'}}>
-              <input 
-                type="checkbox" 
-                checked={currentUser?.readReceiptsOn !== false} 
-                onChange={(e) => handleToggleReadReceipts(e.target.checked)}
-                style={{width: '16px', height: '16px', margin: 0}}
-              />
-              <span style={{marginLeft: '8px', fontSize: '13px', color: '#555'}}>{currentUser?.readReceiptsOn !== false ? 'Açık' : 'Kapalı'}</span>
-            </label>
-          </div>
-
-          <div className="settings-section">
-            <h4>Şifre Değiştir</h4>
-            <div className="settings-input-group" style={{flexDirection: 'column', gap: '8px'}}>
-              <input type="password" placeholder="Mevcut Şifre" value={oldPasswordSettings} onChange={(e) => setOldPasswordSettings(e.target.value)} />
-              <input type="password" placeholder="Yeni Şifre" value={newPasswordSettings} onChange={(e) => setNewPasswordSettings(e.target.value)} />
-              <Button text="Şifreyi Değiştir" onClick={handleUpdatePassword} fullWidth={true} />
-            </div>
-          </div>
+        {/* SAĞ TARAFTAKİ İÇERİK ALANI */}
+        <div className="settings-content">
           
-          <div className="settings-section" style={{marginTop: '30px', borderTop: '1px solid #eee', paddingTop: '20px'}}>
-            <h4 style={{color: '#d32f2f'}}>Tehlikeli Alan</h4>
-            <Button 
-            text="🗑️ Hesabımı Sil" 
-            onClick={handleDeleteAccount} 
-            variant="danger" 
-            fullWidth={true} 
-                  />
-          </div>
+          <button onClick={() => props.setIsSettingsOpen(false)} className="settings-close-icon">✖</button>
+
+          {/* PROFİL SEKMESİ İÇERİĞİ */}
+          {activeTab === 'profile' && (
+            <div style={{ animation: 'fadeIn 0.3s ease' }}>
+              <h2 className="settings-title">Profil Bilgileri</h2>
+              
+              {props.settingsMessage.text && (
+                <div className={`settings-msg ${props.settingsMessage.type}`}>
+                  {props.settingsMessage.text}
+                </div>
+              )}
+
+              <div className="settings-avatar-row">
+                <div className="settings-avatar">
+                  {props.currentUser?.username?.[0]?.toUpperCase()}
+                </div>
+                <div>
+                  <h3 className="settings-username">{props.currentUser?.username}</h3>
+                  <span className="settings-status-badge">Çevrimiçi</span>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <label className="settings-label">Kullanıcı Adını Değiştir</label>
+                  <div style={{ display: 'flex', gap: '10px' }}>
+                    <input 
+                      type="text" 
+                      placeholder="Yeni kullanıcı adı"
+                      value={props.newUsernameSettings} 
+                      onChange={(e) => props.setNewUsernameSettings(e.target.value)}
+                      className="settings-modern-input"
+                    />
+                    <button onClick={props.handleUpdateUsername} className="modern-primary-btn">Kaydet</button>
+                  </div>
+                </div>
+
+                {/* Okundu Bilgisi Ayarı */}
+                <div className="settings-info-box">
+                  <div className="settings-info-box-text">
+                    <h4>Okundu Bilgisi (Mavi Tik)</h4>
+                    <p>Kapatırsanız, başkalarının mesajlarını okuduğunuzu göremezler ve siz de onlarınkini göremezsiniz.</p>
+                  </div>
+                  <label className="switch">
+                    <input 
+                      type="checkbox" 
+                      checked={props.currentUser?.readReceiptsOn !== false}
+                      onChange={(e) => props.handleToggleReadReceipts(e.target.checked)}
+                    />
+                    <span className="slider round"></span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* HESAP SEKMESİ İÇERİĞİ */}
+          {activeTab === 'account' && (
+            <div style={{ animation: 'fadeIn 0.3s ease' }}>
+              <h2 className="settings-title">Hesap Ayarları</h2>
+              
+              {props.settingsMessage.text && (
+                <div className={`settings-msg ${props.settingsMessage.type}`}>
+                  {props.settingsMessage.text}
+                </div>
+              )}
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '15px', marginBottom: '40px' }}>
+                <label className="settings-label" style={{marginBottom: 0}}>Şifre Değiştir</label>
+                <input 
+                  type="password" 
+                  placeholder="Mevcut Şifreniz"
+                  value={props.oldPasswordSettings}
+                  onChange={(e) => props.setOldPasswordSettings(e.target.value)}
+                  className="settings-modern-input"
+                />
+                <input 
+                  type="password" 
+                  placeholder="Yeni Şifreniz"
+                  value={props.newPasswordSettings}
+                  onChange={(e) => props.setNewPasswordSettings(e.target.value)}
+                  className="settings-modern-input"
+                />
+                <button onClick={props.handleUpdatePassword} className="modern-primary-btn" style={{alignSelf: 'flex-start'}}>Şifreyi Güncelle</button>
+              </div>
+
+              <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '20px' }}>
+                <h4 style={{ margin: '0 0 10px 0', color: '#d32f2f', fontSize: '16px' }}>Tehlikeli Bölge</h4>
+                <p className="settings-label" style={{marginBottom: '15px'}}>Hesabınızı silerseniz, tüm sohbet geçmişiniz, gruplarınız ve verileriniz kalıcı olarak yok olur.</p>
+                <button onClick={props.handleDeleteAccount} className="danger-action-btn" style={{justifyContent: 'center'}}>
+                  <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                  Hesabımı Kalıcı Olarak Sil
+                </button>
+              </div>
+            </div>
+          )}
+
         </div>
       </div>
     </div>

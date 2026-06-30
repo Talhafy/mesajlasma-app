@@ -1,3 +1,6 @@
+/* =========================================
+   SENİN ORİJİNAL TEMEL KODLARIN
+========================================= */
 .settings-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: flex; justify-content: center; align-items: center; z-index: 1000; }
 .settings-modal { background: white; width: 350px; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); overflow: hidden; }
 .settings-header { background: #f0f2f5; padding: 15px 20px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #ddd; }
@@ -17,3 +20,180 @@
 @media screen and (max-width: 576px) {
   .settings-modal { width: 90% !important; max-width: 400px; }
 }
+
+/* =========================================
+   YENİ: PROFESYONEL GRUP AYARLARI VE BUTON TASARIMLARI
+========================================= */
+
+/* Başlık ve Ekle Butonu Satırı */
+.section-header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.section-header-row h4 { margin: 0 !important; }
+
+/* Ekle / İptal Butonu (Hap Tasarımı - Pill Shape) */
+.add-member-toggle-btn { background: #f0f2f5; border: 1px solid #e9edef; color: #00a884; font-weight: 600; cursor: pointer; font-size: 13px; padding: 6px 16px; border-radius: 20px; transition: all 0.2s ease; }
+.add-member-toggle-btn:hover { background: #00a884; color: white; border-color: #00a884; transform: translateY(-1px); }
+
+/* Kişi Ekleme Kutusu */
+.add-member-box { border: 1px solid #e9edef; padding: 12px; border-radius: 8px; background: #f8f9fa; margin-top: 8px; }
+.member-checkbox-label { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; cursor: pointer; font-size: 14px; color: #111b21; font-weight: 500;}
+.member-checkbox-label input[type="checkbox"] { width: 18px; height: 18px; cursor: pointer; accent-color: #00a884; }
+
+/* Grup Üyeleri Listesi Kutusu */
+.member-list-container { max-height: 220px; overflow-y: auto; border: 1px solid #e9edef; border-radius: 8px; padding: 0 12px; }
+.member-list-item { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-bottom: 1px solid #f0f2f5; }
+.member-list-item:last-child { border-bottom: none; }
+.member-info { display: flex; flex-direction: column; }
+.member-name { font-size: 15px; font-weight: 500; color: #111b21; }
+.member-role { font-size: 11px; color: #00a884; font-weight: 600; margin-top: 2px; }
+
+/* Yönetici Yap ve Çıkar Butonları (Yumuşak Arkaplanlı Modern Görünüm) */
+.member-actions { display: flex; gap: 8px; }
+.action-btn-outline { background: rgba(0, 168, 132, 0.1); border: none; color: #00a884; border-radius: 6px; font-size: 12px; padding: 8px 14px; cursor: pointer; font-weight: 600; transition: all 0.2s ease; }
+.action-btn-outline:hover { background: #00a884; color: white; transform: translateY(-1px); }
+
+.action-btn-danger { background: rgba(234, 0, 56, 0.1); border: none; color: #ea0038; border-radius: 6px; font-size: 12px; padding: 8px 14px; cursor: pointer; font-weight: 600; transition: all 0.2s ease; }
+.action-btn-danger:hover { background: #ea0038; color: white; transform: translateY(-1px); }
+
+/* Tehlikeli Alan Butonları (Çıkış Yap, Grubu Sil - Kırmızı SVG'li) */
+.danger-action-btn { display: flex; align-items: center; gap: 12px; width: 100%; background: transparent; border: none; color: #d32f2f; font-size: 15px; font-weight: 600; cursor: pointer; padding: 12px; border-radius: 8px; transition: background 0.2s ease; text-align: left; margin-bottom: 5px; }
+.danger-action-btn:hover { background: #ffebee; }
+
+/* Grup Adı Kaydet Butonu (Modern Primary) */
+.modern-primary-btn { padding: 10px 20px; background: #00a884; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; transition: all 0.2s ease; box-shadow: 0 2px 4px rgba(0, 168, 132, 0.2); }
+.modern-primary-btn:hover { background: #008f6f; transform: translateY(-1px); box-shadow: 0 4px 8px rgba(0, 168, 132, 0.3); }
+
+/* TOGGLE SWITCH (Mavi Tik Kapat/Aç Butonu) */
+.switch { position: relative; display: inline-block; width: 44px; height: 24px; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .3s; }
+.slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: white; transition: .3s; box-shadow: 0 2px 4px rgba(0,0,0,0.2); }
+input:checked + .slider { background-color: #00a884; }
+input:checked + .slider:before { transform: translateX(20px); }
+.slider.round { border-radius: 24px; }
+.slider.round:before { border-radius: 50%; }
+
+/* =========================================
+   🌙 KARANLIK MOD (DARK THEME) UYUMLARI
+========================================= */
+
+/* GİZLİ İSİMLERİ VE ÇİRKİN KENARLIKLARI DÜZELTEN KODLAR */
+body.dark-theme .add-member-box { background: #182229; border-color: #2a3942; }
+body.dark-theme .member-checkbox-label { color: #e9edef; }
+body.dark-theme .member-list-container { border-color: #2a3942; }
+body.dark-theme .member-list-item { border-bottom-color: #202c33; }
+body.dark-theme .member-name { color: #e9edef; } /* İşte ekran görüntüsündeki kayıp isimleri ortaya çıkaran kod */
+
+/* Karanlık mod buton renk uyarlamaları */
+body.dark-theme .add-member-toggle-btn { background: #202c33; border-color: #2a3942; color: #00c29a; }
+body.dark-theme .add-member-toggle-btn:hover { background: #00c29a; color: #111b21; border-color: #00c29a; }
+
+body.dark-theme .action-btn-outline { background: rgba(0, 168, 132, 0.15); color: #00c29a; }
+body.dark-theme .action-btn-outline:hover { background: #00c29a; color: #111b21; }
+
+body.dark-theme .action-btn-danger { background: rgba(241, 92, 109, 0.15); color: #f15c6d; }
+body.dark-theme .action-btn-danger:hover { background: #f15c6d; color: #111b21; }
+
+body.dark-theme .danger-action-btn { color: #f15c6d; }
+body.dark-theme .danger-action-btn:hover { background: rgba(241, 92, 109, 0.1); }
+
+body.dark-theme .modern-primary-btn { color: #111b21; }
+body.dark-theme .modern-primary-btn:hover { background: #00c29a; }
+
+body.dark-theme .settings-section { border-color: #2a3942 !important; }
+body.dark-theme .slider { background-color: #3b4a54; }
+body.dark-theme input:checked + .slider { background-color: #00a884; }
+
+/* =========================================
+   YENİ ÇİFT SÜTUNLU AYARLAR MENÜSÜ TASARIMI
+========================================= */
+
+.settings-layout-container {
+  width: 750px;
+  height: 500px;
+  background: #ffffff;
+  border-radius: 12px;
+  overflow: hidden;
+  display: flex;
+  box-shadow: 0 15px 50px rgba(0,0,0,0.2);
+  animation: modalFadeIn 0.3s ease;
+}
+
+/* Sol Panel (Sidebar) */
+.settings-sidebar { width: 240px; background: #f0f2f5; border-right: 1px solid #d1d7db; display: flex; flex-direction: column; }
+.settings-sidebar-header { padding: 24px 20px; font-size: 20px; font-weight: bold; color: #111b21; }
+.settings-sidebar-footer { padding: 20px 15px; }
+
+.settings-tab-btn {
+  padding: 12px 15px; border: none; border-radius: 8px; cursor: pointer; text-align: left;
+  background: transparent; color: #3b4a54; font-size: 15px; font-weight: 500;
+  display: flex; align-items: center; gap: 10px; transition: all 0.2s;
+}
+.settings-tab-btn:hover { background: rgba(0,0,0,0.05); }
+.settings-tab-btn.active { background: #ffffff; box-shadow: 0 1px 3px rgba(0,0,0,0.1); font-weight: 600; color: #111b21; }
+
+.settings-logout-btn {
+  width: 100%; padding: 12px; border: none; border-radius: 8px; cursor: pointer;
+  background: #ffebee; color: #e53935; font-size: 15px; font-weight: bold;
+  display: flex; align-items: center; justify-content: center; gap: 8px; transition: background 0.2s;
+}
+.settings-logout-btn:hover { background: #ffcdd2; }
+
+/* Sağ Panel (İçerik) */
+.settings-content { flex: 1; padding: 40px; position: relative; background: #ffffff; overflow-y: auto; }
+.settings-close-icon { position: absolute; top: 20px; right: 20px; background: none; border: none; font-size: 20px; cursor: pointer; color: #8696a0; transition: color 0.2s; }
+.settings-close-icon:hover { color: #111b21; }
+.settings-title { margin-top: 0; color: #111b21; font-size: 24px; margin-bottom: 20px; }
+
+/* Profil Bileşenleri */
+.settings-avatar-row { display: flex; align-items: center; gap: 25px; margin-bottom: 30px; }
+.settings-avatar {
+  width: 80px; height: 80px; border-radius: 50%; background: #00a884; color: white;
+  display: flex; align-items: center; justify-content: center; font-size: 30px; box-shadow: 0 4px 10px rgba(0, 168, 132, 0.3);
+}
+.settings-username { margin: 0 0 5px 0; font-size: 22px; color: #111b21; }
+.settings-status-badge { background: #e7f8f0; color: #00a884; padding: 4px 10px; border-radius: 12px; font-size: 13px; font-weight: bold; }
+
+.settings-label { font-size: 14px; color: #667781; font-weight: 500; }
+.settings-modern-input { flex: 1; padding: 12px 15px; border-radius: 8px; border: 1px solid #d1d7db; background: #f0f2f5; color: #3b4a54; font-size: 15px; outline: none; transition: border-color 0.2s; width: 100%; box-sizing: border-box;}
+.settings-modern-input:focus { border-color: #00a884; }
+
+/* Bilgi Kutusu (Mavi Tik alanı) */
+.settings-info-box { display: flex; align-items: center; justify-content: space-between; padding: 15px; background: #f0f2f5; border-radius: 8px; margin-top: 10px; }
+.settings-info-box-text h4 { margin: 0 0 4px 0; font-size: 15px; color: #111b21; font-weight: bold; }
+.settings-info-box-text p { margin: 0; font-size: 12px; color: #667781; }
+
+:root { --border-color: #e9edef; }
+
+/* =========================================
+   🌙 ÇİFT SÜTUNLU MENÜ KARANLIK MOD (DARK THEME)
+========================================= */
+
+body.dark-theme { --border-color: #2a3942; }
+
+body.dark-theme .settings-layout-container { background: #111b21; }
+
+body.dark-theme .settings-sidebar { background: #202c33; border-right-color: #2a3942; }
+body.dark-theme .settings-sidebar-header { color: #e9edef; }
+
+body.dark-theme .settings-tab-btn { color: #aebac1; }
+body.dark-theme .settings-tab-btn:hover { background: rgba(255, 255, 255, 0.05); }
+body.dark-theme .settings-tab-btn.active { background: #2a3942; box-shadow: none; color: #e9edef; }
+
+body.dark-theme .settings-logout-btn { background: rgba(241, 92, 109, 0.15); color: #f15c6d; }
+body.dark-theme .settings-logout-btn:hover { background: rgba(241, 92, 109, 0.25); }
+
+body.dark-theme .settings-content { background: #111b21; }
+body.dark-theme .settings-close-icon { color: #8696a0; }
+body.dark-theme .settings-close-icon:hover { color: #e9edef; }
+body.dark-theme .settings-title { color: #e9edef; }
+
+body.dark-theme .settings-username { color: #e9edef; }
+body.dark-theme .settings-status-badge { background: rgba(0, 168, 132, 0.15); color: #00c29a; }
+
+body.dark-theme .settings-label { color: #8696a0; }
+body.dark-theme .settings-modern-input { background: #202c33; border-color: #2a3942; color: #e9edef; }
+body.dark-theme .settings-modern-input:focus { border-color: #00a884; }
+
+body.dark-theme .settings-info-box { background: #202c33; }
+body.dark-theme .settings-info-box-text h4 { color: #e9edef; }
+body.dark-theme .settings-info-box-text p { color: #8696a0; }
