@@ -1,7 +1,61 @@
 import express from 'express';
 import prisma from '../db';
+import multer = require('multer');
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3"; // YENİ: Bulut kütüphanesi
 
 const router = express.Router();
+
+// --- CLOUDFLARE R2 BAĞLANTI AYARLARI ---
+// Bu bilgileri Cloudflare Dashboard -> R2 sayfasından alacaksın
+const s3 = new S3Client({
+  region: "auto",
+  endpoint: "https://ca223b709be8627ce9de7032d7704d09.r2.cloudflarestorage.com",
+  credentials: {
+    accessKeyId: "9e912cc9ae476b01b37f2b08f3ee2df8",
+    secretAccessKey: "1c21f27d3a9c32e99d8f8b49960a691a2528b1f9f879778e1fe63c20136b9d9e",
+  }
+});
+
+// --- YENİ DİSK YERİNE RAM (MEMORY) STORAGE ---
+// Artık dosyaları sunucu diskine kaydetmiyoruz, RAM'de tutuyoruz
+const upload = multer({ 
+  storage: multer.memoryStorage(), 
+  limits: { fileSize: 50 * 1024 * 1024 } // 50 MB Sınırı
+});
+
+router.post('/upload', upload.single('file'), async (req: any, res: any) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "Dosya bulunamadı." });
+    
+    const ext = req.file.originalname.substring(req.file.originalname.lastIndexOf('.'));
+// İçinde asla Türkçe karakter veya boşluk olmayan tamamen güvenli bir isim üretiyoruz:
+const uniqueFileName = `${Date.now()}-${Math.round(Math.random() * 1E9)}${ext}`;
+    
+    // Cloudflare R2'ye dosyayı yükleme komutu
+    const command = new PutObjectCommand({
+      Bucket: "mesajlasma-app-medya", // Cloudflare'de açtığın bucket'ın adı
+      Key: uniqueFileName,
+      Body: req.file.buffer, // Dosyayı RAM'den alıyoruz
+      ContentType: req.file.mimetype, // Dosya tipi (Örn: image/png)
+    });
+
+    // Buluta Gönder!
+    await s3.send(command);
+    
+    // Cloudflare Bucket'ını "Public" (Herkese Açık) yapıp sana verdiği public URL'i buraya yaz:
+    const fileUrl = `https://pub-4f17590f6a324dbeae871a6015c547be.r2.dev/${uniqueFileName}`;
+    
+    res.status(200).json({ 
+      fileUrl: fileUrl,  // Artık local değil, gerçek bir internet URL'si dönüyor!
+      fileName: req.file.originalname,
+      fileType: req.file.mimetype.startsWith('image/') ? 'image' : 
+                req.file.mimetype.startsWith('audio/') || req.file.mimetype.startsWith('video/') ? 'audio' : 'document'
+    });
+  } catch (error) {
+    console.error("Buluta yükleme hatası:", error);
+    res.status(500).json({ error: "Dosya buluta yüklenemedi." });
+  }
+});
 
 //KULLANICILARI LİSTELEME
 router.get('/users', async (req, res) => {
@@ -55,11 +109,11 @@ router.post('/conversations/direct', async (req, res) => {
   }
 });
 
-//MESAJ GÖNDERME VE SOKET YAYINI
-// MESAJ GÖNDERME (GÜNCELLENDİ: Yanıt ve İletildi Desteği)
+// MESAJ GÖNDERME (GÜNCELLENDİ: Dosya Desteği Eklendi)
 router.post('/messages', async (req, res) => {
   try {
-    const { conversationId, senderId, content, replyToId, isForwarded } = req.body;
+    // 1. DÜZELTME: fileUrl, fileType ve fileName buraya eklendi ki req.body'den alabilsin!
+    const { conversationId, senderId, content, replyToId, isForwarded, fileUrl, fileType, fileName } = req.body;
 
     const conversation = await prisma.conversation.findUnique({
       where: { id: conversationId }, include: { participants: true }
@@ -68,15 +122,18 @@ router.post('/messages', async (req, res) => {
 
     const savedMessage = await prisma.message.create({
       data: { 
-        content, 
+        content: content || "", // Sadece resim atılırsa yazı boş ("") olabilir
         senderId, 
         conversationId,
-        replyToId: replyToId || null, // Hangi mesaja yanıt verildi?
-        isForwarded: isForwarded || false // Bu bir iletilmiş mesaj mı?
+        replyToId: replyToId || null, 
+        isForwarded: isForwarded || false,
+        // 2. DÜZELTME: Veritabanına dosya bilgilerini kaydediyoruz!
+        fileUrl: fileUrl || null,
+        fileType: fileType || null,
+        fileName: fileName || null
       },
       include: { 
         sender: { select: { username: true } },
-        // Yanıtlanmışsa o mesajın kısa bir özetini frontend'e yolla
         replyTo: { select: { id: true, content: true, sender: { select: { username: true } } } } 
       }
     });
@@ -87,7 +144,10 @@ router.post('/messages', async (req, res) => {
     
     io.to(targetRooms).emit('yeni_mesaj_geldi', savedMessage);
     res.status(201).json(savedMessage);
-  } catch (error) { res.status(500).json({ error: "Mesaj gönderilemedi." }); }
+  } catch (error) { 
+    console.error("Mesaj kaydetme hatası:", error);
+    res.status(500).json({ error: "Mesaj gönderilemedi." }); 
+  }
 });
 
 // GEÇMİŞ MESAJLARI ÇEKME (GÜNCELLENDİ: Yanıt/Sabit/Yıldız Verilerini Getir)
@@ -452,10 +512,11 @@ const scheduledMessagesData = new Map(); // Ekranda göstermek için mesaj içer
 // 14. İLERİ TARİHLİ MESAJI VERİTABANINA KAYDETME API'Sİ
 router.post('/messages/schedule', async (req, res) => {
   try {
-    const { conversationId, senderId, content, sendAt } = req.body;
+    // DÜZELTME 1: fileUrl, fileType ve fileName buraya eklendi
+    const { conversationId, senderId, content, sendAt, fileUrl, fileType, fileName } = req.body;
 
-    // MANTIKSAL KONTROL 1: Boş veri kontrolü
-    if (!content || !content.trim()) {
+    // EĞER HEM YAZI HEM DOSYA YOKSA HATA VER (Artık sadece dosya da zamanlanabilir)
+    if ((!content || !content.trim()) && !fileUrl) {
       return res.status(400).json({ error: "HATA: Boş mesaj zamanlayamazsınız!" });
     }
     if (!sendAt) {
@@ -463,27 +524,24 @@ router.post('/messages/schedule', async (req, res) => {
     }
 
     const targetDate = new Date(sendAt);
-    // MANTIKSAL KONTROL 2: Geçersiz format kontrolü
-    if (isNaN(targetDate.getTime())) {
-      return res.status(400).json({ error: "HATA: Gönderilen tarih formatı geçersiz!" });
-    }
+    if (isNaN(targetDate.getTime())) return res.status(400).json({ error: "HATA: Geçersiz tarih!" });
+    if (targetDate.getTime() <= Date.now()) return res.status(400).json({ error: "HATA: Geçmiş zaman seçilemez!" });
 
-    // MANTIKSAL KONTROL 3: Geçmiş zaman kontrolü
-    if (targetDate.getTime() <= Date.now()) {
-      return res.status(400).json({ error: "HATA: Geçmiş bir zamana mesaj ayarlayamazsınız!" });
-    }
-
-    // Her şey doğru, veritabanına kaydet (Sonsuz ileri tarih serbest!)
+    // Veritabanına dosya bilgileriyle birlikte kaydet
     const scheduledMsg = await prisma.scheduledMessage.create({
       data: {
-        content,
+        content: content || "",
         senderId,
         conversationId,
-        sendAt: targetDate
+        sendAt: targetDate,
+        // DÜZELTME 2: Dosya bilgilerini kaydediyoruz
+        fileUrl: fileUrl || null,
+        fileType: fileType || null,
+        fileName: fileName || null
       }
     });
 
-    res.status(200).json({ success: true, message: "Mesajınız veritabanına başarıyla güvenle kuruldu!" });
+    res.status(200).json({ success: true, message: "Mesajınız zamanlandı!" });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Sistem hatası: Mesaj zamanlanamadı." });
@@ -529,26 +587,24 @@ router.post('/messages/schedule/send-now/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
-    // 1. Zamanlanmış mesajı bul
     const sm = await prisma.scheduledMessage.findUnique({ where: { id } });
-    if (!sm) {
-      return res.status(404).json({ error: "Zamanlanmış mesaj bulunamadı veya zaten gönderilmiş." });
-    }
+    if (!sm) return res.status(404).json({ error: "Zamanlanmış mesaj bulunamadı." });
 
-    // 2. Gerçek mesaj tablosuna anında kaydet
+    // DÜZELTME 3: Geçici tablodaki dosya linklerini, asıl Message tablosuna aktarıyoruz
     const savedMessage = await prisma.message.create({
       data: {
         content: sm.content,
         senderId: sm.senderId,
-        conversationId: sm.conversationId
+        conversationId: sm.conversationId,
+        fileUrl: sm.fileUrl,
+        fileType: sm.fileType,
+        fileName: sm.fileName
       },
       include: { sender: { select: { username: true } } }
     });
 
-    // 3. Zamanlayıcı tablosundan bu kaydı sil
     await prisma.scheduledMessage.delete({ where: { id } });
 
-    // 4. Socket ile odadaki herkese CANLI olarak fırlat
     const conversation = await prisma.conversation.findUnique({
       where: { id: sm.conversationId },
       include: { participants: true }
@@ -564,7 +620,7 @@ router.post('/messages/schedule/send-now/:id', async (req, res) => {
     const io = req.app.get('io');
     io.to(targetRooms).emit('yeni_mesaj_geldi', savedMessage);
 
-    res.status(200).json({ success: true, message: "Mesaj bekletilmeden şimdi gönderildi!" });
+    res.status(200).json({ success: true, message: "Mesaj şimdi gönderildi!" });
   } catch (error) {
     res.status(500).json({ error: "Mesaj anında gönderilirken hata oluştu." });
   }

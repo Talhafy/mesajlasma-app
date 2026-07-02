@@ -8,6 +8,7 @@ import authRoutes from './routes/auth';
 import chatRoutes from './routes/chat';
 import userRoutes from './routes/user';
 import prisma from './db';
+import path from 'path';
 
 const app = express();
 const httpServer = createServer(app);
@@ -25,6 +26,7 @@ app.use(cors());
 app.use('/api', authRoutes);
 app.use('/api', chatRoutes); 
 app.use('/api/user', userRoutes); 
+app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
 app.get('/', (req, res) => {
   res.send('Mesajlaşma API modüler yapıda tıkır tıkır çalışıyor 🚀');

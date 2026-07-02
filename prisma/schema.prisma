@@ -52,6 +52,11 @@ model Message {
   starredByIds   String[]     @default([])    // Yıldızlayan kullanıcıların ID'leri
   deletedForIds  String[]     @default([])    // "Benden Sil" diyenlerin ID'leri
 
+  // YENİ EKLENEN DOSYA ALANLARI
+  fileUrl        String?  // Dosyanın sunucudaki yolu 
+  fileType       String?  // Dosya tipi 
+  fileName       String?  // Dosyanın orijinal adı 
+
   replyToId      String?      
   replyTo        Message?     @relation("MessageReplies", fields: [replyToId], references: [id])
   replies        Message[]    @relation("MessageReplies")
@@ -64,6 +69,11 @@ model ScheduledMessage {
   content        String
   senderId       String
   conversationId String
-  sendAt         DateTime // Mesajın gönderileceği asıl zaman
+  sendAt         DateTime 
   createdAt      DateTime @default(now())
+
+  // YENİ EKLENEN DOSYA ALANLARI (Tıpkı normal Message tablosundaki gibi)
+  fileUrl        String?
+  fileType       String?
+  fileName       String?
 }
