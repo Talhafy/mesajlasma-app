@@ -165,6 +165,9 @@ export default function App() {
       const msgs = await axios.get(`http://localhost:3000/api/conversations/${group.id}/messages`);
       setMessages(msgs.data);
       
+      const partRes = await axios.get(`http://localhost:3000/api/conversations/group/${group.id}/participants`);
+      setGroupMembers(partRes.data);
+
       if (currentUser) {
         await axios.post(`http://localhost:3000/api/conversations/${group.id}/read`, { userId: currentUser.id, emitReceipt: currentUser.readReceiptsOn !== false });
         setUnreadCounts(prev => ({ ...prev, [group.id]: 0 }));
@@ -172,117 +175,51 @@ export default function App() {
       if (socket) socket.emit('odaya_katil', group.id);
     } catch (error) { console.error("Grup mesajları çekilemedi", error); }
   };
-  
-  // DÜZELTME: KUSURSUZ VE ANINDA GRUP OLUŞTURMA MANTIK MOTORU
 
   const handleCreateGroup = async () => {
-
     if (!newGroupName.trim()) return alert("LÜTFEN DİKKAT: Öncelikle bir grup adı belirleyin!");
-
     if (selectedMembers.length === 0) return alert("LÜTFEN DİKKAT: Gruba eklemek için en az 1 kişi seçmelisiniz!");
-
     
-
     try {
-
-      // 1. Backend'e grubu kurmasını söylüyoruz
-
       const res = await axios.post('http://localhost:3000/api/conversations/group', { 
-
         currentUserId: currentUser?.id, 
-
         name: newGroupName, 
-
         participantIds: selectedMembers 
-
       });
-
       
-
       setIsGroupModalOpen(false); 
-
-      const createdGroupName = newGroupName; // İsmi kaybetmemek için yedeğe alıyoruz
-
+      const createdGroupName = newGroupName; 
       setNewGroupName(''); 
-
       setSelectedMembers([]);
-
-
-
-      // Backend'in döndüğü veriden Grup ID'sini güvenli şekilde yakalıyoruz
 
       const groupId = res.data?.id || res.data?.group?.id || res.data?.conversation?.id;
 
-
-
       if (currentUser && groupId) {
-
-        
-
-        // 2. KURUCUNUN EKRANINA ANINDA GETİR (Optimistic UI)
-
         const yeniGrup: Conversation = {
-
           id: groupId,
-
           isGroup: true,
-
           name: createdGroupName,
-
           adminId: currentUser.id
-
         };
 
-
-
-        // Veritabanını beklemeden grubu kendi yan menümüze (Sidebar) anında ekliyoruz!
-
         setGroupsList(prev => [...prev, yeniGrup]);
-
-        
-
-        // Anında soket odasına bağlanıyoruz ki mesaj atabilelim
-
         if (socket) socket.emit('odaya_katil', groupId);
 
-
-
-        // Arka planda listeyi eşitlemek için ufak bir gecikmeyle (DB'nin işini bitirmesini bekleyip) tazeleme yapıyoruz
+        selectedMembers.forEach(memberId => {
+            if (socket) socket.emit('yeni_grup_bildirimi', { groupId, memberId });
+        });
 
         setTimeout(() => fetchGroups(currentUser.id), 500);
-
-
-
-        // 3. DİĞER KULLANICILARIN EKRANINA ANINDA DÜŞMESİ İÇİN
-        // ARTIK SAHTE/HAYALET MESAJ ATMIYORUZ! Backend, grubu oluştururken
-        // tüm katılımcılara 'grup_olusturuldu' soket eventini kendisi yayınlıyor.
-        // Bu event hiçbir mesaj kaydı oluşturmadığı için unread sayacını artırmaz
-        // ve sohbet ekranında "sahte sistem mesajı" olarak görünmez.
-        // (Bkz: aşağıdaki useEffect içindeki newSocket.on('grup_olusturuldu', ...) dinleyicisi)
-
       } else {
-
-        // Eğer backend ID dönmezse, klasik yöntemle yarım saniye bekleyip listeyi çek
-
         if (currentUser) {
-
           setTimeout(() => fetchGroups(currentUser.id), 500);
-
         }
-
       }
-
-      
-
     } catch (error) { 
-
       alert("Grup oluşturulamadı. Lütfen tekrar deneyin."); 
-
     }
+  };
 
-  }
-
-  // YENİ: GRUBA KİŞİ EKLEME
   const handleAddMembersToGroup = async (userIds: string[]) => {
     if (!activeConversation || userIds.length === 0) return;
     try {
@@ -291,11 +228,10 @@ export default function App() {
         userIdsToAdd: userIds
       });
       alert("Kişiler başarıyla eklendi.");
-      openGroupSettings(); // Listeyi yenile
+      openGroupSettings(); 
     } catch (error) { alert("Kişiler eklenemedi."); }
   };
 
-  // YENİ: YÖNETİCİLİĞİ DEVRETME
   const handleTransferAdmin = async (newAdminId: string) => {
     if (!activeConversation || !window.confirm("Yöneticiliği bu kişiye devretmek istediğinize emin misiniz? (Artık grupta sıradan bir üye olacaksınız)")) return;
     try {
@@ -339,41 +275,31 @@ export default function App() {
       if (userId === currentUser?.id) { 
         setIsGroupSettingsOpen(false); 
         setActiveConversation(null); 
-        setGroupsList(prev => prev.filter(g => g.id !== activeConversation.id)); // ANINDA LİSTEDEN SİL
+        setGroupsList(prev => prev.filter(g => g.id !== activeConversation.id)); 
       }
     } catch (error: any) { alert(error.response?.data?.error || "Kişi çıkarılamadı."); }
   };
 
-  // --- DÜZELTME 1: KUSURSUZ TEMİZLİK ROBOTU (SENİN BULDUĞUN TAKTİK) ---
   const handleDeleteGroup = async () => {
     if (!activeConversation || !window.confirm("Grubu ve tüm mesajları kalıcı olarak silmek istediğinize emin misiniz?")) return;
-    
     try {
-      // 1. Önce senin bulduğun gibi içerideki herkesi (admin hariç) tek tek atıyoruz
       for (const member of groupMembers) {
         if (member.id !== currentUser?.id) {
           await axios.delete(`http://localhost:3000/api/conversations/group/${activeConversation.id}/participants/${member.id}?adminId=${currentUser?.id}`).catch(() => {});
         }
       }
-      
-      // 2. En son kendini (Admini) gruptan at (Veritabanı grubu boş görünce kendi silebilir)
       await axios.delete(`http://localhost:3000/api/conversations/group/${activeConversation.id}/participants/${currentUser?.id}?adminId=${currentUser?.id}`).catch(() => {});
-
-      // 3. Her ihtimale karşı grubu silme komutunu gönderiyoruz
       await axios.delete(`http://localhost:3000/api/conversations/group/${activeConversation.id}?adminId=${currentUser?.id}`).catch(() => {});
       
-      // Arayüzü anında temizle
       setIsGroupSettingsOpen(false); 
       setActiveConversation(null); 
       setGroupsList(prev => prev.filter(g => g.id !== activeConversation.id));
       alert("Grup başarıyla silindi.");
-      
     } catch (error: any) { 
       alert("Grup silinirken bir hata oluştu."); 
     }
   };
 
-  // --- DÜZELTME 2: ÖLÜ BİLDİRİMLERİ ENGELLEYEN SOKET DİNLEYİCİSİ ---
   useEffect(() => {
     if (currentView !== 'chat' || !currentUser?.id) return;
     const token = localStorage.getItem('jwt_token');
@@ -403,7 +329,6 @@ export default function App() {
         }
       } else {
         if (isKnownGroup || isBackendToldUsGroup) {
-          // BİLİNEN GRUP: Sadece grubun bildirimini artırıyoruz, KİŞİYE KESİNLİKLE DOKUNMUYORUZ.
           setUnreadCounts((prev) => ({ 
              ...prev, 
              [gelenMesaj.conversationId]: (prev[gelenMesaj.conversationId] || 0) + 1 
@@ -414,9 +339,6 @@ export default function App() {
             newSocket.emit('odaya_katil', gelenMesaj.conversationId);
           }
         } else {
-          // BİLİNMEYEN DURUM (ÖLÜ BİLDİRİMİN KAYNAĞI BURASIYDI)
-          // Artık tahmin yürütüp rastgele kişiye +1 bildirim vermiyoruz.
-          // Doğrudan veritabanından en güncel ve %100 DOĞRU sayacı çekiyoruz!
           if (currentUserRef.current) {
             fetchGroups(currentUserRef.current.id);
             fetchUnreadCounts(currentUserRef.current.id);
@@ -436,21 +358,20 @@ export default function App() {
       }
     });
 
-    // --- DÜZELTME 3: HAYALET MESAJSIZ, ANINDA GRUP BİLDİRİMİ ---
-    // Backend, grup oluşturulduğunda mesaj kaydı yaratmadan bu eventi
-    // tüm katılımcılara yayınlıyor. Böylece diğer kullanıcıların ekranında
-    // F5 atmadan, sahte/hayalet mesaj veya unread artışı olmadan grup beliriyor.
     newSocket.on('grup_olusturuldu', (yeniGrup: Conversation) => {
       setGroupsList(prev => {
-        if (prev.some(g => g.id === yeniGrup.id)) return prev; // duplicate koruması
+        if (prev.some(g => g.id === yeniGrup.id)) return prev; 
         return [...prev, yeniGrup];
       });
       newSocket.emit('odaya_katil', yeniGrup.id);
     });
 
+    newSocket.on('yeni_grup_bildirimi', () => {
+      if (currentUserRef.current) { fetchGroups(currentUserRef.current.id); }
+    });
+
     newSocket.on('gruptan_atildi', (data: { groupId: string, removedUserId: string }) => {
       if (data.removedUserId === currentUserRef.current?.id) { 
-        // Eğer kendimiz çıktıysak saçma bir "Atıldın" uyarısı vermesini engelliyoruz
         if (activeConversationRef.current?.adminId !== currentUserRef.current?.id) {
           alert("Grup yöneticisi sizi gruptan çıkardı."); 
         }
@@ -510,10 +431,10 @@ export default function App() {
         <ChatArea 
           currentUser={currentUser} activeConversation={activeConversation} selectedUser={selectedUser} messages={messages} newMessage={newMessage} setNewMessage={setNewMessage}
           mesajGonder={mesajGonder} messagesEndRef={messagesEndRef} openGroupSettings={openGroupSettings} closeChat={closeChat} isDarkMode={isDarkMode}
+          usersList={usersList} groupMembers={groupMembers} /* YENİ EKLENEN PROPLAR */
         />
       )}
 
-{/* 1. GRUP KURMA MODALI */}
       {isGroupModalOpen && (
         <CreateGroupModal 
           setIsGroupModalOpen={setIsGroupModalOpen} newGroupName={newGroupName} setNewGroupName={setNewGroupName} 
@@ -521,7 +442,6 @@ export default function App() {
         />
       )}
 
-      {/* 2. GRUP AYARLARI MODALI (Hata aldığın kısım burası, GroupSettingsModal olmalı!) */}
       {isGroupSettingsOpen && activeConversation && (
         <GroupSettingsModal 
           setIsGroupSettingsOpen={setIsGroupSettingsOpen} activeConversation={activeConversation} currentUser={currentUser} 
@@ -531,7 +451,6 @@ export default function App() {
         />
       )}
 
-      {/* 3. KİŞİSEL HESAP AYARLARI MODALI */}
       {isSettingsOpen && (
         <SettingsModal 
           setIsSettingsOpen={setIsSettingsOpen} settingsMessage={settingsMessage} setSettingsMessage={setSettingsMessage} 

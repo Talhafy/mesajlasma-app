@@ -20,17 +20,19 @@ interface ChatAreaProps {
   openGroupSettings: () => void;
   closeChat: () => void;
   isDarkMode: boolean;
+  usersList: User[]; // YENİ
+  groupMembers: User[]; // YENİ
 }
 
 export default function ChatArea({
   currentUser, activeConversation, selectedUser, messages, newMessage,
-  setNewMessage, mesajGonder, messagesEndRef, openGroupSettings, closeChat, isDarkMode
+  setNewMessage, mesajGonder, messagesEndRef, openGroupSettings, closeChat, isDarkMode,
+  usersList, groupMembers
 }: ChatAreaProps) {
 
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [messageSearchTerm, setMessageSearchTerm] = useState('');
   
-  // ZAMANLAMA VE DOSYA EKLEME STATE'LERİ (GERİ GELDİ)
   const [isScheduling, setIsScheduling] = useState(false);
   const [scheduleTime, setScheduleTime] = useState<Date | null>(null);
   const [isPendingModalOpen, setIsPendingModalOpen] = useState(false);
@@ -38,7 +40,6 @@ export default function ChatArea({
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [showAttachmentMenu, setShowAttachmentMenu] = useState(false);
 
-  // YENİ: MESAJ SEÇENEKLERİ MENÜSÜ İÇİN STATE'LER
   const [openOptionsId, setOpenOptionsId] = useState<string | null>(null);
   const [messageInfo, setMessageInfo] = useState<Message | null>(null);
 
@@ -118,8 +119,7 @@ export default function ChatArea({
     return Math.floor(new Date(dateString).getTime() / 1000);
   };
 
-  // TS UYARISINI DÜZELTMEK İÇİN KULLANILMAYAN PARAMETRELERİN BAŞINA "_" EKLENDİ
-  const handleReply = (_msgId: string) => { alert("Yanıtla seçildi (Backend/UI bağlantısı eklenecek)."); setOpenOptionsId(null); };
+  const handleReply = (_msgId: string) => { alert("Yanıtla seçildi (Backend eklenecek)."); setOpenOptionsId(null); };
   const handleForward = (_msgId: string) => { alert("İlet seçildi (Kişi seçme ekranı eklenecek)."); setOpenOptionsId(null); };
   const handleStar = (_msgId: string) => { alert("Mesaj Yıldızlandı ⭐"); setOpenOptionsId(null); };
   const handlePin = (_msgId: string) => { alert("Mesaj Sabitlendi 📌"); setOpenOptionsId(null); };
@@ -162,7 +162,6 @@ export default function ChatArea({
         </div>
       </div>
 
-      {/* GERİ GETİRİLEN: BEKLEYEN MESAJLAR PANELİ */}
       {isPendingModalOpen && (
         <div style={{ position: 'absolute', top: '75px', right: '20px', width: '320px', background: inputBg, borderRadius: '8px', boxShadow: '0 4px 12px rgba(0,0,0,0.2)', zIndex: 10, padding: '15px', border: `1px solid ${borderColor}` }}>
           <h3 style={{ fontSize: '15px', color: '#00a884', margin: '0 0 10px 0', borderBottom: `1px solid ${borderColor}`, paddingBottom: '8px' }}>Zamanlanmış Mesajlar</h3>
@@ -188,7 +187,6 @@ export default function ChatArea({
         </div>
       )}
 
-      {/* ARAMA ÇUBUĞU */}
       {isSearchOpen && (
         <div className="chat-search-bar" style={{ padding: '10px 20px', background: panelBg, borderBottom: `1px solid ${borderColor}` }}>
           <input type="text" className="global-search-input" placeholder="Bu sohbette ara..." value={messageSearchTerm} onChange={(e) => setMessageSearchTerm(e.target.value)} autoFocus style={{ width: '100%', padding: '10px 15px', borderRadius: '8px', border: `1px solid ${borderColor}`, background: inputBg, color: textColor, outline: 'none' }} />
@@ -210,23 +208,39 @@ export default function ChatArea({
 
         {displayedMessages.map((msg, index) => {
           const isMe = msg.senderId === currentUser.id;
-          const myReceiptsEnabled = currentUser.readReceiptsOn !== false;
-          const theirReceiptsEnabled = activeConversation?.isGroup ? true : selectedUser?.readReceiptsOn !== false;
-          const isRead = msg.readByIds && msg.readByIds.length > 0 && myReceiptsEnabled && theirReceiptsEnabled;
+          
+          // --- WHATSAPP GÖRÜLDÜ MANTIĞI ---
+          let isRead = false;
+          if (activeConversation?.isGroup) {
+            // Gruplarda 'görüldü kapalı' kuralı işlemez, eğer HERKES okuduysa mavi tik yanar.
+            // Kendimizi çıkarttığımız için -1 yapıyoruz (grubun toplam üyesi - ben)
+            const otherMembersCount = groupMembers.length > 0 ? groupMembers.length - 1 : 999;
+            isRead = (msg.readByIds?.length || 0) >= otherMembersCount && otherMembersCount > 0;
+          } else {
+            // Özel sohbette görüldü kuralları işler
+            const myReceiptsEnabled = currentUser.readReceiptsOn !== false;
+            const theirReceiptsEnabled = selectedUser?.readReceiptsOn !== false;
+            isRead = !!(msg.readByIds && msg.readByIds.length > 0) && myReceiptsEnabled && theirReceiptsEnabled;
+          }
+
           const timeString = msg.createdAt ? new Date(msg.createdAt).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+          
+          // TAŞMA KORUMASI: Son 3 mesajdaysa menü yukarı doğru açılsın
+          const isLastFew = index >= displayedMessages.length - 3;
 
           return (
             <div key={index} className={`message-row ${isMe ? 'me' : 'them'}`}>
-              
               <div 
                 className="message-bubble" 
-                style={{ position: 'relative', minWidth: '100px', paddingRight: '25px' }} 
+                style={{ position: 'relative', minWidth: '110px', paddingRight: '25px' }} 
                 onMouseLeave={() => setOpenOptionsId(null)} 
               >
                 {!isMe && activeConversation?.isGroup && (
                   <div style={{ fontSize: '12px', fontWeight: 'bold', color: '#00a884', marginBottom: '4px' }}>{msg.sender?.username}</div>
                 )}
-                <div style={{ wordBreak: 'break-word' }}>{msg.content}</div>
+                
+                <div style={{ wordBreak: 'break-word', paddingBottom: '10px' }}>{msg.content}</div>
+                
                 <div className="message-meta">
                   <span>{timeString}</span>
                   {isMe && <span className={`message-ticks ${isRead ? 'read' : ''}`}>{isRead ? '✓✓' : '✓'}</span>}
@@ -234,16 +248,18 @@ export default function ChatArea({
 
                 <button 
                   onClick={() => setOpenOptionsId(openOptionsId === msg.id ? null : msg.id)}
-                  style={{ position: 'absolute', top: '5px', right: '5px', background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', opacity: 0.6, padding: '2px 5px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                  style={{ position: 'absolute', top: '5px', right: '5px', background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', opacity: 0.6, padding: '2px 5px' }}
                 >
                   <svg viewBox="0 0 18 18" width="16" height="16" fill="currentColor"><path d="M3.3 5.4h11.4L9 12.6z"></path></svg>
                 </button>
 
                 {openOptionsId === msg.id && (
                   <div style={{ 
-                    position: 'absolute', top: '25px', right: isMe ? '10px' : '-160px', 
+                    position: 'absolute', 
+                    ...(isLastFew ? { bottom: '25px' } : { top: '25px' }), // TAŞMAYI ÇÖZEN SATIR
+                    ...(isMe ? { right: '10px' } : { left: '10px' }), // Başkalarının mesajlarında sola, kendi mesajımızda sağa hizalar
                     background: inputBg, border: `1px solid ${borderColor}`, borderRadius: '8px', 
-                    zIndex: 50, boxShadow: '0 4px 15px rgba(0,0,0,0.2)', width: '170px', overflow: 'hidden',
+                    zIndex: 100, boxShadow: '0 4px 15px rgba(0,0,0,0.2)', width: '170px', overflow: 'hidden',
                     display: 'flex', flexDirection: 'column'
                   }}>
                     <button className="msg-dropdown-btn" onClick={() => { setMessageInfo(msg); setOpenOptionsId(null); }}>ℹ️ Bilgi</button>
@@ -262,7 +278,7 @@ export default function ChatArea({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* MESAJ BİLGİSİ (INFO) MODALI */}
+      {/* MESAJ BİLGİSİ (INFO) MODALI - KİMİN OKUDUĞUNU GÖSTERİR */}
       {messageInfo && (
         <div className="settings-overlay" onClick={() => setMessageInfo(null)} style={{ zIndex: 10000 }}>
           <div style={{ width: '400px', background: panelBg, borderRadius: '12px', padding: '25px', boxShadow: '0 15px 50px rgba(0,0,0,0.3)', color: textColor }} onClick={(e) => e.stopPropagation()}>
@@ -282,14 +298,23 @@ export default function ChatArea({
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
-              <div style={{ fontWeight: '600', color: '#00a884', fontSize: '15px' }}>✓✓ Okunma Tarihi</div>
+              <div style={{ fontWeight: '600', color: '#00a884', fontSize: '15px' }}>✓✓ Okuyanlar</div>
               {messageInfo.readByIds && messageInfo.readByIds.length > 0 ? (
-                <>
-                  <div style={{ fontSize: '14px' }}>Okundu (Gerçek zaman için DB'ye 'readAt' eklenecek)</div>
-                  <div style={{ fontSize: '12px', color: iconColor }}>{messageInfo.readByIds.length} kişi tarafından görüldü.</div>
-                </>
+                <div style={{ maxHeight: '120px', overflowY: 'auto', background: inputBg, padding: '10px', borderRadius: '8px', border: `1px solid ${borderColor}` }}>
+                   {messageInfo.readByIds.map(id => {
+                      const u = usersList.find(user => user.id === id);
+                      return (
+                        <div key={id} style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                           <div style={{ width: '24px', height: '24px', borderRadius: '50%', background: '#00a884', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: 'bold' }}>
+                              {u?.username?.[0]?.toUpperCase() || '?'}
+                           </div>
+                           <span style={{ fontSize: '14px', color: textColor, fontWeight: '500' }}>{u?.username || 'Bilinmeyen Kullanıcı'}</span>
+                        </div>
+                      );
+                   })}
+                </div>
               ) : (
-                <div style={{ fontSize: '14px', color: iconColor }}>Henüz okunmadı</div>
+                <div style={{ fontSize: '14px', color: iconColor }}>Henüz kimse okumadı</div>
               )}
             </div>
           </div>
@@ -299,7 +324,6 @@ export default function ChatArea({
       {/* MESAJ YAZMA VE ARAÇLAR ALANI */}
       <div className="input-area" style={{ display: 'flex', alignItems: 'center', width: '100%', gap: '12px', padding: '12px 20px', background: panelBg, borderTop: `1px solid ${borderColor}`, position: 'relative' }}>
         
-        {/* GERİ GETİRİLEN: ZAMANLAMA TAKVİMİ */}
         {isScheduling && (
           <div style={{ position: 'absolute', bottom: '75px', right: '20px', background: inputBg, padding: '15px', borderRadius: '12px', boxShadow: '0 4px 20px rgba(0,0,0,0.2)', zIndex: 100, border: `1px solid ${borderColor}`, color: textColor }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
@@ -325,7 +349,6 @@ export default function ChatArea({
             )}
           </div>
 
-          {/* GERİ GETİRİLEN: DOSYA EKLEME (ATAŞ) BUTONU VE MENÜSÜ */}
           <div style={{ position: 'relative' }}>
              <Button 
               variant="icon"
@@ -358,7 +381,6 @@ export default function ChatArea({
             <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M1.101 21.757 23.8 12.028 1.101 2.3l.011 7.912 13.623 1.816-13.623 1.817z"></path></svg>
           </button>
 
-          {/* GERİ GETİRİLEN: ZAMANLAMA SEÇENEĞİ İÇİN KÜÇÜK OK BUTONU */}
           <button onClick={() => setIsScheduling(!isScheduling)} style={{ background: '#009071', color: 'white', border: 'none', borderLeft: '1px solid rgba(255,255,255,0.2)', padding: '10px 12px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             ▼
           </button>

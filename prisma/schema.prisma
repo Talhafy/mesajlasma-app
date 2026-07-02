@@ -41,12 +41,23 @@ model Participant {
 model Message {
   id             String       @id @default(uuid())
   content        String
-  createdAt      DateTime     @default(now())
   senderId       String
   conversationId String
-  sender         User         @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  createdAt      DateTime     @default(now())
+  
+  readByIds      String[]     @default([]) // Zaten vardı
+
+  isPinned       Boolean      @default(false) // Sabitleme özelliği
+  isForwarded    Boolean      @default(false) // İletildi etiketi için
+  starredByIds   String[]     @default([])    // Yıldızlayan kullanıcıların ID'leri
+  deletedForIds  String[]     @default([])    // "Benden Sil" diyenlerin ID'leri
+
+  replyToId      String?      
+  replyTo        Message?     @relation("MessageReplies", fields: [replyToId], references: [id])
+  replies        Message[]    @relation("MessageReplies")
+
+  sender         User         @relation(fields: [senderId], references: [id])
   conversation   Conversation @relation(fields: [conversationId], references: [id])
-  readByIds String[] @default([])
 }
 model ScheduledMessage {
   id             String   @id @default(uuid())

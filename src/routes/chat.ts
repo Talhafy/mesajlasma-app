@@ -56,45 +56,63 @@ router.post('/conversations/direct', async (req, res) => {
 });
 
 //MESAJ GÖNDERME VE SOKET YAYINI
+// MESAJ GÖNDERME (GÜNCELLENDİ: Yanıt ve İletildi Desteği)
 router.post('/messages', async (req, res) => {
   try {
-    const { conversationId, senderId, content } = req.body;
+    const { conversationId, senderId, content, replyToId, isForwarded } = req.body;
 
-    // GÜVENLİK KONTROLÜ: Odanın var olup olmadığını ve katılımcıları çekiyoruz
     const conversation = await prisma.conversation.findUnique({
-      where: { id: conversationId },
-      include: { participants: true }
+      where: { id: conversationId }, include: { participants: true }
     });
+    if (!conversation) return res.status(404).json({ error: "Sohbet bulunamadı." });
 
-    if (!conversation) {
-      return res.status(404).json({ error: "Sohbet odası bulunamadı veya silinmiş." });
-    }
-
-    // Mesajı Veritabanına Kaydet
     const savedMessage = await prisma.message.create({
-      data: { content, senderId, conversationId },
-      include: { sender: { select: { username: true } } }
+      data: { 
+        content, 
+        senderId, 
+        conversationId,
+        replyToId: replyToId || null, // Hangi mesaja yanıt verildi?
+        isForwarded: isForwarded || false // Bu bir iletilmiş mesaj mı?
+      },
+      include: { 
+        sender: { select: { username: true } },
+        // Yanıtlanmışsa o mesajın kısa bir özetini frontend'e yolla
+        replyTo: { select: { id: true, content: true, sender: { select: { username: true } } } } 
+      }
     });
 
-    // SOKET NESNESİ İLE CANLI YAYIN
     const io = req.app.get('io');
+    const targetRooms = conversation.participants.map(p => p.userId);
+    targetRooms.push(conversationId);
     
-    // Klasik Yayın: Mesajı sohbet odasına gönder (İçeride olanlar duysun)
-    io.to(conversationId).emit('yeni_mesaj_geldi', savedMessage);
-
-    if (conversation.participants) {
-      conversation.participants.forEach(participant => {
-        if (participant.userId !== senderId) {
-          io.to(participant.userId).emit('yeni_mesaj_geldi', savedMessage);
-        }
-      });
-    }
-
+    io.to(targetRooms).emit('yeni_mesaj_geldi', savedMessage);
     res.status(201).json(savedMessage);
-  } catch (error) {
-    console.error("Mesaj kayıt hatası:", error);
-    res.status(500).json({ error: "Mesaj gönderilemedi veya veritabanına kaydedilemedi." });
-  }
+  } catch (error) { res.status(500).json({ error: "Mesaj gönderilemedi." }); }
+});
+
+// GEÇMİŞ MESAJLARI ÇEKME (GÜNCELLENDİ: Yanıt/Sabit/Yıldız Verilerini Getir)
+router.get('/conversations/:conversationId/messages', async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const { userId } = req.query; // Mesajı çeken kişiyi bilmemiz lazım
+
+    const messages = await prisma.message.findMany({
+      where: { conversationId: conversationId },
+      orderBy: { createdAt: 'asc' },
+      include: { 
+        sender: { select: { username: true } },
+        replyTo: { select: { id: true, content: true, sender: { select: { username: true } } } }
+      }
+    });
+
+    // "Benden Sil" denilmiş mesajları (deletedForIds) frontend'e hiç göndermiyoruz!
+    const filteredMessages = messages.filter(msg => {
+      const deletedFor = msg.deletedForIds || [];
+      return !deletedFor.includes(userId as string);
+    });
+
+    res.status(200).json(filteredMessages);
+  } catch (error) { res.status(500).json({ error: "Mesajlar yüklenemedi." }); }
 });
 
 //GEÇMİŞ MESAJLARI ÇEKME
@@ -573,4 +591,91 @@ router.put('/messages/schedule/:id', async (req, res) => {
     res.status(500).json({ error: "Zamanlanmış mesaj güncellenirken hata oluştu." });
   }
 });
+
+// --- MESAJ SABİTLEME (PIN) ---
+router.put('/messages/:id/pin', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const message = await prisma.message.findUnique({ where: { id } });
+    if (!message) return res.status(404).json({ error: "Mesaj bulunamadı." });
+
+    const updatedMessage = await prisma.message.update({
+      where: { id },
+      data: { isPinned: !message.isPinned } // Tersine çevir (Aç/Kapat)
+    });
+
+    const io = req.app.get('io');
+    io.to(message.conversationId).emit('mesaj_guncellendi', updatedMessage);
+    res.status(200).json(updatedMessage);
+  } catch (error) { res.status(500).json({ error: "Sabitleme işlemi başarısız." }); }
+});
+
+// --- MESAJ YILDIZLAMA (STAR) ---
+router.put('/messages/:id/star', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { userId } = req.body;
+
+    const message = await prisma.message.findUnique({ where: { id } });
+    if (!message) return res.status(404).json({ error: "Mesaj bulunamadı." });
+
+    const currentStars = message.starredByIds || [];
+    const isStarred = currentStars.includes(userId);
+    
+    // Eğer yıldızlıysa çıkar, değilse ekle
+    const newStars = isStarred 
+      ? currentStars.filter(uid => uid !== userId) 
+      : [...currentStars, userId];
+
+    const updatedMessage = await prisma.message.update({
+      where: { id },
+      data: { starredByIds: newStars }
+    });
+
+    // Yıldızlama kişisel olduğu için sadece o kullanıcıya bildiriyoruz
+    const io = req.app.get('io');
+    io.to(userId).emit('mesaj_guncellendi', updatedMessage);
+    res.status(200).json(updatedMessage);
+  } catch (error) { res.status(500).json({ error: "Yıldızlama başarısız." }); }
+});
+
+// --- MESAJ SİLME (BENDEN / HERKESTEN SİL) ---
+router.delete('/messages/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { userId, forEveryone } = req.query; // forEveryone=true veya false
+
+    const message = await prisma.message.findUnique({ where: { id } });
+    if (!message) return res.status(404).json({ error: "Mesaj bulunamadı." });
+
+    const io = req.app.get('io');
+
+    if (forEveryone === 'true') {
+      // HERKESTEN SİL: Sadece gönderen silebilir
+      if (message.senderId !== userId) return res.status(403).json({ error: "Sadece kendi mesajınızı herkesten silebilirsiniz." });
+      
+      // Veritabanından tamamen sil (Veya content'i "Bu mesaj silindi" yapabilirsin)
+      await prisma.message.delete({ where: { id } });
+      
+      // Herkese mesajın silindiğini bildir ki ekrandan kaybolsun
+      io.to(message.conversationId).emit('mesaj_silindi', { messageId: id, conversationId: message.conversationId });
+      return res.status(200).json({ message: "Mesaj herkesten silindi." });
+      
+    } else {
+      // BENDEN SİL: Sadece kullanıcının IDsini `deletedForIds` listesine ekle
+      const currentDeleted = message.deletedForIds || [];
+      if (!currentDeleted.includes(userId as string)) {
+        await prisma.message.update({
+          where: { id },
+          data: { deletedForIds: [...currentDeleted, userId as string] }
+        });
+      }
+      
+      // Sadece o kullanıcının ekranından silinmesi için sinyal at
+      io.to(userId as string).emit('mesaj_silindi', { messageId: id, conversationId: message.conversationId });
+      return res.status(200).json({ message: "Mesaj sadece sizden silindi." });
+    }
+  } catch (error) { res.status(500).json({ error: "Silme işlemi başarısız." }); }
+});
+
 export default router;
