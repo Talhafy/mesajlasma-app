@@ -1,7 +1,7 @@
 import express from 'express';
 import prisma from '../db';
 import multer = require('multer');
-import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3"; // YENİ: Bulut kütüphanesi
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 
 const router = express.Router();
 
@@ -150,43 +150,36 @@ router.post('/messages', async (req, res) => {
   }
 });
 
-// GEÇMİŞ MESAJLARI ÇEKME (GÜNCELLENDİ: Yanıt/Sabit/Yıldız Verilerini Getir)
+// --- GEÇMİŞ MESAJLARI ÇEKME (SONSUZ KAYDIRMA / PAGINATION EKLENDİ) ---
 router.get('/conversations/:conversationId/messages', async (req, res) => {
   try {
     const { conversationId } = req.params;
-    const { userId } = req.query; // Mesajı çeken kişiyi bilmemiz lazım
+    const { userId, cursor } = req.query; // cursor: Frontend'in bize vereceği "ekrandaki en eski mesajın" ID'si
 
     const messages = await prisma.message.findMany({
       where: { conversationId: conversationId },
-      orderBy: { createdAt: 'asc' },
+      take: 50, // GÜVENLİK: Bir seferde SADECE 50 mesaj getir, RAM'i patlatma!
+      skip: cursor ? 1 : 0, // Eğer cursor varsa, o cursor mesajını atla (çünkü zaten ekranda var)
+      ...(cursor ? { cursor: { id: String(cursor) } } : {}), // Aramaya bu ID'den itibaren geriye doğru başla
+      orderBy: { createdAt: 'desc' }, // En yenileri almak için tersten sırala
       include: { 
         sender: { select: { username: true } },
         replyTo: { select: { id: true, content: true, sender: { select: { username: true } } } }
       }
     });
 
-    // "Benden Sil" denilmiş mesajları (deletedForIds) frontend'e hiç göndermiyoruz!
+    // "Benden Sil" denilmiş mesajları (deletedForIds) frontend'e yollama
     const filteredMessages = messages.filter(msg => {
       const deletedFor = msg.deletedForIds || [];
       return !deletedFor.includes(userId as string);
     });
 
-    res.status(200).json(filteredMessages);
-  } catch (error) { res.status(500).json({ error: "Mesajlar yüklenemedi." }); }
-});
-
-//GEÇMİŞ MESAJLARI ÇEKME
-router.get('/conversations/:conversationId/messages', async (req, res) => {
-  try {
-    const { conversationId } = req.params;
-    const messages = await prisma.message.findMany({
-      where: { conversationId: conversationId },
-      orderBy: { createdAt: 'asc' },
-      include: { sender: { select: { username: true } } }
-    });
-    res.status(200).json(messages);
-  } catch (error) {
-    res.status(500).json({ error: "Mesajlar yüklenemedi." });
+    // ZEKİCE DOKUNUŞ: Frontend ekrana basarken mesajlar yukarıdan aşağıya (eskiden yeniye) 
+    // doğru aksın diye, tersten aldığımız diziyi tekrar düzeltip (reverse) yolluyoruz.
+    res.status(200).json(filteredMessages.reverse());
+  } catch (error) { 
+    console.error("Mesajlar çekilirken hata:", error);
+    res.status(500).json({ error: "Mesajlar yüklenemedi." }); 
   }
 });
 
@@ -512,10 +505,10 @@ const scheduledMessagesData = new Map(); // Ekranda göstermek için mesaj içer
 // 14. İLERİ TARİHLİ MESAJI VERİTABANINA KAYDETME API'Sİ
 router.post('/messages/schedule', async (req, res) => {
   try {
-    // DÜZELTME 1: fileUrl, fileType ve fileName buraya eklendi
+    // DÜZELTME 1: fileUrl, fileType ve fileName buraya eklendi ki req.body'den alabilsin
     const { conversationId, senderId, content, sendAt, fileUrl, fileType, fileName } = req.body;
 
-    // EĞER HEM YAZI HEM DOSYA YOKSA HATA VER (Artık sadece dosya da zamanlanabilir)
+    // MANTIKSAL KONTROL 1: Eğer hem yazı hem dosya yoksa hata ver
     if ((!content || !content.trim()) && !fileUrl) {
       return res.status(400).json({ error: "HATA: Boş mesaj zamanlayamazsınız!" });
     }
@@ -527,21 +520,20 @@ router.post('/messages/schedule', async (req, res) => {
     if (isNaN(targetDate.getTime())) return res.status(400).json({ error: "HATA: Geçersiz tarih!" });
     if (targetDate.getTime() <= Date.now()) return res.status(400).json({ error: "HATA: Geçmiş zaman seçilemez!" });
 
-    // Veritabanına dosya bilgileriyle birlikte kaydet
+    // DÜZELTME 2: Veritabanına dosya bilgileriyle birlikte kaydet
     const scheduledMsg = await prisma.scheduledMessage.create({
       data: {
         content: content || "",
         senderId,
         conversationId,
         sendAt: targetDate,
-        // DÜZELTME 2: Dosya bilgilerini kaydediyoruz
         fileUrl: fileUrl || null,
         fileType: fileType || null,
         fileName: fileName || null
       }
     });
 
-    res.status(200).json({ success: true, message: "Mesajınız zamanlandı!" });
+    res.status(200).json({ success: true, message: "Mesajınız veritabanına başarıyla güvenle kuruldu!" });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Sistem hatası: Mesaj zamanlanamadı." });
@@ -587,10 +579,13 @@ router.post('/messages/schedule/send-now/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
+    // 1. Zamanlanmış mesajı bul
     const sm = await prisma.scheduledMessage.findUnique({ where: { id } });
-    if (!sm) return res.status(404).json({ error: "Zamanlanmış mesaj bulunamadı." });
+    if (!sm) {
+      return res.status(404).json({ error: "Zamanlanmış mesaj bulunamadı veya zaten gönderilmiş." });
+    }
 
-    // DÜZELTME 3: Geçici tablodaki dosya linklerini, asıl Message tablosuna aktarıyoruz
+    // DÜZELTME 3: Geçici tablodaki (sm) dosya linklerini, asıl Message tablosuna aktarıyoruz!
     const savedMessage = await prisma.message.create({
       data: {
         content: sm.content,
@@ -603,8 +598,10 @@ router.post('/messages/schedule/send-now/:id', async (req, res) => {
       include: { sender: { select: { username: true } } }
     });
 
+    // 3. Zamanlayıcı tablosundan bu kaydı sil
     await prisma.scheduledMessage.delete({ where: { id } });
 
+    // 4. Socket ile odadaki herkese CANLI olarak fırlat
     const conversation = await prisma.conversation.findUnique({
       where: { id: sm.conversationId },
       include: { participants: true }
@@ -620,7 +617,7 @@ router.post('/messages/schedule/send-now/:id', async (req, res) => {
     const io = req.app.get('io');
     io.to(targetRooms).emit('yeni_mesaj_geldi', savedMessage);
 
-    res.status(200).json({ success: true, message: "Mesaj şimdi gönderildi!" });
+    res.status(200).json({ success: true, message: "Mesaj bekletilmeden şimdi gönderildi!" });
   } catch (error) {
     res.status(500).json({ error: "Mesaj anında gönderilirken hata oluştu." });
   }

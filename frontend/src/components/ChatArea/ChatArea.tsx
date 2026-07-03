@@ -22,12 +22,15 @@ interface ChatAreaProps {
   isDarkMode: boolean;
   usersList: User[];
   groupMembers: User[];
+  loadMoreMessages: () => void;
+  hasMore: boolean;
+  isLoadingMore: boolean;
 }
 
 export default function ChatArea({
   currentUser, activeConversation, selectedUser, messages, newMessage,
   setNewMessage, mesajGonder, messagesEndRef, openGroupSettings, closeChat, isDarkMode,
-  usersList, groupMembers
+  usersList, groupMembers, loadMoreMessages, hasMore, isLoadingMore
 }: ChatAreaProps) {
 
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -39,6 +42,8 @@ export default function ChatArea({
   const [pendingMessages, setPendingMessages] = useState<any[]>([]);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [showAttachmentMenu, setShowAttachmentMenu] = useState(false);
+
+  const messagesListRef = useRef<HTMLDivElement>(null);
 
   const [openOptionsId, setOpenOptionsId] = useState<string | null>(null);
   const [messageInfo, setMessageInfo] = useState<Message | null>(null);
@@ -64,6 +69,24 @@ export default function ChatArea({
   useEffect(() => {
     if (activeConversation?.id) { fetchPendingMessages(); setReplyingTo(null); cancelFile(); }
   }, [activeConversation?.id, isPendingModalOpen]);
+
+// SCROLL (KAYDIRMA) SENSÖRLERİ
+  const previousScrollHeight = useRef<number>(0);
+
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    if (e.currentTarget.scrollTop === 0 && hasMore && !isLoadingMore) {
+      previousScrollHeight.current = e.currentTarget.scrollHeight; // Ekranın mevcut yüksekliğini hafızaya al
+      loadMoreMessages(); // App.tsx'e "Bana daha çok mesaj ver!" diye bağır
+    }
+  };
+
+  // Yeni eski mesajlar geldiğinde kaydırma çubuğunu (scrollbar) eski yerine sabitle!
+  useEffect(() => {
+    if (isLoadingMore && messagesListRef.current) {
+      const newScrollHeight = messagesListRef.current.scrollHeight;
+      messagesListRef.current.scrollTop = newScrollHeight - previousScrollHeight.current;
+    }
+  }, [messages]);
 
   const fetchPendingMessages = async () => {
     try {
@@ -239,8 +262,14 @@ export default function ChatArea({
         currentUserId: currentUser.id, targetUserId: targetUser.id 
       });
       await axios.post('http://localhost:3000/api/messages', { 
-        conversationId: convRes.data.id, senderId: currentUser.id, 
-        content: forwardMessage.content, isForwarded: true 
+        conversationId: convRes.data.id, 
+        senderId: currentUser.id, 
+        content: forwardMessage.content, 
+        isForwarded: true,
+        // YENİ EKLENEN KISIM: Görsel ve belge linkleri de yeni mesaja kopyalanıyor!
+        fileUrl: forwardMessage.fileUrl, 
+        fileType: forwardMessage.fileType, 
+        fileName: forwardMessage.fileName 
       });
       alert(`Mesaj ${targetUser.username} kişisine iletildi!`);
       setForwardMessage(null);
@@ -374,7 +403,18 @@ export default function ChatArea({
       )}
 
       {/* MESAJ LİSTESİ */}
-      <div className="messages-list" style={{ flex: 1, overflowY: 'auto', padding: '20px' }}>
+      <div className="messages-list" 
+        ref={messagesListRef} 
+        onScroll={handleScroll} 
+        style={{ flex: 1, overflowY: 'auto', padding: '20px' }}
+      >
+        
+        {/* Yükleniyor İkonu */}
+        {isLoadingMore && (
+          <div style={{ textAlign: 'center', padding: '10px', color: '#00a884', fontSize: '12px', fontWeight: 'bold' }}>
+            Eski mesajlar yükleniyor... ⏳
+          </div>
+        )}
         
         {activeConversation?.isGroup && (
           <div style={{ display: 'flex', justifyContent: 'center', margin: '10px 0 25px 0' }}>
@@ -400,7 +440,7 @@ export default function ChatArea({
           }
 
           const timeString = msg.createdAt ? new Date(msg.createdAt).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
-          const isLastFew = index >= displayedMessages.length - 3;
+          const isNearBottom = index >= displayedMessages.length - 2 && displayedMessages.length > 5;
           const isDeletedForEveryone = msg.content === "🚫 Bu mesaj silindi";
 
           return (
@@ -448,18 +488,20 @@ export default function ChatArea({
                     </div>
                   )}
 
-                  {/* MEDYA GÖSTERİM ALANI (Artık Cloudflare Linki Direkt Açılacak) */}
-                    {/* MEDYA GÖSTERİM ALANI */}
+                 {/* MEDYA GÖSTERİM ALANI */}
                   {msg.fileUrl && (
                     <div style={{ marginBottom: msg.content ? '8px' : '0' }}>
                       {msg.fileType === 'image' && (
                         <img 
-                          src={msg.fileUrl} 
+                          // DÜZELTME BURADA: encodeURI sayesinde boşluklar %20'ye çevrilir ve resim ekranda anında açılır!
+                          src={encodeURI(msg.fileUrl)} 
                           alt="Görsel" 
                           style={{ maxWidth: '100%', maxHeight: '250px', borderRadius: '8px', cursor: 'pointer' }} 
                           onClick={() => window.open(msg.fileUrl, '_blank')} 
                         />
                       )}
+                      
+                      {/* ... (audio ve document kısımları aynı kalacak) ... */}
                       {msg.fileType === 'audio' && (
                         <audio controls src={msg.fileUrl} style={{ width: '220px', height: '40px', outline: 'none' }} />
                       )}
@@ -499,7 +541,7 @@ export default function ChatArea({
                       
                       <div style={{ 
                         position: 'absolute', 
-                        ...(isLastFew ? { bottom: '25px' } : { top: '25px' }), 
+                        ...(isNearBottom ? { bottom: '25px' } : { top: '25px' }), 
                         ...(isMe ? { right: '10px' } : { left: '10px' }), 
                         background: inputBg, border: `1px solid ${borderColor}`, borderRadius: '8px', 
                         zIndex: 100, boxShadow: '0 4px 15px rgba(0,0,0,0.2)', width: '170px', overflow: 'hidden',

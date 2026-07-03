@@ -83,15 +83,18 @@ setInterval(async () => {
     for (const sm of scheduledMessages) {
       
       // Gerçek mesaj tablosuna kaydet
-      const savedMessage = await prisma.message.create({
-        data: {
-          content: sm.content,
-          senderId: sm.senderId,
-          conversationId: sm.conversationId,
-          createdAt: sm.sendAt // Kullanıcının istediği tam saatle kaydedilsin
-        },
-        include: { sender: { select: { username: true } } }
-      });
+     // OTOMATİK GÖNDERİM BOTU
+          const savedMessage = await prisma.message.create({
+            data: {
+              content: sm.content,
+              senderId: sm.senderId,
+              conversationId: sm.conversationId,
+              fileUrl: sm.fileUrl,
+              fileType: sm.fileType,
+              fileName: sm.fileName
+            },
+            include: { sender: { select: { username: true } } }
+          });
 
       // Odanın katılımcılarını bul (Socket bildirimi için)
       const conversation = await prisma.conversation.findUnique({

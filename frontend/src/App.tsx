@@ -40,6 +40,9 @@ export default function App() {
   const [newPasswordSettings, setNewPasswordSettings] = useState('');
   const [settingsMessage, setSettingsMessage] = useState({ type: '', text: '' });
 
+  const [hasMore, setHasMore] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+
   const [isGroupModalOpen, setIsGroupModalOpen] = useState(false);
   const [newGroupName, setNewGroupName] = useState('');
   const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
@@ -55,12 +58,12 @@ export default function App() {
   const currentUserRef = useRef<User | null>(null);
   const groupsListRef = useRef<Conversation[]>([]);
   const processedMessagesRef = useRef<Set<string>>(new Set());
+  const autoScrollRef = useRef(true);
 
   useEffect(() => { activeConversationRef.current = activeConversation; }, [activeConversation]);
   useEffect(() => { currentUserRef.current = currentUser; }, [currentUser]);
   useEffect(() => { groupsListRef.current = groupsList; }, [groupsList]);
-  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
-
+  useEffect(() => { if (autoScrollRef.current) { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); } }, [messages]);
   useEffect(() => {
     if (isDarkMode) { document.body.classList.add('dark-theme'); localStorage.setItem('theme', 'dark'); } 
     else { document.body.classList.remove('dark-theme'); localStorage.setItem('theme', 'light'); }
@@ -132,10 +135,12 @@ export default function App() {
 
   const startChat = async (targetUser: User) => {
     setSelectedUser(targetUser);
+    setHasMore(true);
     try {
       const res = await axios.post('http://localhost:3000/api/conversations/direct', { currentUserId: currentUser?.id, targetUserId: targetUser.id });
       setActiveConversation(res.data);
       const msgs = await axios.get(`http://localhost:3000/api/conversations/${res.data.id}/messages?userId=${currentUser?.id}`);
+      autoScrollRef.current = true;
       setMessages(msgs.data);
 
       if (currentUser) {
@@ -148,8 +153,10 @@ export default function App() {
 
   const startGroupChat = async (group: Conversation) => {
     setSelectedUser(null); setActiveConversation(group); 
+    setHasMore(true);
     try {
       const msgs = await axios.get(`http://localhost:3000/api/conversations/${group.id}/messages?userId=${currentUser?.id}`);
+      autoScrollRef.current = true;
       setMessages(msgs.data);
       
       const partRes = await axios.get(`http://localhost:3000/api/conversations/group/${group.id}/participants`);
@@ -165,6 +172,31 @@ export default function App() {
       }
       if (socket) socket.emit('odaya_katil', group.id);
     } catch (error) { console.error("Grup mesajları çekilemedi", error); }
+  };
+
+  // YUKARI KAYDIRINCA ESKİ MESAJLARI GETİREN FONKSİYON
+  const loadMoreMessages = async () => {
+    if (!activeConversation || !hasMore || isLoadingMore) return;
+    setIsLoadingMore(true);
+    try {
+      // Ekranda gözüken en eski mesajın ID'sini bul (Cursor)
+      const cursorId = messages.length > 0 ? messages[0].id : null;
+      const url = `http://localhost:3000/api/conversations/${activeConversation.id}/messages?userId=${currentUser?.id}${cursorId ? `&cursor=${cursorId}` : ''}`;
+      
+      const res = await axios.get(url);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      // Gelen mesaj 50'den azsa, demek ki sohbetin en başına ulaştık
+      if (res.data.length < 50) setHasMore(false);
+      
+      // Gelen eski mesajları, elimizdeki mesajların ÜSTÜNE (önüne) ekle
+      autoScrollRef.current = false;
+      setMessages(prev => [...res.data, ...prev]);
+    } catch (error) {
+      console.error("Eski mesajlar çekilemedi", error);
+    } finally {
+      setIsLoadingMore(false);
+    }
   };
 
   // --- DÜZELTME 2: YANITLA (REPLY) PARAMETRESİ EKLENDİ ---
@@ -267,6 +299,7 @@ export default function App() {
       const isBackendToldUsGroup = gelenMesaj.conversation?.isGroup === true;
 
      if (activeConversationRef.current?.id === gelenMesaj.conversationId) {
+      autoScrollRef.current = true; // Karşıdan canlı mesaj geldi, en alta in!
         setMessages((prev) => { if (prev.some(m => m.id === gelenMesaj.id)) return prev; return [...prev, gelenMesaj]; });
         
         if (currentUserRef.current) { 
@@ -361,7 +394,11 @@ export default function App() {
         <ChatArea 
           currentUser={currentUser} activeConversation={activeConversation} selectedUser={selectedUser} messages={messages} newMessage={newMessage} setNewMessage={setNewMessage}
           mesajGonder={mesajGonder} messagesEndRef={messagesEndRef} openGroupSettings={openGroupSettings} closeChat={closeChat} isDarkMode={isDarkMode} usersList={usersList} groupMembers={groupMembers} 
-        />
+          loadMoreMessages={loadMoreMessages}
+          hasMore={hasMore}
+          isLoadingMore={isLoadingMore}
+       
+          />
       )}
 
       {isGroupModalOpen && (
