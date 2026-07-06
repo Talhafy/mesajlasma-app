@@ -5,14 +5,13 @@ import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 
 const router = express.Router();
 
-// --- CLOUDFLARE R2 BAĞLANTI AYARLARI ---
-// Bu bilgileri Cloudflare Dashboard -> R2 sayfasından alacaksın
+// --- CLOUDFLARE R2 BAĞLANTI AYARLARI (GÜVENLİ HALİ) ---
 const s3 = new S3Client({
   region: "auto",
-  endpoint: "https://ca223b709be8627ce9de7032d7704d09.r2.cloudflarestorage.com",
+  endpoint: process.env.R2_ENDPOINT as string,
   credentials: {
-    accessKeyId: "9e912cc9ae476b01b37f2b08f3ee2df8",
-    secretAccessKey: "1c21f27d3a9c32e99d8f8b49960a691a2528b1f9f879778e1fe63c20136b9d9e",
+    accessKeyId: process.env.R2_ACCESS_KEY_ID as string,
+    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY as string,
   }
 });
 
@@ -27,26 +26,28 @@ router.post('/upload', upload.single('file'), async (req: any, res: any) => {
   try {
     if (!req.file) return res.status(400).json({ error: "Dosya bulunamadı." });
     
-    const ext = req.file.originalname.substring(req.file.originalname.lastIndexOf('.'));
-// İçinde asla Türkçe karakter veya boşluk olmayan tamamen güvenli bir isim üretiyoruz:
-const uniqueFileName = `${Date.now()}-${Math.round(Math.random() * 1E9)}${ext}`;
+    // Hatırlarsan boşluk ve Türkçe karakter sorununu (URL Encoding) çözmek için uzantı mantığını değiştirmiştik:
+    const ext = req.file.originalname.includes('.') 
+      ? req.file.originalname.substring(req.file.originalname.lastIndexOf('.')) 
+      : '';
+    const uniqueFileName = `${Date.now()}-${Math.round(Math.random() * 1E9)}${ext}`;
     
     // Cloudflare R2'ye dosyayı yükleme komutu
     const command = new PutObjectCommand({
-      Bucket: "mesajlasma-app-medya", // Cloudflare'de açtığın bucket'ın adı
+      Bucket: process.env.R2_BUCKET_NAME, 
       Key: uniqueFileName,
-      Body: req.file.buffer, // Dosyayı RAM'den alıyoruz
-      ContentType: req.file.mimetype, // Dosya tipi (Örn: image/png)
+      Body: req.file.buffer, 
+      ContentType: req.file.mimetype, 
     });
 
     // Buluta Gönder!
     await s3.send(command);
     
-    // Cloudflare Bucket'ını "Public" (Herkese Açık) yapıp sana verdiği public URL'i buraya yaz:
-    const fileUrl = `https://pub-4f17590f6a324dbeae871a6015c547be.r2.dev/${uniqueFileName}`;
+    // DÜZELTİLEN YER 2: Public URL artık .env dosyasından çekiliyor!
+    const fileUrl = `${process.env.R2_PUBLIC_URL}/${uniqueFileName}`;
     
     res.status(200).json({ 
-      fileUrl: fileUrl,  // Artık local değil, gerçek bir internet URL'si dönüyor!
+      fileUrl: fileUrl, 
       fileName: req.file.originalname,
       fileType: req.file.mimetype.startsWith('image/') ? 'image' : 
                 req.file.mimetype.startsWith('audio/') || req.file.mimetype.startsWith('video/') ? 'audio' : 'document'
