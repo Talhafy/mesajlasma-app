@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { User } from '../../App';
+import type { User } from '../../types/chat';
 import './Modals.css';
 
 interface SettingsModalProps {
@@ -16,32 +16,34 @@ interface SettingsModalProps {
   newPasswordSettings: string;
   setNewPasswordSettings: (val: string) => void;
   handleUpdatePassword: () => void;
+  handleUpdateAvatar: (file: File) => Promise<void>;
   handleDeleteAccount: () => void;
   cikisYap: () => void;
 }
 
 export default function SettingsModal(props: SettingsModalProps) {
   const [activeTab, setActiveTab] = useState<'profile' | 'account'>('profile');
+  const [isAvatarUploading, setIsAvatarUploading] = useState(false);
 
   return (
     <div className="settings-overlay" onClick={() => props.setIsSettingsOpen(false)}>
-      
+
       <div className="settings-layout-container" onClick={(e) => e.stopPropagation()}>
-        
+
         {/* SOL TARAFTAKİ SEKME MENÜSÜ */}
         <div className="settings-sidebar">
           <div className="settings-sidebar-header">
             Ayarlar
           </div>
-          
+
           <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', padding: '0 10px', flex: 1 }}>
-            <button 
+            <button
               onClick={() => { setActiveTab('profile'); props.setSettingsMessage({type: '', text: ''}); }}
               className={`settings-tab-btn ${activeTab === 'profile' ? 'active' : ''}`}
             >
               <span>👤</span> Profil
             </button>
-            <button 
+            <button
               onClick={() => { setActiveTab('account'); props.setSettingsMessage({type: '', text: ''}); }}
               className={`settings-tab-btn ${activeTab === 'account' ? 'active' : ''}`}
             >
@@ -58,14 +60,14 @@ export default function SettingsModal(props: SettingsModalProps) {
 
         {/* SAĞ TARAFTAKİ İÇERİK ALANI */}
         <div className="settings-content">
-          
+
           <button onClick={() => props.setIsSettingsOpen(false)} className="settings-close-icon">✖</button>
 
           {/* PROFİL SEKMESİ İÇERİĞİ */}
           {activeTab === 'profile' && (
             <div style={{ animation: 'fadeIn 0.3s ease' }}>
               <h2 className="settings-title">Profil Bilgileri</h2>
-              
+
               {props.settingsMessage.text && (
                 <div className={`settings-msg ${props.settingsMessage.type}`}>
                   {props.settingsMessage.text}
@@ -73,12 +75,22 @@ export default function SettingsModal(props: SettingsModalProps) {
               )}
 
               <div className="settings-avatar-row">
-                <div className="settings-avatar">
-                  {props.currentUser?.username?.[0]?.toUpperCase()}
+                <div className="settings-avatar" style={{ overflow: 'hidden' }}>
+                  {props.currentUser?.avatarUrl ? <img src={props.currentUser.avatarUrl} alt="Profil" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : props.currentUser?.username?.[0]?.toUpperCase()}
                 </div>
                 <div>
                   <h3 className="settings-username">{props.currentUser?.username}</h3>
                   <span className="settings-status-badge">Çevrimiçi</span>
+                  <label className="modern-primary-btn" style={{ display: 'inline-block', marginTop: '8px', cursor: isAvatarUploading ? 'wait' : 'pointer' }}>
+                    {isAvatarUploading ? 'Yükleniyor...' : 'Fotoğrafı Değiştir'}
+                    <input type="file" accept="image/*" hidden disabled={isAvatarUploading} onChange={async (event) => {
+                      const file = event.target.files?.[0];
+                      if (!file) return;
+                      setIsAvatarUploading(true);
+                      try { await props.handleUpdateAvatar(file); }
+                      finally { setIsAvatarUploading(false); event.target.value = ''; }
+                    }} />
+                  </label>
                 </div>
               </div>
 
@@ -86,10 +98,10 @@ export default function SettingsModal(props: SettingsModalProps) {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                   <label className="settings-label">Kullanıcı Adını Değiştir</label>
                   <div style={{ display: 'flex', gap: '10px' }}>
-                    <input 
-                      type="text" 
+                    <input
+                      type="text"
                       placeholder="Yeni kullanıcı adı"
-                      value={props.newUsernameSettings} 
+                      value={props.newUsernameSettings}
                       onChange={(e) => props.setNewUsernameSettings(e.target.value)}
                       className="settings-modern-input"
                     />
@@ -104,8 +116,8 @@ export default function SettingsModal(props: SettingsModalProps) {
                     <p>Kapatırsanız, başkalarının mesajlarını okuduğunuzu göremezler ve siz de onlarınkini göremezsiniz.</p>
                   </div>
                   <label className="switch">
-                    <input 
-                      type="checkbox" 
+                    <input
+                      type="checkbox"
                       checked={props.currentUser?.readReceiptsOn !== false}
                       onChange={(e) => props.handleToggleReadReceipts(e.target.checked)}
                     />
@@ -120,7 +132,7 @@ export default function SettingsModal(props: SettingsModalProps) {
           {activeTab === 'account' && (
             <div style={{ animation: 'fadeIn 0.3s ease' }}>
               <h2 className="settings-title">Hesap Ayarları</h2>
-              
+
               {props.settingsMessage.text && (
                 <div className={`settings-msg ${props.settingsMessage.type}`}>
                   {props.settingsMessage.text}
@@ -129,15 +141,15 @@ export default function SettingsModal(props: SettingsModalProps) {
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '15px', marginBottom: '40px' }}>
                 <label className="settings-label" style={{marginBottom: 0}}>Şifre Değiştir</label>
-                <input 
-                  type="password" 
+                <input
+                  type="password"
                   placeholder="Mevcut Şifreniz"
                   value={props.oldPasswordSettings}
                   onChange={(e) => props.setOldPasswordSettings(e.target.value)}
                   className="settings-modern-input"
                 />
-                <input 
-                  type="password" 
+                <input
+                  type="password"
                   placeholder="Yeni Şifreniz"
                   value={props.newPasswordSettings}
                   onChange={(e) => props.setNewPasswordSettings(e.target.value)}

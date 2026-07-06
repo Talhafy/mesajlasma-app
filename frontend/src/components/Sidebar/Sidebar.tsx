@@ -1,12 +1,12 @@
 import { useState } from 'react';
-import axios from 'axios';
+import { api } from '../../api/httpClient';
 import './Sidebar.css';
-import type { User, Conversation, Message } from '../../App'; 
+import type { User, Conversation, Message } from '../../types/chat';
 import Button from '../UI/Button'; // Senin bileşenini geri çağırdık!
 
 interface SidebarProps {
   currentUser: User;
-  groupsList: Conversation[];
+  conversationList: Conversation[];
   usersList: User[];
   activeConversation: Conversation | null;
   selectedUser: User | null;
@@ -20,12 +20,12 @@ interface SidebarProps {
 }
 
 export default function Sidebar({
-  currentUser, groupsList, usersList, activeConversation, selectedUser,
+  currentUser, conversationList, usersList, activeConversation, selectedUser,
   unreadCounts, isDarkMode, setIsDarkMode, startGroupChat, startChat, setIsGroupModalOpen, setIsSettingsOpen
 }: SidebarProps) {
-  
+
   const [searchTerm, setSearchTerm] = useState('');
-  const [messageResults, setMessageResults] = useState<Message[]>([]); 
+  const [messageResults, setMessageResults] = useState<Message[]>([]);
   const [isSearching, setIsSearching] = useState(false);
 
   const panelBg = isDarkMode ? '#202c33' : '#f0f2f5';
@@ -45,7 +45,7 @@ export default function Sidebar({
 
     setIsSearching(true);
     try {
-      const res = await axios.get(`http://localhost:3000/api/messages/search?q=${val}&userId=${currentUser.id}`);
+      const res = await api.get(`/messages/search?q=${encodeURIComponent(val)}`);
       setMessageResults(res.data);
     } catch (error) {
       console.error("Global arama hatası:", error);
@@ -64,22 +64,25 @@ export default function Sidebar({
     }
   };
 
-  const filteredGroups = groupsList.filter(group => group.name?.toLowerCase().includes(searchTerm.toLowerCase()));
   const filteredUsers = usersList.filter(user => user.username.toLowerCase().includes(searchTerm.toLowerCase()));
+  const filteredConversations = conversationList.filter((conversation) => {
+    const title = conversation.isGroup ? conversation.name : conversation.otherUser?.username;
+    return title?.toLowerCase().includes(searchTerm.toLowerCase());
+  });
 
   return (
     <div className="sidebar" style={{ display: 'flex', flexDirection: 'column', height: '100%', background: isDarkMode ? '#111b21' : '#ffffff' }}>
-      
+
       {/* ÜST BAR */}
       <div className="sidebar-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '15px 20px', background: panelBg, borderBottom: `1px solid ${borderColor}` }}>
         <h2 style={{ margin: 0, fontSize: '22px', color: textColor, fontWeight: 'bold' }}>Sohbetler</h2>
-        
+
         <div style={{ display: 'flex', gap: '4px' }}>
-          
-          {/* TEMA DEĞİŞTİRME İKONU (SENİN BİLEŞENİN!) */}
-          <Button 
+
+          {/* Tema değiştirme kısayolu */}
+          <Button
             variant="icon"
-            onClick={() => setIsDarkMode(!isDarkMode)} 
+            onClick={() => setIsDarkMode(!isDarkMode)}
             title={isDarkMode ? "Aydınlık Mod" : "Karanlık Mod"}
             style={{ color: iconColor }}
             icon={
@@ -95,10 +98,10 @@ export default function Sidebar({
             }
           />
 
-          {/* YENİ SOHBET/GRUP İKONU (SENİN BİLEŞENİN!) */}
-          <Button 
+          {/* Yeni grup oluşturma kısayolu */}
+          <Button
             variant="icon"
-            onClick={() => setIsGroupModalOpen(true)} 
+            onClick={() => setIsGroupModalOpen(true)}
             title="Yeni Grup Kur"
             style={{ color: iconColor }}
             icon={
@@ -112,35 +115,45 @@ export default function Sidebar({
 
       {/* ARAMA ÇUBUĞU */}
       <div className="sidebar-search" style={{ padding: '10px', borderBottom: `1px solid ${borderColor}`, background: isDarkMode ? '#111b21' : '#ffffff' }}>
-        <input 
-          type="text" 
+        <input
+          type="text"
           className="global-search-input"
-          placeholder="Kişi, grup veya mesaj ara..." 
+          placeholder="Kişi, grup veya mesaj ara..."
           value={searchTerm}
           onChange={handleSearchChange}
           style={{ width: '100%', padding: '8px 12px', borderRadius: '8px', border: `1px solid ${borderColor}`, background: panelBg, color: textColor, outline: 'none' }}
         />
       </div>
-      
+
       {/* KİŞİLER VE GRUPLAR LİSTESİ */}
       <div className="users-list" style={{ flex: 1, overflowY: 'auto' }}>
-        
-        {filteredGroups.length > 0 && (
+
+        {filteredConversations.length > 0 && (
           <>
-            <h3 className="list-title" style={{ padding: '15px 15px 5px 15px', margin: 0, fontSize: '13px', color: iconColor, textTransform: 'uppercase' }}>Gruplarım</h3>
-            {filteredGroups.map((group) => (
-              <div key={group.id} className={`user-item ${activeConversation?.id === group.id ? 'active' : ''}`} onClick={() => startGroupChat(group)} style={{ color: textColor }}>
-                <div className="avatar-small" style={{ background: '#00a884', color: 'white' }}>👥</div>
-                <div className="user-info">
-                  <span className="user-name">{group.name}</span>
+            <h3 className="list-title" style={{ padding: '15px 15px 5px 15px', margin: 0, fontSize: '13px', color: iconColor, textTransform: 'uppercase' }}>Son Sohbetler</h3>
+            {filteredConversations.map((conversation) => {
+              const otherUser = conversation.otherUser;
+              const unreadKey = conversation.isGroup ? conversation.id : otherUser?.id || conversation.id;
+              const preview = conversation.lastMessage
+                ? conversation.lastMessage.content || (conversation.lastMessage.fileType === 'image' ? '📷 Görsel' : '📎 Dosya')
+                : 'Henüz mesaj yok';
+              return (
+              <div key={conversation.id} className={`user-item ${activeConversation?.id === conversation.id ? 'active' : ''}`} onClick={() => conversation.isGroup ? startGroupChat(conversation) : otherUser && startChat(otherUser)} style={{ color: textColor }}>
+                <div className="avatar-small" style={{ background: '#00a884', color: 'white', position: 'relative', overflow: 'visible' }}>
+                  {otherUser?.avatarUrl ? <img src={otherUser.avatarUrl} alt="" style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }} /> : conversation.isGroup ? '👥' : otherUser?.username?.[0]?.toUpperCase()}
+                  {!conversation.isGroup && otherUser?.isOnline && <span style={{ position: 'absolute', right: '-1px', bottom: '1px', width: '11px', height: '11px', borderRadius: '50%', background: '#25d366', border: `2px solid ${panelBg}` }} />}
                 </div>
-                {unreadCounts[group.id] > 0 && (
+                <div className="user-info">
+                  <span className="user-name">{conversation.isGroup ? conversation.name : otherUser?.username}</span>
+                  <div style={{ fontSize: '12px', color: iconColor, marginTop: '3px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '175px' }}>{preview}</div>
+                </div>
+                {unreadCounts[unreadKey] > 0 && (
                   <span style={{ background: '#00a884', color: 'white', padding: '2px 8px', borderRadius: '50%', fontSize: '12px', marginLeft: 'auto' }}>
-                    {unreadCounts[group.id]}
+                    {unreadCounts[unreadKey]}
                   </span>
                 )}
               </div>
-            ))}
+            )})}
           </>
         )}
 
@@ -149,7 +162,10 @@ export default function Sidebar({
             <h3 className="list-title" style={{ padding: '15px 15px 5px 15px', margin: 0, fontSize: '13px', color: iconColor, textTransform: 'uppercase' }}>Kişiler</h3>
             {filteredUsers.map((user) => (
               <div key={user.id} className={`user-item ${selectedUser?.id === user.id ? 'active' : ''}`} onClick={() => startChat(user)} style={{ color: textColor }}>
-                <div className="avatar-small">{user.username.charAt(0).toUpperCase()}</div>
+                <div className="avatar-small" style={{ position: 'relative', overflow: 'visible' }}>
+                  {user.avatarUrl ? <img src={user.avatarUrl} alt="" style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }} /> : user.username.charAt(0).toUpperCase()}
+                  {user.isOnline && <span style={{ position: 'absolute', right: '-1px', bottom: '1px', width: '11px', height: '11px', borderRadius: '50%', background: '#25d366', border: `2px solid ${panelBg}` }} />}
+                </div>
                 <div className="user-info">
                   <span className="user-name">{user.username}</span>
                 </div>
@@ -166,14 +182,14 @@ export default function Sidebar({
         {searchTerm.length >= 2 && (
           <>
             <h3 className="list-title" style={{ padding: '15px 15px 5px 15px', margin: 0, fontSize: '13px', color: '#00a884', textTransform: 'uppercase' }}>Mesajlarda Bulunanlar</h3>
-            
+
             {isSearching ? (
               <div style={{ padding: '10px 15px', fontSize: '13px', color: iconColor }}>Aranıyor...</div>
             ) : messageResults.length > 0 ? (
               messageResults.map((msg) => (
-                <div 
-                  key={msg.id} 
-                  className="user-item" 
+                <div
+                  key={msg.id}
+                  className="user-item"
                   onClick={() => handleMessageClick(msg)}
                   style={{ flexDirection: 'column', alignItems: 'flex-start', padding: '12px 15px', borderBottom: `1px solid ${borderColor}`, cursor: 'pointer' }}
                 >
@@ -193,24 +209,24 @@ export default function Sidebar({
       </div>
 
       {/* PROFİL VE AYARLAR ALANI */}
-      <div style={{ 
-        marginTop: 'auto', 
-        padding: '15px 20px', 
-        background: panelBg, 
+      <div style={{
+        marginTop: 'auto',
+        padding: '15px 20px',
+        background: panelBg,
         borderTop: `1px solid ${borderColor}`,
-        display: 'flex', 
-        alignItems: 'center', 
-        justifyContent: 'space-between' 
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between'
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <div style={{ width: '40px', height: '40px', borderRadius: '50%', background: '#00a884', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', fontSize: '16px', boxShadow: '0 2px 5px rgba(0,0,0,0.2)' }}>
-            {currentUser?.username?.[0]?.toUpperCase()}
+          <div style={{ width: '40px', height: '40px', borderRadius: '50%', background: '#00a884', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', fontSize: '16px', boxShadow: '0 2px 5px rgba(0,0,0,0.2)', overflow: 'hidden' }}>
+            {currentUser.avatarUrl ? <img src={currentUser.avatarUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : currentUser?.username?.[0]?.toUpperCase()}
           </div>
           <span style={{ fontWeight: '600', color: textColor, fontSize: '16px' }}>{currentUser?.username}</span>
         </div>
 
-        {/* AYARLAR İKONU (SENİN BİLEŞENİN!) */}
-        <Button 
+        {/* Profil ve hesap ayarları */}
+        <Button
           variant="icon"
           onClick={() => setIsSettingsOpen(true)}
           title="Ayarlar"
@@ -222,7 +238,7 @@ export default function Sidebar({
           }
         />
       </div>
-      
+
     </div>
   );
 }

@@ -7,7 +7,7 @@ interface ButtonProps {
   onClick?: () => void;
   type?: 'button' | 'submit' | 'reset';
   variant?: 'primary' | 'danger' | 'outline' | 'ghost' | 'icon'; // YENİ: 'icon' varyasyonu
-  size?: 'normal' | 'small' | 'large'; 
+  size?: 'normal' | 'small' | 'large';
   fullWidth?: boolean;
   disabled?: boolean;
   title?: string;
@@ -26,7 +26,7 @@ export default function Button({
   title,
   style
 }: ButtonProps) {
-  
+
   const btnClasses = `custom-btn ${variant} ${size === 'small' ? 'small' : ''} ${size === 'large' ? 'large' : ''} ${fullWidth ? 'full-width' : ''}`;
 
   return (
@@ -40,7 +40,7 @@ export default function Button({
     >
       {/* Eğer sol tarafa bir ikon verildiyse önce onu çiz */}
       {icon && <span className="btn-icon-wrapper">{icon}</span>}
-      
+
       {/* Eğer text (yazı veya tekil SVG) varsa onu çiz */}
       {text && <span>{text}</span>}
     </button>

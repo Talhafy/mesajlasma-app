@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import axios from 'axios';
-import './Auth.css'; 
+import { api } from '../../api/httpClient';
+import './Auth.css';
 import Button from '../UI/Button';
 
 interface AuthProps {
@@ -10,35 +10,35 @@ interface AuthProps {
 
 export default function Auth({ onLoginSuccess }: AuthProps) {
   const [currentView, setCurrentView] = useState<'login' | 'register'>('login');
-  
+
   // Sadece bu ekrana özel State'ler
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [username, setUsername] = useState('');
   const [hataMesaji, setHataMesaji] = useState("");
-  const [identifier, setIdentifier] = useState(''); 
-  const [confirmPassword, setConfirmPassword] = useState(''); 
+  const [identifier, setIdentifier] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
 
-  const handleRegister = async (e: React.FormEvent) => { 
+  const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setHataMesaji("");
     if (password !== confirmPassword) return setHataMesaji("Şifreler birbiriyle eşleşmiyor!");
     try {
-      await axios.post('http://localhost:3000/api/register', { username, email, password });
+      await api.post('/register', { username, email, password });
       alert("Kayıt başarılı! Lütfen giriş yap.");
       setCurrentView('login');
       setPassword(""); setConfirmPassword("");
     } catch (error: any) { setHataMesaji(error.response?.data?.error || "Kayıt başarısız."); }
   };
 
-  const handleLogin = async (e: React.FormEvent) => { 
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setHataMesaji("");
     try {
-      const response = await axios.post('http://localhost:3000/api/login', { identifier, password });
-      const { token, user } = response.data;
+      const response = await api.post('/login', { identifier, password });
+      const { accessToken, user } = response.data;
       // Giriş başarılıysa App.tsx'e verileri gönderiyoruz
-      onLoginSuccess(token, user);
+      onLoginSuccess(accessToken, user);
     } catch (error: any) { setHataMesaji(error.response?.data?.error || "Kullanıcı bilgileri hatalı."); }
   };
 
@@ -64,10 +64,10 @@ export default function Auth({ onLoginSuccess }: AuthProps) {
               <input type="password" placeholder="Şifre" value={password} onChange={(e) => setPassword(e.target.value)} required />
             </>
           )}
-        <Button 
-            type="submit" 
-            text={isLogin ? 'Giriş Yap' : 'Kayıt Ol'} 
-              fullWidth={true} 
+        <Button
+            type="submit"
+            text={isLogin ? 'Giriş Yap' : 'Kayıt Ol'}
+              fullWidth={true}
                 />
           <p onClick={() => { setCurrentView(isLogin ? 'register' : 'login'); setHataMesaji(""); setPassword(""); setConfirmPassword(""); }}>
             {isLogin ? 'Hesabın yok mu? Kayıt Ol' : 'Zaten hesabın var mı? Giriş Yap'}

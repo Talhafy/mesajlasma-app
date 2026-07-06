@@ -1,29 +1,22 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import prisma from '../db';
-import jwt from 'jsonwebtoken';
+import { authenticateToken, CustomRequest } from '../middleware/authMiddleware';
+import { validateRequest } from '../middleware/validateRequest';
+import { userSchemas } from '../validation/schemas';
+import { deleteFileIfUnreferenced } from '../services/fileCleanup';
+import { createSignedFileUrl } from '../services/fileStorage';
+import { clearRefreshCookie } from '../services/authTokens';
+import { getAuthenticatedUserId as getUserId } from '../utils/request';
 
 const router = express.Router();
 
-// --- GÜVENLİK DUVARI (Middleware) ---
-const authenticateToken = (req: any, res: any, next: any) => {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1]; 
-  
-  if (!token) return res.status(401).json({ error: "Yetkisiz erişim" });
 
-  jwt.verify(token, process.env.JWT_SECRET as string, (err: any, user: any) => {
-    if (err) return res.status(403).json({ error: "Geçersiz token" });
-    req.user = user; 
-    next();
-  });
-};
-
-//KULLANICI İSMİ DEĞİŞTİRME ---
-router.put('/username', authenticateToken, async (req: any, res: any) => {
+// Profil adı güncelleme
+router.put('/username', authenticateToken, validateRequest({ body: userSchemas.username }), async (req: CustomRequest, res: any) => {
   try {
     const { newUsername } = req.body;
-    const userId = req.user.userId;
+    const userId = getUserId(req);
 
     const existingUser = await prisma.user.findUnique({ where: { username: newUsername } });
     if (existingUser) return res.status(400).json({ error: "Bu kullanıcı adı zaten alınmış." });
@@ -39,11 +32,11 @@ router.put('/username', authenticateToken, async (req: any, res: any) => {
   }
 });
 
-//ŞİFRE DEĞİŞTİRME ---
-router.put('/password', authenticateToken, async (req: any, res: any) => {
+// Şifre değişince çalınmış olabilecek bütün refresh oturumları da iptal edilir.
+router.put('/password', authenticateToken, validateRequest({ body: userSchemas.password }), async (req: CustomRequest, res: any) => {
   try {
     const { oldPassword, newPassword } = req.body;
-    const userId = req.user.userId;
+    const userId = getUserId(req);
 
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) return res.status(404).json({ error: "Kullanıcı bulunamadı." });
@@ -52,62 +45,169 @@ router.put('/password', authenticateToken, async (req: any, res: any) => {
     if (!isMatch) return res.status(400).json({ error: "Mevcut şifreniz yanlış." });
 
     const hashedNewPassword = await bcrypt.hash(newPassword, 10);
-    await prisma.user.update({
-      where: { id: userId },
-      data: { password_hash: hashedNewPassword }
+    await prisma.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: userId },
+        data: { password_hash: hashedNewPassword }
+      });
+      await tx.refreshSession.updateMany({
+        where: { userId, revokedAt: null },
+        data: { revokedAt: new Date() }
+      });
     });
 
-    res.status(200).json({ message: "Şifreniz başarıyla değiştirildi." });
+    clearRefreshCookie(res);
+    res.status(200).json({ message: "Şifreniz değiştirildi. Güvenlik için yeniden giriş yapın." });
   } catch (error) {
     res.status(500).json({ error: "Şifre güncellenemedi." });
   }
 });
 
-// HESAP SİLME ---
-router.delete('/account', authenticateToken, async (req: any, res: any) => {
+// Hesap, ilişkili sohbetler ve dosya referansları tek transaction içinde ele alınır.
+router.delete('/account', authenticateToken, async (req: CustomRequest, res: any) => {
   try {
-    const userId = req.user.userId;
-    await prisma.user.delete({ where: { id: userId } });
+    const userId = getUserId(req);
+    const deletedFileKeys = await prisma.$transaction(async (tx) => {
+      const account = await tx.user.findUnique({ where: { id: userId }, select: { avatarFileKey: true } });
+      const memberships = await tx.participant.findMany({
+        where: { userId },
+        include: {
+          conversation: {
+            include: {
+              participants: {
+                select: { userId: true, joinedAt: true },
+                orderBy: { joinedAt: 'asc' }
+              }
+            }
+          }
+        }
+      });
+
+      const deletedConversationIds = memberships
+        .filter(({ conversation }) => !conversation.isGroup || (
+          conversation.adminId === userId && conversation.participants.length === 1
+        ))
+        .map(({ conversation }) => conversation.id);
+
+      const [messageFiles, scheduledFiles] = await Promise.all([
+        tx.message.findMany({
+          where: {
+            fileKey: { not: null },
+            OR: [
+              { senderId: userId },
+              { conversationId: { in: deletedConversationIds } }
+            ]
+          },
+          select: { fileKey: true }
+        }),
+        tx.scheduledMessage.findMany({
+          where: {
+            fileKey: { not: null },
+            OR: [
+              { senderId: userId },
+              { conversationId: { in: deletedConversationIds } }
+            ]
+          },
+          select: { fileKey: true }
+        })
+      ]);
+
+      for (const membership of memberships) {
+        const conversation = membership.conversation;
+
+        if (!conversation.isGroup) {
+          await tx.conversation.delete({ where: { id: conversation.id } });
+          continue;
+        }
+
+        if (conversation.adminId === userId) {
+          const successor = conversation.participants.find((participant) => participant.userId !== userId);
+          if (successor) {
+            await tx.conversation.update({
+              where: { id: conversation.id },
+              data: { adminId: successor.userId }
+            });
+          } else {
+            await tx.conversation.delete({ where: { id: conversation.id } });
+          }
+        }
+      }
+
+      await tx.user.delete({ where: { id: userId } });
+      return [...messageFiles, ...scheduledFiles, { fileKey: account?.avatarFileKey || null }]
+        .map((entry) => entry.fileKey)
+        .filter((key): key is string => Boolean(key));
+    });
+
+    await Promise.all([...new Set(deletedFileKeys)].map(deleteFileIfUnreferenced));
     res.status(200).json({ message: "Hesabınız başarıyla silindi." });
   } catch (error) {
     res.status(500).json({ error: "Hesap silinirken bir hata oluştu." });
   }
 });
 
-//SESSİZ GİRİŞ (BEN KİMİM?) API'Sİ ---
-router.get('/me', authenticateToken, async (req: any, res: any) => {
+// Sessiz oturum açılışından sonra güncel kullanıcı profilini döndürür.
+router.get('/me', authenticateToken, async (req: CustomRequest, res: any) => {
   try {
-    const userId = req.user.userId;
+    const userId = getUserId(req);
     const user = await prisma.user.findUnique({ where: { id: userId } });
-    
+
     if (!user) return res.status(404).json({ error: "Kullanıcı bulunamadı." });
 
     // İstemciye readReceiptsOn bilgisini de gönderiyoruz ki ayarlarda tiki gösterelim
-    res.status(200).json({ 
-        id: user.id, 
-        username: user.username, 
+    res.status(200).json({
+        id: user.id,
+        username: user.username,
         email: user.email,
-        readReceiptsOn: user.readReceiptsOn 
+        readReceiptsOn: user.readReceiptsOn,
+        lastSeenAt: user.lastSeenAt,
+        avatarFileKey: user.avatarFileKey,
+        avatarUrl: user.avatarFileKey ? await createSignedFileUrl(user.avatarFileKey) : null
     });
   } catch (error) {
     res.status(500).json({ error: "Kullanıcı bilgileri alınamadı." });
   }
 });
 
-// GÖRÜLDÜ AYARINI GÜNCELLEME ---
-router.put('/settings/read-receipts', authenticateToken, async (req: any, res: any) => {
+// Birebir sohbetlerde kullanılan okundu bilgisi tercihi
+router.put('/settings/read-receipts', authenticateToken, validateRequest({ body: userSchemas.readReceipts }), async (req: CustomRequest, res: any) => {
   try {
     const { isEnabled } = req.body;
-    const userId = req.user.userId;
-    
+    const userId = getUserId(req);
+
     const updatedUser = await prisma.user.update({
       where: { id: userId },
       data: { readReceiptsOn: isEnabled }
     });
-    
+
     res.status(200).json({ message: "Görüldü ayarı güncellendi.", readReceiptsOn: updatedUser.readReceiptsOn });
   } catch (error) {
     res.status(500).json({ error: "Ayar güncellenemedi." });
+  }
+});
+
+router.put('/avatar', authenticateToken, validateRequest({ body: userSchemas.avatar }), async (req: CustomRequest, res: any) => {
+  try {
+    const userId = getUserId(req);
+    const { fileKey } = req.body;
+    const previous = await prisma.user.findUnique({ where: { id: userId }, select: { avatarFileKey: true } });
+    if (!previous) return res.status(404).json({ error: "Kullanıcı bulunamadı." });
+
+    const updated = await prisma.user.update({
+      where: { id: userId },
+      data: { avatarFileKey: fileKey }
+    });
+
+    if (previous.avatarFileKey && previous.avatarFileKey !== fileKey) {
+      await deleteFileIfUnreferenced(previous.avatarFileKey);
+    }
+
+    return res.status(200).json({
+      avatarFileKey: updated.avatarFileKey,
+      avatarUrl: updated.avatarFileKey ? await createSignedFileUrl(updated.avatarFileKey) : null
+    });
+  } catch (error) {
+    return res.status(500).json({ error: "Profil fotoğrafı güncellenemedi." });
   }
 });
 

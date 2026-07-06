@@ -1,83 +1,147 @@
-import express from 'express';
+import express, { Response } from 'express';
+import { Prisma } from '@prisma/client';
 import prisma from '../db';
-import multer = require('multer');
-import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { uploadSingleFile } from '../config/fileUpload';
+import { authenticateToken, CustomRequest } from '../middleware/authMiddleware';
+import { validateRequest } from '../middleware/validateRequest';
+import { chatSchemas } from '../validation/schemas';
+import {
+  createSignedFileUrl,
+  uploadPrivateFile,
+  withSignedFileUrl
+} from '../services/fileStorage';
+import { deleteFileIfUnreferenced } from '../services/fileCleanup';
+import { isConversationMember } from '../services/conversationAccess';
+import { getAuthenticatedUserId as getUserId, getRouteParam as getParam } from '../utils/request';
 
 const router = express.Router();
 
-// --- CLOUDFLARE R2 BAĞLANTI AYARLARI (GÜVENLİ HALİ) ---
-const s3 = new S3Client({
-  region: "auto",
-  endpoint: process.env.R2_ENDPOINT as string,
-  credentials: {
-    accessKeyId: process.env.R2_ACCESS_KEY_ID as string,
-    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY as string,
-  }
-});
+// Bu router altındaki tüm mesaj, sohbet ve dosya endpoint'leri access token gerektirir.
+router.use(authenticateToken);
 
-// --- YENİ DİSK YERİNE RAM (MEMORY) STORAGE ---
-// Artık dosyaları sunucu diskine kaydetmiyoruz, RAM'de tutuyoruz
-const upload = multer({ 
-  storage: multer.memoryStorage(), 
-  limits: { fileSize: 50 * 1024 * 1024 } // 50 MB Sınırı
-});
-
-router.post('/upload', upload.single('file'), async (req: any, res: any) => {
+// DOSYA YÜKLEME API'Sİ
+router.post('/upload', uploadSingleFile, async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     if (!req.file) return res.status(400).json({ error: "Dosya bulunamadı." });
-    
-    // Hatırlarsan boşluk ve Türkçe karakter sorununu (URL Encoding) çözmek için uzantı mantığını değiştirmiştik:
-    const ext = req.file.originalname.includes('.') 
-      ? req.file.originalname.substring(req.file.originalname.lastIndexOf('.')) 
-      : '';
-    const uniqueFileName = `${Date.now()}-${Math.round(Math.random() * 1E9)}${ext}`;
-    
-    // Cloudflare R2'ye dosyayı yükleme komutu
-    const command = new PutObjectCommand({
-      Bucket: process.env.R2_BUCKET_NAME, 
-      Key: uniqueFileName,
-      Body: req.file.buffer, 
-      ContentType: req.file.mimetype, 
-    });
 
-    // Buluta Gönder!
-    await s3.send(command);
-    
-    // DÜZELTİLEN YER 2: Public URL artık .env dosyasından çekiliyor!
-    const fileUrl = `${process.env.R2_PUBLIC_URL}/${uniqueFileName}`;
-    
-    res.status(200).json({ 
-      fileUrl: fileUrl, 
+    const fileKey = await uploadPrivateFile(
+      req.file.buffer,
+      req.file.mimetype,
+      req.file.originalname
+    );
+
+    const signedFile = await withSignedFileUrl({ fileKey });
+    return res.status(200).json({
+      fileKey,
+      fileUrl: signedFile.fileUrl,
       fileName: req.file.originalname,
-      fileType: req.file.mimetype.startsWith('image/') ? 'image' : 
+      fileType: req.file.mimetype.startsWith('image/') ? 'image' :
                 req.file.mimetype.startsWith('audio/') || req.file.mimetype.startsWith('video/') ? 'audio' : 'document'
     });
   } catch (error) {
     console.error("Buluta yükleme hatası:", error);
-    res.status(500).json({ error: "Dosya buluta yüklenemedi." });
+    return res.status(500).json({ error: "Dosya buluta yüklenemedi." });
   }
 });
 
-//KULLANICILARI LİSTELEME
-router.get('/users', async (req, res) => {
+// KULLANICILARI LİSTELEME
+router.get('/users', async (req: CustomRequest, res: Response): Promise<any> => {
   try {
-    const { currentUserId } = req.query;
+    const currentUserId = getUserId(req);
     const users = await prisma.user.findMany({
-      where: { NOT: { id: currentUserId as string } },
-      select: { id: true, username: true, email: true }
+      where: { NOT: { id: currentUserId } },
+      select: { id: true, username: true, email: true, avatarFileKey: true, lastSeenAt: true }
     });
-    res.status(200).json(users);
+    const responseUsers = await Promise.all(users.map(async (user) => ({
+      ...user,
+      avatarUrl: user.avatarFileKey ? await createSignedFileUrl(user.avatarFileKey) : null
+    })));
+    return res.status(200).json(responseUsers);
   } catch (error) {
-    res.status(500).json({ error: "Kullanıcılar getirilemedi." });
+    return res.status(500).json({ error: "Kullanıcılar getirilemedi." });
   }
 });
 
-//ODA BULMA / OLUŞTURMA (Birebir Sohbet Başlatma)
-router.post('/conversations/direct', async (req, res) => {
+// SON MESAJINA GÖRE SIRALANMIŞ GERÇEK SOHBET LİSTESİ
+router.get('/conversations', async (req: CustomRequest, res: Response): Promise<any> => {
   try {
-    const { currentUserId, targetUserId } = req.body;
+    const userId = getUserId(req);
+    const memberships = await prisma.participant.findMany({
+      where: { userId },
+      include: {
+        conversation: {
+          include: {
+            participants: {
+              include: {
+                user: {
+                  select: { id: true, username: true, email: true, avatarFileKey: true, lastSeenAt: true }
+                }
+              }
+            },
+            messages: {
+              where: { NOT: { deletedForIds: { has: userId } } },
+              orderBy: { createdAt: 'desc' },
+              take: 1,
+              include: { sender: { select: { username: true } } }
+            }
+          }
+        }
+      }
+    });
 
-    // Önce aralarında zaten bir sohbet var mı diye bakıyoruz
+    const conversations = await Promise.all(memberships.map(async ({ conversation }) => {
+      const otherParticipant = conversation.isGroup
+        ? null
+        : conversation.participants.find((participant) => participant.userId !== userId);
+      const otherUser = otherParticipant?.user
+        ? {
+            ...otherParticipant.user,
+            avatarUrl: otherParticipant.user.avatarFileKey
+              ? await createSignedFileUrl(otherParticipant.user.avatarFileKey)
+              : null
+          }
+        : null;
+      const lastMessage = conversation.messages[0]
+        ? await withSignedFileUrl(conversation.messages[0])
+        : null;
+
+      return {
+        id: conversation.id,
+        isGroup: conversation.isGroup,
+        name: conversation.name,
+        adminId: conversation.adminId,
+        createdAt: conversation.createdAt,
+        otherUser,
+        lastMessage
+      };
+    }));
+
+    conversations.sort((a, b) => {
+      const aTime = new Date(a.lastMessage?.createdAt || a.createdAt).getTime();
+      const bTime = new Date(b.lastMessage?.createdAt || b.createdAt).getTime();
+      return bTime - aTime;
+    });
+
+    return res.status(200).json(conversations);
+  } catch (error) {
+    console.error('Sohbet listesi alınamadı:', error);
+    return res.status(500).json({ error: 'Sohbet listesi alınamadı.' });
+  }
+});
+
+// ODA BULMA / OLUŞTURMA (Birebir Sohbet Başlatma)
+router.post('/conversations/direct', validateRequest({ body: chatSchemas.directConversation }), async (req: CustomRequest, res: Response): Promise<any> => {
+  try {
+    const { targetUserId } = req.body;
+    const currentUserId = getUserId(req);
+
+    if (typeof targetUserId !== 'string' || !targetUserId || targetUserId === currentUserId) {
+      return res.status(400).json({ error: "Geçerli bir hedef kullanıcı seçin." });
+    }
+
+    const targetUser = await prisma.user.findUnique({ where: { id: targetUserId }, select: { id: true } });
+    if (!targetUser) return res.status(404).json({ error: "Hedef kullanıcı bulunamadı." });
+
     let conversation = await prisma.conversation.findFirst({
       where: {
         isGroup: false,
@@ -88,7 +152,6 @@ router.post('/conversations/direct', async (req, res) => {
       }
     });
 
-    // Eğer sohbet yoksa, yeni bir tane oluştur
     if (!conversation) {
       conversation = await prisma.conversation.create({
         data: {
@@ -103,200 +166,276 @@ router.post('/conversations/direct', async (req, res) => {
       });
     }
 
-    res.status(200).json(conversation);
+    return res.status(200).json(conversation);
   } catch (error) {
     console.error("Oda oluşturma hatası:", error);
-    res.status(500).json({ error: "Sohbet odası oluşturulamadı." });
+    return res.status(500).json({ error: "Sohbet odası oluşturulamadı." });
   }
 });
 
-// MESAJ GÖNDERME (GÜNCELLENDİ: Dosya Desteği Eklendi)
-router.post('/messages', async (req, res) => {
+// MESAJ GÖNDERME
+router.post('/messages', validateRequest({ body: chatSchemas.message }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
-    // 1. DÜZELTME: fileUrl, fileType ve fileName buraya eklendi ki req.body'den alabilsin!
-    const { conversationId, senderId, content, replyToId, isForwarded, fileUrl, fileType, fileName } = req.body;
+    const { conversationId, clientId, content, replyToId, isForwarded, fileKey, fileType, fileName } = req.body;
+    const senderId = getUserId(req);
 
     const conversation = await prisma.conversation.findUnique({
       where: { id: conversationId }, include: { participants: true }
     });
     if (!conversation) return res.status(404).json({ error: "Sohbet bulunamadı." });
+    if (!conversation.participants.some((participant) => participant.userId === senderId)) {
+      return res.status(403).json({ error: "Bu sohbete mesaj gönderme yetkiniz yok." });
+    }
 
-    const savedMessage = await prisma.message.create({
-      data: { 
-        content: content || "", // Sadece resim atılırsa yazı boş ("") olabilir
-        senderId, 
-        conversationId,
-        replyToId: replyToId || null, 
-        isForwarded: isForwarded || false,
-        // 2. DÜZELTME: Veritabanına dosya bilgilerini kaydediyoruz!
-        fileUrl: fileUrl || null,
-        fileType: fileType || null,
-        fileName: fileName || null
-      },
-      include: { 
-        sender: { select: { username: true } },
-        replyTo: { select: { id: true, content: true, sender: { select: { username: true } } } } 
+    if (replyToId) {
+      const repliedMessage = await prisma.message.findFirst({
+        where: { id: String(replyToId), conversationId },
+        select: { id: true }
+      });
+      if (!repliedMessage) return res.status(400).json({ error: "Yanıtlanan mesaj bu sohbette bulunamadı." });
+    }
+
+    let savedMessage;
+    try {
+      savedMessage = await prisma.message.create({
+        data: {
+          clientId,
+          content: content.trim(),
+          senderId,
+          conversationId,
+          replyToId: replyToId || null,
+          isForwarded: isForwarded || false,
+          fileKey: fileKey || null,
+          fileType: fileType || null,
+          fileName: fileName || null
+        },
+        include: {
+          sender: { select: { username: true } },
+          replyTo: { select: { id: true, content: true, sender: { select: { username: true } } } },
+          conversation: { select: { isGroup: true } }
+        }
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        const existingMessage = await prisma.message.findUnique({
+          where: { senderId_clientId: { senderId, clientId } },
+          include: {
+            sender: { select: { username: true } },
+            replyTo: { select: { id: true, content: true, sender: { select: { username: true } } } },
+            conversation: { select: { isGroup: true } }
+          }
+        });
+        if (!existingMessage) throw error;
+        return res.status(200).json(await withSignedFileUrl(existingMessage));
       }
-    });
+      throw error;
+    }
+
+    const responseMessage = await withSignedFileUrl(savedMessage);
 
     const io = req.app.get('io');
     const targetRooms = conversation.participants.map(p => p.userId);
     targetRooms.push(conversationId);
-    
-    io.to(targetRooms).emit('yeni_mesaj_geldi', savedMessage);
-    res.status(201).json(savedMessage);
-  } catch (error) { 
+
+    io.to(targetRooms).emit('yeni_mesaj_geldi', responseMessage);
+    return res.status(201).json(responseMessage);
+  } catch (error) {
     console.error("Mesaj kaydetme hatası:", error);
-    res.status(500).json({ error: "Mesaj gönderilemedi." }); 
+    return res.status(500).json({ error: "Mesaj gönderilemedi." });
   }
 });
 
-// --- GEÇMİŞ MESAJLARI ÇEKME (SONSUZ KAYDIRMA / PAGINATION EKLENDİ) ---
-router.get('/conversations/:conversationId/messages', async (req, res) => {
+// GEÇMİŞ MESAJLARI ÇEKME
+router.get('/conversations/:conversationId/messages', validateRequest({
+  params: chatSchemas.conversationParams,
+  query: chatSchemas.conversationMessagesQuery
+}), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
-    const { conversationId } = req.params;
-    const { userId, cursor } = req.query; // cursor: Frontend'in bize vereceği "ekrandaki en eski mesajın" ID'si
+    const conversationId = getParam(req, 'conversationId');
+    const { cursor } = req.query;
+    const userId = getUserId(req);
+
+    if (!(await isConversationMember(conversationId, userId))) {
+      return res.status(403).json({ error: "Bu sohbetin mesajlarını görüntüleme yetkiniz yok." });
+    }
 
     const messages = await prisma.message.findMany({
-      where: { conversationId: conversationId },
-      take: 50, // GÜVENLİK: Bir seferde SADECE 50 mesaj getir, RAM'i patlatma!
-      skip: cursor ? 1 : 0, // Eğer cursor varsa, o cursor mesajını atla (çünkü zaten ekranda var)
-      ...(cursor ? { cursor: { id: String(cursor) } } : {}), // Aramaya bu ID'den itibaren geriye doğru başla
-      orderBy: { createdAt: 'desc' }, // En yenileri almak için tersten sırala
-      include: { 
+      where: {
+        conversationId,
+        NOT: { deletedForIds: { has: userId } }
+      },
+      take: 50,
+      skip: cursor ? 1 : 0,
+      ...(cursor ? { cursor: { id: String(cursor) } } : {}),
+      orderBy: { createdAt: 'desc' },
+      include: {
         sender: { select: { username: true } },
         replyTo: { select: { id: true, content: true, sender: { select: { username: true } } } }
       }
     });
 
-    // "Benden Sil" denilmiş mesajları (deletedForIds) frontend'e yollama
-    const filteredMessages = messages.filter(msg => {
-      const deletedFor = msg.deletedForIds || [];
-      return !deletedFor.includes(userId as string);
-    });
-
-    // ZEKİCE DOKUNUŞ: Frontend ekrana basarken mesajlar yukarıdan aşağıya (eskiden yeniye) 
-    // doğru aksın diye, tersten aldığımız diziyi tekrar düzeltip (reverse) yolluyoruz.
-    res.status(200).json(filteredMessages.reverse());
-  } catch (error) { 
+    const responseMessages = await Promise.all(messages.reverse().map(withSignedFileUrl));
+    return res.status(200).json(responseMessages);
+  } catch (error) {
     console.error("Mesajlar çekilirken hata:", error);
-    res.status(500).json({ error: "Mesajlar yüklenemedi." }); 
+    return res.status(500).json({ error: "Mesajlar yüklenemedi." });
   }
 });
 
-//GRUP OLUŞTURMA API'Sİ
-router.post('/conversations/group', async (req, res) => {
+// GRUP OLUŞTURMA
+router.post('/conversations/group', validateRequest({ body: chatSchemas.group }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
-    const { currentUserId, name, participantIds } = req.body;
-    const allMemberIds = [...participantIds, currentUserId];
+    const { name, participantIds } = req.body;
+    const currentUserId = getUserId(req);
+
+    if (typeof name !== 'string' || !name.trim()) {
+      return res.status(400).json({ error: "Grup adı boş olamaz." });
+    }
+    if (name.trim().length > 100) {
+      return res.status(400).json({ error: "Grup adı en fazla 100 karakter olabilir." });
+    }
+    if (!Array.isArray(participantIds) || participantIds.length === 0 || !participantIds.every((id) => typeof id === 'string')) {
+      return res.status(400).json({ error: "En az bir geçerli grup üyesi seçin." });
+    }
+
+    const allMemberIds = [...new Set([...participantIds, currentUserId])];
+    const existingUserCount = await prisma.user.count({ where: { id: { in: allMemberIds } } });
+    if (existingUserCount !== allMemberIds.length) {
+      return res.status(400).json({ error: "Seçilen kullanıcılardan biri bulunamadı." });
+    }
 
     const newGroup = await prisma.conversation.create({
       data: {
         isGroup: true,
-        name: name,
-        adminId: currentUserId, // GRUBU KURAN KİŞİYİ YÖNETİCİ YAPTIK
+        name: name.trim(),
+        adminId: currentUserId,
         participants: { create: allMemberIds.map((id: string) => ({ userId: id })) }
       }
     });
 
-    // ANINDA BİLDİRİM: Hiçbir mesaj kaydı oluşturmadan, kurucu hariç tüm
-    // katılımcıların ekranına grubu canlı olarak düşürüyoruz. Her kullanıcı
-    // zaten kendi userId'si ile bir odaya katılmış durumda (bkz: App.tsx
-    // 'odaya_katil' -> currentUser.id), o yüzden direkt o odaya yayın yapıyoruz.
     const io = req.app.get('io');
-    participantIds.forEach((userId: string) => {
+    allMemberIds.filter((id) => id !== currentUserId).forEach((userId: string) => {
       io.to(userId).emit('grup_olusturuldu', newGroup);
     });
 
-    res.status(201).json(newGroup);
-  } catch (error) { res.status(500).json({ error: "Grup oluşturulamadı." }); }
+    return res.status(201).json(newGroup);
+  } catch (error) { return res.status(500).json({ error: "Grup oluşturulamadı." }); }
 });
 
-//KULLANICININ GRUPLARINI GETİRME API'Sİ 
-router.get('/conversations/groups', async (req, res) => {
+// KULLANICININ GRUPLARINI GETİRME
+router.get('/conversations/groups', async (req: CustomRequest, res: Response): Promise<any> => {
   try {
-    const { currentUserId } = req.query;
-    
-    // Benim (currentUserId) içinde olduğum ve isGroup: true olan odaları bul
+    const currentUserId = getUserId(req);
+
     const myGroups = await prisma.participant.findMany({
-      where: { 
-        userId: currentUserId as string, 
-        conversation: { isGroup: true } 
+      where: {
+        userId: currentUserId,
+        conversation: { isGroup: true }
       },
       include: { conversation: true }
     });
 
-    // Sadece oda verilerini temiz bir liste halinde dön
     const groups = myGroups.map(p => p.conversation);
-    res.status(200).json(groups);
+    return res.status(200).json(groups);
   } catch (error) {
-    res.status(500).json({ error: "Gruplar getirilemedi." });
+    return res.status(500).json({ error: "Gruplar getirilemedi." });
   }
 });
 
-//GRUBUN İÇİNDEKİ KİŞİLERİ ÇEKME API'Sİ
-router.get('/conversations/group/:id/participants', async (req, res) => {
+// GRUBUN İÇİNDEKİ KİŞİLERİ ÇEKME
+router.get('/conversations/group/:id/participants', validateRequest({ params: chatSchemas.groupParams }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
+    const groupId = getParam(req, 'id');
+    const currentUserId = getUserId(req);
+    if (!(await isConversationMember(groupId, currentUserId))) {
+      return res.status(403).json({ error: "Bu grubun üyelerini görüntüleme yetkiniz yok." });
+    }
+
     const participants = await prisma.participant.findMany({
-      where: { conversationId: req.params.id },
+      where: { conversationId: groupId },
       include: { user: { select: { id: true, username: true } } }
     });
-    // Sadece kullanıcı (user) objelerini ayıklayıp frontend'e gönderiyoruz
-    res.status(200).json(participants.map(p => p.user));
+    return res.status(200).json(participants.map(p => p.user));
   } catch (error) {
-    res.status(500).json({ error: "Grup üyeleri alınamadı." });
+    return res.status(500).json({ error: "Grup üyeleri alınamadı." });
   }
 });
 
-//GRUP ADI GÜNCELLEME API'Sİ
-router.put('/conversations/group/:id/name', async (req, res) => {
+// GRUP ADI GÜNCELLEME
+router.put('/conversations/group/:id/name', validateRequest({
+  params: chatSchemas.groupParams,
+  body: chatSchemas.groupName
+}), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
+    const groupId = getParam(req, 'id');
+    const currentUserId = getUserId(req);
+    const newName = req.body.newName;
+    if (typeof newName !== 'string' || !newName.trim()) {
+      return res.status(400).json({ error: "Grup adı boş olamaz." });
+    }
+    if (newName.trim().length > 100) {
+      return res.status(400).json({ error: "Grup adı en fazla 100 karakter olabilir." });
+    }
+
+    const group = await prisma.conversation.findUnique({ where: { id: groupId } });
+    if (!group) return res.status(404).json({ error: "Grup bulunamadı." });
+    if (!group.isGroup || group.adminId !== currentUserId) {
+      return res.status(403).json({ error: "Grup adını yalnızca yönetici değiştirebilir." });
+    }
+
     const updatedGroup = await prisma.conversation.update({
-      where: { id: req.params.id },
-      data: { name: req.body.newName }
+      where: { id: groupId },
+      data: { name: newName.trim() }
     });
-    res.status(200).json(updatedGroup);
+    return res.status(200).json(updatedGroup);
   } catch (error) {
-    res.status(500).json({ error: "Grup adı güncellenemedi." });
+    return res.status(500).json({ error: "Grup adı güncellenemedi." });
   }
 });
 
-// --- 1. GRUPTAN KİŞİ ÇIKARTMA VE OTOMATİK SİLME ROBOTU ---
-router.delete('/conversations/group/:id/participants/:userId', async (req, res) => {
+// GRUPTAN KİŞİ ÇIKARTMA VE OTOMATİK SİLME
+router.delete('/conversations/group/:id/participants/:userId', validateRequest({ params: chatSchemas.groupMemberParams }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
-    const { id: groupId, userId } = req.params;
-    const { adminId } = req.query;
+    const groupId = getParam(req, 'id');
+    const userId = getParam(req, 'userId');
+    const adminId = getUserId(req);
 
     const group = await prisma.conversation.findUnique({ where: { id: groupId } });
     if (!group) return res.status(404).json({ error: "Grup bulunamadı." });
 
-    // Çıkaran kişi admin değilse ve kendi kendine çıkmıyorsa yetki hatası ver
     if (group.adminId !== adminId && userId !== adminId) {
       return res.status(403).json({ error: "Sadece grup yöneticisi kişi çıkarabilir!" });
     }
 
-    // 1. Kişiyi gruptan veritabanında sil
-    await prisma.participant.deleteMany({
-      where: { conversationId: groupId, userId: userId }
-    });
+    await prisma.$transaction([
+      prisma.participant.deleteMany({
+        where: { conversationId: groupId, userId }
+      }),
+      prisma.scheduledMessage.deleteMany({
+        where: { conversationId: groupId, senderId: userId }
+      })
+    ]);
 
     const io = req.app.get('io');
     io.to(groupId).emit('gruptan_atildi', { groupId, removedUserId: userId });
 
-    // 2. KUSURSUZ MANTIK: Grupta geriye kimse kaldı mı?
     const remainingParticipants = await prisma.participant.findMany({
       where: { conversationId: groupId }
     });
 
     if (remainingParticipants.length === 0) {
-      // KİMSE KALMADI! Mesajları ve Grubu PostgreSQL'den tamamen yokediyoruz.
-      await prisma.message.deleteMany({ where: { conversationId: groupId } });
+      const [messageFiles, scheduledFiles] = await Promise.all([
+        prisma.message.findMany({ where: { conversationId: groupId, fileKey: { not: null } }, select: { fileKey: true } }),
+        prisma.scheduledMessage.findMany({ where: { conversationId: groupId, fileKey: { not: null } }, select: { fileKey: true } })
+      ]);
       await prisma.conversation.delete({ where: { id: groupId } });
+      const deletedFileKeys = [...messageFiles, ...scheduledFiles]
+        .map((entry) => entry.fileKey)
+        .filter((key): key is string => Boolean(key));
+      await Promise.all([...new Set(deletedFileKeys)].map(deleteFileIfUnreferenced));
       io.to(groupId).emit('grup_silindi', { groupId });
-    } 
+    }
     else if (group.adminId === userId) {
-      // YÖNETİCİ ÇIKTI AMA İÇERDE İNSANLAR VAR! 
-      // İçeride kalan ilk kişiyi rastgele yeni yönetici yapıyoruz ki grup başıboş kalmasın.
       const newAdminId = remainingParticipants[0].userId;
       await prisma.conversation.update({
         where: { id: groupId },
@@ -305,39 +444,64 @@ router.delete('/conversations/group/:id/participants/:userId', async (req, res) 
       io.to(groupId).emit('grup_yonetici_degisti', { groupId, newAdminId });
     }
 
-    res.status(200).json({ message: "İşlem başarılı." });
-  } catch (error) { res.status(500).json({ error: "Kişi çıkarılamadı." }); }
+    return res.status(200).json({ message: "İşlem başarılı." });
+  } catch (error) { return res.status(500).json({ error: "Kişi çıkarılamadı." }); }
 });
 
-// --- 2. GRUBA YENİ KİŞİ EKLEME API'Sİ ---
-router.post('/conversations/group/:id/participants', async (req, res) => {
+// GRUBA YENİ KİŞİ EKLEME
+router.post('/conversations/group/:id/participants', validateRequest({
+  params: chatSchemas.groupParams,
+  body: chatSchemas.addGroupMembers
+}), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
-    const { id: groupId } = req.params;
-    const { adminId, userIdsToAdd } = req.body;
+    const groupId = getParam(req, 'id');
+    const { userIdsToAdd } = req.body;
+    const adminId = getUserId(req);
+
+    if (!Array.isArray(userIdsToAdd) || userIdsToAdd.length === 0 || !userIdsToAdd.every((id) => typeof id === 'string')) {
+      return res.status(400).json({ error: "Eklenecek kullanıcı listesi geçersiz." });
+    }
+
+    const uniqueUserIds = [...new Set<string>(userIdsToAdd)];
+    const existingUserCount = await prisma.user.count({ where: { id: { in: uniqueUserIds } } });
+    if (existingUserCount !== uniqueUserIds.length) {
+      return res.status(400).json({ error: "Eklenecek kullanıcılardan biri bulunamadı." });
+    }
 
     const group = await prisma.conversation.findUnique({ where: { id: groupId } });
     if (group?.adminId !== adminId) return res.status(403).json({ error: "Sadece yönetici kişi ekleyebilir." });
 
-    const data = userIdsToAdd.map((userId: string) => ({ userId, conversationId: groupId }));
+    const data = uniqueUserIds.map((userId) => ({ userId, conversationId: groupId }));
     await prisma.participant.createMany({ data, skipDuplicates: true });
 
     const io = req.app.get('io');
-    userIdsToAdd.forEach((userId: string) => {
-      io.to(userId).emit('grup_olusturuldu', group); // Yeni gelen kişinin sol paneline sessizce düşür
+    uniqueUserIds.forEach((userId) => {
+      io.to(userId).emit('grup_olusturuldu', group);
     });
 
-    res.status(200).json({ message: "Kişiler eklendi." });
-  } catch (error) { res.status(500).json({ error: "Ekleme başarısız." }); }
+    return res.status(200).json({ message: "Kişiler eklendi." });
+  } catch (error) { return res.status(500).json({ error: "Ekleme başarısız." }); }
 });
 
-// --- 3. YÖNETİCİLİĞİ BAŞKASINA DEVRETME API'Sİ ---
-router.put('/conversations/group/:id/admin', async (req, res) => {
+// YÖNETİCİLİĞİ BAŞKASINA DEVRETME
+router.put('/conversations/group/:id/admin', validateRequest({
+  params: chatSchemas.groupParams,
+  body: chatSchemas.transferAdmin
+}), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
-    const { id: groupId } = req.params;
-    const { currentAdminId, newAdminId } = req.body;
+    const groupId = getParam(req, 'id');
+    const { newAdminId } = req.body;
+    const currentAdminId = getUserId(req);
+
+    if (typeof newAdminId !== 'string' || !newAdminId) {
+      return res.status(400).json({ error: "Yeni yönetici geçersiz." });
+    }
 
     const group = await prisma.conversation.findUnique({ where: { id: groupId } });
     if (group?.adminId !== currentAdminId) return res.status(403).json({ error: "Sadece kurucu yetki devredebilir." });
+    if (!(await isConversationMember(groupId, newAdminId))) {
+      return res.status(400).json({ error: "Yeni yönetici grubun üyesi olmalıdır." });
+    }
 
     await prisma.conversation.update({
       where: { id: groupId },
@@ -347,37 +511,57 @@ router.put('/conversations/group/:id/admin', async (req, res) => {
     const io = req.app.get('io');
     io.to(groupId).emit('grup_yonetici_degisti', { groupId, newAdminId });
 
-    res.status(200).json({ message: "Yönetici değiştirildi." });
-  } catch (error) { res.status(500).json({ error: "İşlem başarısız." }); }
+    return res.status(200).json({ message: "Yönetici değiştirildi." });
+  } catch (error) { return res.status(500).json({ error: "İşlem başarısız." }); }
 });
-//GRUBU KOMPLE SİLME API'Sİ
-router.delete('/conversations/group/:id', async (req, res) => {
+
+// GRUBU KOMPLE SİLME
+router.delete('/conversations/group/:id', validateRequest({ params: chatSchemas.groupParams }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
-    const { adminId } = req.query;
-    const group = await prisma.conversation.findUnique({ where: { id: req.params.id } });
-    
-    if (group?.adminId !== adminId) {
-      return res.status(403).json({ error: "Sadece kurucu grubu silebilir!" });
+    const groupId = getParam(req, 'id');
+    const adminId = getUserId(req);
+    const deletedFileKeys = await prisma.$transaction(async (tx) => {
+      const group = await tx.conversation.findUnique({ where: { id: groupId } });
+      if (!group?.isGroup || group.adminId !== adminId) return null;
+
+      const [messageFiles, scheduledFiles] = await Promise.all([
+        tx.message.findMany({ where: { conversationId: groupId, fileKey: { not: null } }, select: { fileKey: true } }),
+        tx.scheduledMessage.findMany({ where: { conversationId: groupId, fileKey: { not: null } }, select: { fileKey: true } })
+      ]);
+
+      await tx.conversation.delete({ where: { id: groupId } });
+      return [...messageFiles, ...scheduledFiles]
+        .map((entry) => entry.fileKey)
+        .filter((key): key is string => Boolean(key));
+    });
+
+    if (!deletedFileKeys) {
+      return res.status(403).json({ error: "Grubu yalnızca yönetici silebilir." });
     }
 
-    await prisma.conversation.delete({ where: { id: req.params.id } });
-    
-    // Grubu herkesin ekranından anında silmek için sinyal
-    const io = req.app.get('io');
-    io.to(req.params.id).emit('grup_silindi', { groupId: req.params.id });
+    await Promise.all([...new Set(deletedFileKeys)].map(deleteFileIfUnreferenced));
 
-    res.status(200).json({ message: "Grup başarıyla silindi." });
-  } catch (error) { res.status(500).json({ error: "Grup silinemedi." }); }
+    const io = req.app.get('io');
+    io.to(groupId).emit('grup_silindi', { groupId });
+
+    return res.status(200).json({ message: "Grup başarıyla silindi." });
+  } catch (error) { return res.status(500).json({ error: "Grup silinemedi." }); }
 });
 
-// 11. MESAJLARI OKUNDU OLARAK İŞARETLEME 
-router.post('/conversations/:id/read', async (req, res) => {
+// MESAJLARI OKUNDU OLARAK İŞARETLEME
+router.post('/conversations/:id/read', validateRequest({
+  params: chatSchemas.groupParams,
+  body: chatSchemas.readConversation
+}), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
-    const { userId, emitReceipt } = req.body;
-    const conversationId = req.params.id;
+    const { emitReceipt } = req.body;
+    const conversationId = getParam(req, 'id');
+    const userId = getUserId(req);
 
+    if (!(await isConversationMember(conversationId, userId))) {
+      return res.status(403).json({ error: "Bu sohbeti okundu olarak işaretleme yetkiniz yok." });
+    }
 
-    // 1. Odaya ait ve benim göndermediğim tüm mesajları çek
     const allMessages = await prisma.message.findMany({
       where: {
         conversationId: conversationId,
@@ -385,99 +569,94 @@ router.post('/conversations/:id/read', async (req, res) => {
       }
     });
 
-    // 2. JavaScript ile Kesin Filtreleme (Sadece ID'min olmadıklarını bul)
     const unreadMessages = allMessages.filter(msg => {
       const reads = msg.readByIds || [];
       return !reads.includes(userId);
     });
 
-    // 3. PostgreSQL'i Zorlayan Tekil Güncelleme (Push/Set yerine direkt eşitleme)
     for (const msg of unreadMessages) {
       const currentReads = msg.readByIds || [];
-
       await prisma.message.update({
         where: { id: msg.id },
-        data: {
-          // Diziyi eski elemanlar + benim ID'm olacak şekilde sıfırdan yaratıp üzerine yazıyoruz!
-          readByIds: [...currentReads, userId] 
-        }
+        data: { readByIds: [...currentReads, userId] }
       });
     }
 
-    // 4. Mavi tik sinyali (ayar açıksa)
     if (emitReceipt !== false) {
       const io = req.app.get('io');
       io.to(conversationId).emit('mesajlar_okundu', { conversationId, readByUserId: userId });
     }
 
-    res.status(200).json({ success: true, updatedCount: unreadMessages.length });
+    return res.status(200).json({ success: true, updatedCount: unreadMessages.length });
   } catch (error) {
     console.error("[GÖRÜLDÜ HATASI]:", error);
-    res.status(500).json({ error: "Görüldü atılamadı." });
+    return res.status(500).json({ error: "Görüldü atılamadı." });
   }
 });
-// --- DÜZELTİLMİŞ: OKUNMAMIŞ MESAJ SAYILARINI GETİRME API'Sİ ---
-router.get('/unread-counts', async (req, res) => {
-  try {
-    const { userId } = req.query;
 
-    // 1. Önce kullanıcının katılımcısı olduğu odaları bul
+// OKUNMAMIŞ MESAJ SAYILARINI GETİRME
+router.get('/unread-counts', async (req: CustomRequest, res: Response): Promise<any> => {
+  try {
+    const userId = getUserId(req);
+
     const myParticipants = await prisma.participant.findMany({
-      where: { userId: userId as string },
+      where: { userId: userId },
       select: { conversationId: true }
     });
     const validConversationIds = myParticipants.map(p => p.conversationId);
 
-    // 2. Mesajları getirirken, Odanın (Conversation) 'isGroup' bilgisini de Prisma'dan çekiyoruz!
     const allPossibleUnread = await prisma.message.findMany({
       where: {
         conversationId: { in: validConversationIds },
-        senderId: { not: userId as string }
+        senderId: { not: userId }
       },
-      select: { 
-        conversationId: true, 
-        senderId: true, 
+      select: {
+        conversationId: true,
+        senderId: true,
         readByIds: true,
-        conversation: { select: { isGroup: true } } // SİHİRLİ DOKUNUŞ BURASI
+        conversation: { select: { isGroup: true } }
       }
     });
 
-    // 3. Okuduklarımı filtreden çıkar
     const unreadMessages = allPossibleUnread.filter(msg => {
       const reads = msg.readByIds || [];
-      return !reads.includes(userId as string);
+      return !reads.includes(userId);
     });
 
-    // 4. HAYALET BİLDİRİMLERİ ENGELLEYEN AKILLI SAYAÇ
     const counts: Record<string, number> = {};
-    
+
     unreadMessages.forEach(msg => {
       if (msg.conversation.isGroup) {
-        // EĞER GRUP MESAJIYSA: Sadece gruba +1 yaz. Kişiye asla dokunma!
         counts[msg.conversationId] = (counts[msg.conversationId] || 0) + 1;
       } else {
-        // EĞER ÖZEL MESAJSA (DM): O zaman gönderen kişiye (senderId) +1 yaz.
         counts[msg.senderId] = (counts[msg.senderId] || 0) + 1;
       }
     });
 
-    res.status(200).json(counts);
+    return res.status(200).json(counts);
   } catch (error) {
     console.error("Unread Counts Hatası:", error);
-    res.status(500).json({ error: "Okunmamış mesajlar getirilemedi." });
+    return res.status(500).json({ error: "Okunmamış mesajlar getirilemedi." });
   }
 });
-// 13. GLOBAL MESAJ ARAMA API'Sİ
-router.get('/messages/search', async (req, res) => {
+
+// GLOBAL MESAJ ARAMA
+router.get('/messages/search', validateRequest({ query: chatSchemas.searchQuery }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
-    const { q, userId } = req.query;
-    if (!q || !userId) return res.status(400).json({ error: "Eksik parametre" });
+    const { q } = req.query;
+    const userId = getUserId(req);
+
+    const searchTerm = Array.isArray(q) ? q[0] : q;
+    if (typeof searchTerm !== 'string' || searchTerm.trim().length < 2) {
+      return res.status(400).json({ error: "Arama metni en az 2 karakter olmalıdır." });
+    }
 
     const messages = await prisma.message.findMany({
       where: {
-        content: { contains: q as string, mode: 'insensitive' }, // Büyük/küçük harf duyarsız arama
+        content: { contains: searchTerm.trim(), mode: 'insensitive' },
+        NOT: { deletedForIds: { has: userId } },
         conversation: {
-          participants: { some: { userId: userId as string } } // Sadece benim içinde olduğum odalar
+          participants: { some: { userId: userId } }
         }
       },
       include: {
@@ -489,196 +668,92 @@ router.get('/messages/search', async (req, res) => {
         }
       },
       orderBy: { createdAt: 'desc' },
-      take: 30 // Performans için en son 30 sonucu getir
+      take: 30
     });
 
-    res.status(200).json(messages);
+    const responseMessages = await Promise.all(messages.map(withSignedFileUrl));
+    return res.status(200).json(responseMessages);
   } catch (error) {
     console.error("Arama hatası:", error);
-    res.status(500).json({ error: "Arama yapılamadı." });
+    return res.status(500).json({ error: "Arama yapılamadı." });
   }
 });
 
-// --- ZAMANLANMIŞ MESAJLAR İÇİN GEÇİCİ HAFIZA (RAM) ---
-const scheduledTimeouts = new Map(); // Kronometreleri tutar
-const scheduledMessagesData = new Map(); // Ekranda göstermek için mesaj içeriklerini tutar
-
-// 14. İLERİ TARİHLİ MESAJI VERİTABANINA KAYDETME API'Sİ
-router.post('/messages/schedule', async (req, res) => {
+// GÖNDERİLMİŞ MESAJI DÜZENLEME
+router.put('/messages/:id', validateRequest({
+  params: chatSchemas.idParams,
+  body: chatSchemas.editMessage
+}), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
-    // DÜZELTME 1: fileUrl, fileType ve fileName buraya eklendi ki req.body'den alabilsin
-    const { conversationId, senderId, content, sendAt, fileUrl, fileType, fileName } = req.body;
-
-    // MANTIKSAL KONTROL 1: Eğer hem yazı hem dosya yoksa hata ver
-    if ((!content || !content.trim()) && !fileUrl) {
-      return res.status(400).json({ error: "HATA: Boş mesaj zamanlayamazsınız!" });
-    }
-    if (!sendAt) {
-      return res.status(400).json({ error: "HATA: Lütfen geçerli bir tarih ve saat seçin!" });
-    }
-
-    const targetDate = new Date(sendAt);
-    if (isNaN(targetDate.getTime())) return res.status(400).json({ error: "HATA: Geçersiz tarih!" });
-    if (targetDate.getTime() <= Date.now()) return res.status(400).json({ error: "HATA: Geçmiş zaman seçilemez!" });
-
-    // DÜZELTME 2: Veritabanına dosya bilgileriyle birlikte kaydet
-    const scheduledMsg = await prisma.scheduledMessage.create({
-      data: {
-        content: content || "",
-        senderId,
-        conversationId,
-        sendAt: targetDate,
-        fileUrl: fileUrl || null,
-        fileType: fileType || null,
-        fileName: fileName || null
-      }
-    });
-
-    res.status(200).json({ success: true, message: "Mesajınız veritabanına başarıyla güvenle kuruldu!" });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: "Sistem hatası: Mesaj zamanlanamadı." });
-  }
-});
-
-// 15. BEKLEYEN ZAMANLANMIŞ MESAJLARI VERİTABANINDAN GETİRME
-router.get('/messages/scheduled/:conversationId', async (req, res) => {
-  try {
-    const { conversationId } = req.params;
-    
-    const pendingMessages = await prisma.scheduledMessage.findMany({
-      where: { conversationId },
-      orderBy: { sendAt: 'asc' } // En yakın zamanlı olan en üstte gözüksün
-    });
-    
-    res.status(200).json(pendingMessages);
-  } catch (error) {
-    res.status(500).json({ error: "Bekleyen mesajlar listelenemedi." });
-  }
-});
-
-// 16. ZAMANLANMIŞ MESAJI VERİTABANINDAN SİLEREK İPTAL ETME
-router.delete('/messages/schedule/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    // Önce mesaj var mı kontrol et
-    const exist = await prisma.scheduledMessage.findUnique({ where: { id } });
-    if (!exist) {
-      return res.status(404).json({ error: "HATA: İptal edilmek istenen mesaj zaten gönderilmiş veya bulunamadı!" });
-    }
-
-    await prisma.scheduledMessage.delete({ where: { id } });
-    res.status(200).json({ success: true, message: "Zamanlanmış görev veritabanından silindi, iptal başarılı!" });
-  } catch (error) {
-    res.status(500).json({ error: "İptal işlemi sırasında veritabanı hatası oluştu." });
-  }
-});
-
-// 17. ZAMANLANMIŞ MESAJI BEKLETMEDEN "ŞİMDİ GÖNDER" API'Sİ
-router.post('/messages/schedule/send-now/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    // 1. Zamanlanmış mesajı bul
-    const sm = await prisma.scheduledMessage.findUnique({ where: { id } });
-    if (!sm) {
-      return res.status(404).json({ error: "Zamanlanmış mesaj bulunamadı veya zaten gönderilmiş." });
-    }
-
-    // DÜZELTME 3: Geçici tablodaki (sm) dosya linklerini, asıl Message tablosuna aktarıyoruz!
-    const savedMessage = await prisma.message.create({
-      data: {
-        content: sm.content,
-        senderId: sm.senderId,
-        conversationId: sm.conversationId,
-        fileUrl: sm.fileUrl,
-        fileType: sm.fileType,
-        fileName: sm.fileName
-      },
-      include: { sender: { select: { username: true } } }
-    });
-
-    // 3. Zamanlayıcı tablosundan bu kaydı sil
-    await prisma.scheduledMessage.delete({ where: { id } });
-
-    // 4. Socket ile odadaki herkese CANLI olarak fırlat
-    const conversation = await prisma.conversation.findUnique({
-      where: { id: sm.conversationId },
-      include: { participants: true }
-    });
-
-    const targetRooms = [sm.conversationId];
-    if (conversation?.participants) {
-      conversation.participants.forEach(p => {
-        if (p.userId !== sm.senderId) targetRooms.push(p.userId);
-      });
-    }
-
-    const io = req.app.get('io');
-    io.to(targetRooms).emit('yeni_mesaj_geldi', savedMessage);
-
-    res.status(200).json({ success: true, message: "Mesaj bekletilmeden şimdi gönderildi!" });
-  } catch (error) {
-    res.status(500).json({ error: "Mesaj anında gönderilirken hata oluştu." });
-  }
-});
-
-// 18. ZAMANLANMIŞ MESAJIN İÇERİĞİNİ DÜZENLEME (EDIT) API'Sİ
-router.put('/messages/schedule/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { content } = req.body;
-
-    if (!content || !content.trim()) {
-      return res.status(400).json({ error: "Mesaj içeriği boş olamaz!" });
-    }
-
-    // Veritabanındaki zamanlanmış mesajın içeriğini güncelle
-    const updatedMessage = await prisma.scheduledMessage.update({
-      where: { id },
-      data: { content: content.trim() }
-    });
-
-    res.status(200).json({ success: true, updatedMessage });
-  } catch (error) {
-    res.status(500).json({ error: "Zamanlanmış mesaj güncellenirken hata oluştu." });
-  }
-});
-
-// --- MESAJ SABİTLEME (PIN) ---
-router.put('/messages/:id/pin', async (req, res) => {
-  try {
-    const { id } = req.params;
+    const id = getParam(req, 'id');
+    const userId = getUserId(req);
     const message = await prisma.message.findUnique({ where: { id } });
     if (!message) return res.status(404).json({ error: "Mesaj bulunamadı." });
+    if (message.senderId !== userId) {
+      return res.status(403).json({ error: "Yalnızca kendi mesajınızı düzenleyebilirsiniz." });
+    }
+    if (!(await isConversationMember(message.conversationId, userId))) {
+      return res.status(403).json({ error: "Bu sohbetin üyesi değilsiniz." });
+    }
 
     const updatedMessage = await prisma.message.update({
       where: { id },
-      data: { isPinned: !message.isPinned } // Tersine çevir (Aç/Kapat)
+      data: { content: req.body.content.trim(), editedAt: new Date() },
+      include: {
+        sender: { select: { username: true } },
+        replyTo: { select: { id: true, content: true, sender: { select: { username: true } } } },
+        conversation: { select: { isGroup: true } }
+      }
+    });
+
+    const responseMessage = await withSignedFileUrl(updatedMessage);
+    req.app.get('io').to(message.conversationId).emit('mesaj_guncellendi', responseMessage);
+    return res.status(200).json(responseMessage);
+  } catch (error) {
+    return res.status(500).json({ error: "Mesaj düzenlenemedi." });
+  }
+});
+
+// MESAJ SABİTLEME
+router.put('/messages/:id/pin', validateRequest({ params: chatSchemas.idParams }), async (req: CustomRequest, res: Response): Promise<any> => {
+  try {
+    const id = getParam(req, 'id');
+    const userId = getUserId(req);
+    const message = await prisma.message.findUnique({ where: { id } });
+    if (!message) return res.status(404).json({ error: "Mesaj bulunamadı." });
+    if (!(await isConversationMember(message.conversationId, userId))) {
+      return res.status(403).json({ error: "Bu mesajı sabitleme yetkiniz yok." });
+    }
+
+    const updatedMessage = await prisma.message.update({
+      where: { id },
+      data: { isPinned: !message.isPinned }
     });
 
     const io = req.app.get('io');
-    io.to(message.conversationId).emit('mesaj_guncellendi', updatedMessage);
-    res.status(200).json(updatedMessage);
-  } catch (error) { res.status(500).json({ error: "Sabitleme işlemi başarısız." }); }
+    const responseMessage = await withSignedFileUrl(updatedMessage);
+    io.to(message.conversationId).emit('mesaj_guncellendi', responseMessage);
+    return res.status(200).json(responseMessage);
+  } catch (error) { return res.status(500).json({ error: "Sabitleme işlemi başarısız." }); }
 });
 
-// --- MESAJ YILDIZLAMA (STAR) ---
-router.put('/messages/:id/star', async (req, res) => {
+// MESAJ YILDIZLAMA
+router.put('/messages/:id/star', validateRequest({ params: chatSchemas.idParams }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
-    const { id } = req.params;
-    const { userId } = req.body;
+    const id = getParam(req, 'id');
+    const userId = getUserId(req);
 
     const message = await prisma.message.findUnique({ where: { id } });
     if (!message) return res.status(404).json({ error: "Mesaj bulunamadı." });
+    if (!(await isConversationMember(message.conversationId, userId))) {
+      return res.status(403).json({ error: "Bu mesajı yıldızlama yetkiniz yok." });
+    }
 
     const currentStars = message.starredByIds || [];
     const isStarred = currentStars.includes(userId);
-    
-    // Eğer yıldızlıysa çıkar, değilse ekle
-    const newStars = isStarred 
-      ? currentStars.filter(uid => uid !== userId) 
+
+    const newStars = isStarred
+      ? currentStars.filter(uid => uid !== userId)
       : [...currentStars, userId];
 
     const updatedMessage = await prisma.message.update({
@@ -686,50 +761,56 @@ router.put('/messages/:id/star', async (req, res) => {
       data: { starredByIds: newStars }
     });
 
-    // Yıldızlama kişisel olduğu için sadece o kullanıcıya bildiriyoruz
     const io = req.app.get('io');
-    io.to(userId).emit('mesaj_guncellendi', updatedMessage);
-    res.status(200).json(updatedMessage);
-  } catch (error) { res.status(500).json({ error: "Yıldızlama başarısız." }); }
+    const responseMessage = await withSignedFileUrl(updatedMessage);
+    io.to(userId).emit('mesaj_guncellendi', responseMessage);
+    return res.status(200).json(responseMessage);
+  } catch (error) { return res.status(500).json({ error: "Yıldızlama başarısız." }); }
 });
 
-// --- MESAJ SİLME (BENDEN / HERKESTEN SİL) ---
-router.delete('/messages/:id', async (req, res) => {
+// MESAJ SİLME (BENDEN / HERKESTEN SİL)
+router.delete('/messages/:id', validateRequest({
+  params: chatSchemas.idParams,
+  query: chatSchemas.deleteMessageQuery
+}), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
-    const { id } = req.params;
-    const { userId, forEveryone } = req.query; // forEveryone=true veya false
+    const id = getParam(req, 'id');
+    const { forEveryone } = req.query;
+    const userId = getUserId(req);
 
     const message = await prisma.message.findUnique({ where: { id } });
     if (!message) return res.status(404).json({ error: "Mesaj bulunamadı." });
+    if (!(await isConversationMember(message.conversationId, userId))) {
+      return res.status(403).json({ error: "Bu mesajı silme yetkiniz yok." });
+    }
 
     const io = req.app.get('io');
 
     if (forEveryone === 'true') {
-      // HERKESTEN SİL: Sadece gönderen silebilir
       if (message.senderId !== userId) return res.status(403).json({ error: "Sadece kendi mesajınızı herkesten silebilirsiniz." });
-      
-      // Veritabanından tamamen sil (Veya content'i "Bu mesaj silindi" yapabilirsin)
-      await prisma.message.delete({ where: { id } });
-      
-      // Herkese mesajın silindiğini bildir ki ekrandan kaybolsun
+
+      await prisma.$transaction([
+        prisma.message.updateMany({ where: { replyToId: id }, data: { replyToId: null } }),
+        prisma.message.delete({ where: { id } })
+      ]);
+      await deleteFileIfUnreferenced(message.fileKey);
+
       io.to(message.conversationId).emit('mesaj_silindi', { messageId: id, conversationId: message.conversationId });
       return res.status(200).json({ message: "Mesaj herkesten silindi." });
-      
+
     } else {
-      // BENDEN SİL: Sadece kullanıcının IDsini `deletedForIds` listesine ekle
       const currentDeleted = message.deletedForIds || [];
-      if (!currentDeleted.includes(userId as string)) {
+      if (!currentDeleted.includes(userId)) {
         await prisma.message.update({
           where: { id },
-          data: { deletedForIds: [...currentDeleted, userId as string] }
+          data: { deletedForIds: [...currentDeleted, userId] }
         });
       }
-      
-      // Sadece o kullanıcının ekranından silinmesi için sinyal at
-      io.to(userId as string).emit('mesaj_silindi', { messageId: id, conversationId: message.conversationId });
+
+      io.to(userId).emit('mesaj_silindi', { messageId: id, conversationId: message.conversationId });
       return res.status(200).json({ message: "Mesaj sadece sizden silindi." });
     }
-  } catch (error) { res.status(500).json({ error: "Silme işlemi başarısız." }); }
+  } catch (error) { return res.status(500).json({ error: "Silme işlemi başarısız." }); }
 });
 
 export default router;

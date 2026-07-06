@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import './Modals.css';
-import type { User, Conversation } from '../../App';
-import Button from '../UI/Button'; 
+import type { User, Conversation } from '../../types/chat';
+import Button from '../UI/Button';
 
 interface GroupSettingsModalProps {
   setIsGroupSettingsOpen: (isOpen: boolean) => void;
@@ -19,14 +19,14 @@ interface GroupSettingsModalProps {
 }
 
 export default function GroupSettingsModal({
-  setIsGroupSettingsOpen, activeConversation, currentUser, editGroupName, 
+  setIsGroupSettingsOpen, activeConversation, currentUser, editGroupName,
   setEditGroupName, handleUpdateGroupName, groupMembers, handleRemoveMember, handleDeleteGroup,
   usersList, handleAddMembersToGroup, handleTransferAdmin
 }: GroupSettingsModalProps) {
-  
+
   const [showAddMember, setShowAddMember] = useState(false);
   const [selectedNewMembers, setSelectedNewMembers] = useState<string[]>([]);
-  
+
   const isAdmin = activeConversation.adminId === currentUser?.id;
   const availableUsersToAdd = usersList.filter(u => !groupMembers.some(gm => gm.id === u.id));
 
@@ -39,14 +39,14 @@ export default function GroupSettingsModal({
   return (
     <div className="settings-overlay" onClick={() => setIsGroupSettingsOpen(false)}>
       <div className="settings-modal" style={{ width: '420px', maxHeight: '90vh', overflowY: 'auto' }} onClick={(e) => e.stopPropagation()}>
-        
+
         <div className="settings-header">
           <h2>⚙️ Grup Ayarları</h2>
           <button className="close-btn" onClick={() => setIsGroupSettingsOpen(false)}>✕</button>
         </div>
-        
+
         <div className="settings-body">
-          
+
           {/* GRUP ADI DEĞİŞTİRME */}
           {isAdmin && (
             <div className="settings-section">
@@ -67,7 +67,7 @@ export default function GroupSettingsModal({
                     {showAddMember ? "İptal" : "+ Ekle"}
                   </button>
                </div>
-               
+
                {showAddMember && (
                  <div className="add-member-box">
                    {availableUsersToAdd.length === 0 ? (
@@ -99,21 +99,21 @@ export default function GroupSettingsModal({
               {groupMembers.map(member => {
                 const isMemberAdmin = activeConversation.adminId === member.id;
                 const isMe = member.id === currentUser?.id;
-                
+
                 return (
                   <div key={member.id} className="member-list-item">
                     <div className="member-info">
                       <span className="member-name">{isMe ? "Sen" : member.username}</span>
                       {isMemberAdmin && <span className="member-role">Yönetici</span>}
                     </div>
-                    
+
                     <div className="member-actions">
                       {isAdmin && !isMe && (
                         <button onClick={() => handleTransferAdmin(member.id)} className="action-btn-outline">
                           Yönetici Yap
                         </button>
                       )}
-                      
+
                       {(isAdmin || isMe) && (
                         <button onClick={() => handleRemoveMember(member.id)} className="action-btn-danger">
                           {isMe ? "Ayrıl" : "Çıkar"}
@@ -138,7 +138,7 @@ export default function GroupSettingsModal({
               </button>
             </div>
           )}
-          
+
         </div>
       </div>
     </div>

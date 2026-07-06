@@ -1,5 +1,5 @@
 import './Modals.css';
-import type { User } from '../../App';
+import type { User } from '../../types/chat';
 import Button from '../UI/Button';
 
 interface CreateGroupModalProps {
@@ -13,7 +13,7 @@ interface CreateGroupModalProps {
 }
 
 export default function CreateGroupModal({
-  setIsGroupModalOpen, newGroupName, setNewGroupName, usersList, 
+  setIsGroupModalOpen, newGroupName, setNewGroupName, usersList,
   selectedMembers, toggleMemberSelection, handleCreateGroup
 }: CreateGroupModalProps) {
   return (
@@ -26,7 +26,7 @@ export default function CreateGroupModal({
         <div className="settings-body">
           <input type="text" placeholder="Grup Adı (Örn: Proje Ekibi)" value={newGroupName} onChange={(e) => setNewGroupName(e.target.value)} style={{width: '100%', padding: '10px', marginBottom: '15px', border: '1px solid #ddd', borderRadius: '6px', outline: 'none'}} />
           <h4 style={{fontSize: '14px', color: '#555', margin: '0 0 10px 0'}}>Kişileri Seçin</h4>
-          
+
           <div style={{maxHeight: '200px', overflowY: 'auto', marginBottom: '15px', border: '1px solid #eee', borderRadius: '6px', padding: '10px'}}>
             {usersList.length === 0 ? (
               <p style={{fontSize: '13px', color: '#888'}}>Sisteme kayıtlı başka kullanıcı yok.</p>
@@ -39,10 +39,10 @@ export default function CreateGroupModal({
               ))
             )}
           </div>
-          <Button 
-               text="Grubu Kur" 
-              onClick={handleCreateGroup} 
-              fullWidth={true} 
+          <Button
+               text="Grubu Kur"
+              onClick={handleCreateGroup}
+              fullWidth={true}
                     />
         </div>
       </div>
