@@ -5,11 +5,11 @@ import { verifyAccessToken } from '../services/authTokens';
 interface SocketUser {
   userId: string;
   username: string;
-  expiresAt: number;
 }
 
 // Bir kullanıcının birden fazla sekmesi olabileceği için socket kimlikleri küme halinde tutulur.
 const onlineSockets = new Map<string, Set<string>>();
+const SOCKET_INACTIVITY_TIMEOUT_MS = 1 * 60 * 1000;
 
 export const registerSocketHandlers = (io: Server) => {
   // Socket el sıkışması yalnızca kısa ömürlü access token kabul eder.
@@ -25,8 +25,7 @@ export const registerSocketHandlers = (io: Server) => {
 
       socket.data.user = {
         userId: decoded.userId,
-        username: decoded.username,
-        expiresAt: decoded.exp * 1000
+        username: decoded.username
       } satisfies SocketUser;
       next();
     } catch {
@@ -37,11 +36,15 @@ export const registerSocketHandlers = (io: Server) => {
   io.on('connection', (socket) => {
     const currentUser = socket.data.user as SocketUser;
 
-    // Açık bir socket, access token süresini aşarak sonsuza kadar yetkili kalamaz.
-    const accessExpiryTimer = setTimeout(
-      () => socket.disconnect(true),
-      Math.max(0, currentUser.expiresAt - Date.now())
-    );
+    // Socket yaşam süresi access token yenilemesine değil, gerçek kullanıcı aktivitesine bağlıdır.
+    let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
+    const resetInactivityTimer = () => {
+      if (inactivityTimer) clearTimeout(inactivityTimer);
+      inactivityTimer = setTimeout(() => {
+        socket.disconnect(true);
+      }, SOCKET_INACTIVITY_TIMEOUT_MS);
+    };
+    resetInactivityTimer();
 
     const userSockets = onlineSockets.get(currentUser.userId) || new Set<string>();
     userSockets.add(socket.id);
@@ -51,10 +54,15 @@ export const registerSocketHandlers = (io: Server) => {
     socket.emit('presence_snapshot', { onlineUserIds: [...onlineSockets.keys()] });
     socket.broadcast.emit('presence_changed', { userId: currentUser.userId, isOnline: true, lastSeenAt: null });
 
+    socket.on('client_activity', () => {
+      resetInactivityTimer();
+    });
+
     socket.on('odaya_katil', async (
       conversationId: unknown,
       acknowledge?: (result: { ok: boolean; error?: string }) => void
     ) => {
+      resetInactivityTimer();
       if (typeof conversationId !== 'string' || !conversationId.trim()) {
         acknowledge?.({ ok: false, error: 'Geçersiz sohbet kimliği.' });
         return;
@@ -88,6 +96,7 @@ export const registerSocketHandlers = (io: Server) => {
     });
 
     socket.on('typing_changed', async (payload: unknown) => {
+      resetInactivityTimer();
       if (!payload || typeof payload !== 'object') return;
       const { conversationId, isTyping } = payload as { conversationId?: unknown; isTyping?: unknown };
       if (typeof conversationId !== 'string' || typeof isTyping !== 'boolean') return;
@@ -111,7 +120,7 @@ export const registerSocketHandlers = (io: Server) => {
     });
 
     socket.on('disconnect', async () => {
-      clearTimeout(accessExpiryTimer);
+      if (inactivityTimer) clearTimeout(inactivityTimer);
       const sockets = onlineSockets.get(currentUser.userId);
       sockets?.delete(socket.id);
       if (sockets && sockets.size > 0) return;

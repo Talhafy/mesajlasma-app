@@ -19,6 +19,9 @@ import {
   subscribeAccessToken
 } from './auth/tokenStore';
 
+const SOCKET_INACTIVITY_TIMEOUT_MS = 1 * 60 * 1000;
+const SOCKET_ACTIVITY_PING_INTERVAL_MS = 60 * 1000;
+
 export default function App() {
   const [currentView, setCurrentView] = useState<'login' | 'register' | 'chat'>('login');
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -56,8 +59,13 @@ export default function App() {
   const activeConversationRef = useRef<Conversation | null>(null);
   const currentUserRef = useRef<User | null>(null);
   const groupsListRef = useRef<Conversation[]>([]);
+  const usersListRef = useRef<User[]>([]);
   const processedMessagesRef = useRef<Set<string>>(new Set());
   const autoScrollRef = useRef(true);
+  const isSocketActiveRef = useRef(true);
+  const socketInactivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastSocketActivityPingRef = useRef(0);
+  const lastUserActivityAtRef = useRef(Date.now());
 
   const resetClientSession = () => {
     setAccessToken(null);
@@ -69,6 +77,7 @@ export default function App() {
   useEffect(() => { activeConversationRef.current = activeConversation; }, [activeConversation]);
   useEffect(() => { currentUserRef.current = currentUser; }, [currentUser]);
   useEffect(() => { groupsListRef.current = groupsList; }, [groupsList]);
+  useEffect(() => { usersListRef.current = usersList; }, [usersList]);
   useEffect(() => { if (autoScrollRef.current) { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); } }, [messages]);
   useEffect(() => {
     if (isDarkMode) { document.body.classList.add('dark-theme'); localStorage.setItem('theme', 'dark'); }
@@ -150,8 +159,14 @@ export default function App() {
     catch { console.error("Okunmamış sayılar çekilemedi"); }
   };
 
+  const mergeLiveUsersIntoConversations = (conversations: Conversation[]) => conversations.map((conversation) => {
+    if (!conversation.otherUser) return conversation;
+    const liveUser = usersListRef.current.find((user) => user.id === conversation.otherUser?.id);
+    return liveUser ? { ...conversation, otherUser: { ...conversation.otherUser, ...liveUser } } : conversation;
+  });
+
   const fetchConversations = async () => {
-    try { const res = await api.get('/conversations'); setConversationList(res.data); }
+    try { const res = await api.get('/conversations'); setConversationList(mergeLiveUsersIntoConversations(res.data)); }
     catch { console.error("Sohbet listesi alınamadı"); }
   };
 
@@ -167,18 +182,20 @@ export default function App() {
   };
 
   const startChat = async (targetUser: User) => {
-    setSelectedUser(targetUser);
+    const liveUser = usersListRef.current.find((user) => user.id === targetUser.id);
+    const chatUser = liveUser ? { ...targetUser, ...liveUser } : targetUser;
+    setSelectedUser(chatUser);
     setHasMore(true);
     try {
-      const res = await api.post('/conversations/direct', { targetUserId: targetUser.id });
-      setActiveConversation({ ...res.data, otherUser: targetUser });
+      const res = await api.post('/conversations/direct', { targetUserId: chatUser.id });
+      setActiveConversation({ ...res.data, otherUser: chatUser });
       const msgs = await api.get(`/conversations/${res.data.id}/messages`);
       autoScrollRef.current = true;
       setMessages(msgs.data);
 
       if (currentUser) {
         await api.post(`/conversations/${res.data.id}/read`, { emitReceipt: currentUser.readReceiptsOn !== false });
-        setUnreadCounts(prev => ({ ...prev, [targetUser.id]: 0, [res.data.id]: 0 }));
+        setUnreadCounts(prev => ({ ...prev, [chatUser.id]: 0, [res.data.id]: 0 }));
       }
       if (socket) socket.emit('odaya_katil', res.data.id);
     } catch { alert("Kullanıcı silinmiş veya sohbet yüklenemedi."); setSelectedUser(null); }
@@ -319,17 +336,51 @@ export default function App() {
     const newSocket = io(API_ORIGIN, { auth: { token } });
     setSocket(newSocket);
 
-    // Yeni access token geldiğinde socket yeniden doğrulanır ve odalar connect olayında geri yüklenir.
-    const unsubscribeToken = subscribeAccessToken((nextToken) => {
-      const wasConnected = newSocket.connected;
-      newSocket.auth = { token: nextToken };
-      if (nextToken && wasConnected) {
-        newSocket.disconnect();
-        newSocket.connect();
+    const reconnectSocketIfActive = async () => {
+      const isStillActive = Date.now() - lastUserActivityAtRef.current < SOCKET_INACTIVITY_TIMEOUT_MS;
+      if (!isSocketActiveRef.current || !isStillActive || newSocket.connected) return;
+      const currentToken = getAccessToken() || (await refreshAccessSession()).accessToken;
+      newSocket.auth = { token: currentToken };
+      newSocket.connect();
+    };
+
+    const markSocketActive = () => {
+      const wasInactive = !isSocketActiveRef.current;
+      isSocketActiveRef.current = true;
+      lastUserActivityAtRef.current = Date.now();
+
+      if (socketInactivityTimerRef.current) clearTimeout(socketInactivityTimerRef.current);
+      socketInactivityTimerRef.current = setTimeout(() => {
+        isSocketActiveRef.current = false;
+        if (newSocket.connected) newSocket.disconnect();
+      }, SOCKET_INACTIVITY_TIMEOUT_MS);
+
+      if (newSocket.connected && Date.now() - lastSocketActivityPingRef.current > SOCKET_ACTIVITY_PING_INTERVAL_MS) {
+        lastSocketActivityPingRef.current = Date.now();
+        newSocket.emit('client_activity');
       }
+
+      if (wasInactive) void reconnectSocketIfActive();
+    };
+
+    const handleVisibilityChange = () => {
+      if (!document.hidden) markSocketActive();
+    };
+
+    const activityEvents: Array<keyof WindowEventMap> = ['mousemove', 'mousedown', 'keydown', 'scroll', 'wheel', 'touchstart', 'pointerdown'];
+    activityEvents.forEach((eventName) => window.addEventListener(eventName, markSocketActive, { passive: true }));
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    markSocketActive();
+
+    // Yeni access token geldiğinde bağlı socket'i yeniden başlatmayız; token sonraki bağlantıda kullanılır.
+    const unsubscribeToken = subscribeAccessToken((nextToken) => {
+      newSocket.auth = { token: nextToken };
+      if (nextToken && !newSocket.connected && isSocketActiveRef.current) void reconnectSocketIfActive();
     });
 
     newSocket.on('connect', () => {
+      lastSocketActivityPingRef.current = Date.now();
+      newSocket.emit('client_activity');
       if (currentUserRef.current) newSocket.emit('odaya_katil', currentUserRef.current.id);
       groupsListRef.current.forEach((group) => newSocket.emit('odaya_katil', group.id));
       if (activeConversationRef.current) newSocket.emit('odaya_katil', activeConversationRef.current.id);
@@ -337,6 +388,11 @@ export default function App() {
 
     newSocket.on('disconnect', (reason) => {
       if (reason !== 'io server disconnect') return;
+      const isStillActive = Date.now() - lastUserActivityAtRef.current < SOCKET_INACTIVITY_TIMEOUT_MS;
+      if (!isSocketActiveRef.current || !isStillActive) {
+        isSocketActiveRef.current = false;
+        return;
+      }
       void refreshAccessSession().then(({ accessToken }) => {
         newSocket.auth = { token: accessToken };
         newSocket.connect();
@@ -455,7 +511,14 @@ export default function App() {
       setGroupsList(prev => prev.filter(g => g.id !== data.groupId)); setActiveConversation(prev => prev?.id === data.groupId ? null : prev);
     });
 
-    return () => { unsubscribeToken(); newSocket.disconnect(); };
+    return () => {
+      unsubscribeToken();
+      activityEvents.forEach((eventName) => window.removeEventListener(eventName, markSocketActive));
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (socketInactivityTimerRef.current) clearTimeout(socketInactivityTimerRef.current);
+      socketInactivityTimerRef.current = null;
+      newSocket.disconnect();
+    };
   }, [currentView, currentUser?.id]);
 
   useEffect(() => { if (socket && currentUser) socket.emit('odaya_katil', currentUser.id); }, [socket, currentUser]);
