@@ -32,13 +32,15 @@ interface ChatAreaProps {
   onToggleConversationArchive: (conversationId: string) => void;
   onToggleConversationMute: (conversationId: string) => void;
   onSetDisappearingMode: (conversationId: string, durationSeconds: number | null) => void;
+  onStartCall: (callType: 'audio' | 'video') => void;
 }
 
 export default function ChatArea({
   currentUser, activeConversation, selectedUser, messages, newMessage,
   setNewMessage, mesajGonder, messagesEndRef, openGroupSettings, closeChat, isDarkMode,
   usersList, groupMembers, loadMoreMessages, hasMore, isLoadingMore, typingUsername, onTyping,
-  onToggleConversationPin, onToggleConversationArchive, onToggleConversationMute, onSetDisappearingMode
+  onToggleConversationPin, onToggleConversationArchive, onToggleConversationMute, onSetDisappearingMode,
+  onStartCall
 }: ChatAreaProps) {
 
   // ARAMA VE MENÜ DURUMLARI
@@ -548,21 +550,23 @@ export default function ChatArea({
 
       {/* ÜST BAR (HEADER) */}
       <div className="chat-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '15px 20px', background: panelBg, borderBottom: `1px solid ${borderColor}`, height: '71px', boxSizing: 'border-box' }}>
-        <div className="chat-title-info" style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
+        <div className="chat-title-info" style={{ display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0, flex: '1 1 auto' }}>
           <button className="mobile-back-btn" onClick={closeChat} style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer', color: iconColor }}>←</button>
           <div style={{ width: '40px', height: '40px', borderRadius: '50%', background: '#00a884', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', fontSize: '18px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', overflow: 'hidden' }}>
             {!activeConversation?.isGroup && chatPartner?.avatarUrl
               ? <img src={chatPartner.avatarUrl} alt="Profil" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
               : (activeConversation?.isGroup ? activeConversation.name : chatPartner?.username)?.[0]?.toUpperCase()}
           </div>
-          <div>
-            <h2 style={{ margin: 0, fontSize: '16px', color: textColor, fontWeight: '600' }}>
+          <div style={{ minWidth: 0 }}>
+            <h2 style={{ margin: 0, fontSize: '16px', color: textColor, fontWeight: '600', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {activeConversation?.isGroup ? activeConversation.name : chatPartner?.username}
             </h2>
             {!activeConversation?.isGroup && partnerStatus && <div style={{ marginTop: '2px', fontSize: '11px', color: typingUsername || chatPartner?.isOnline ? '#00a884' : iconColor }}>{partnerStatus}</div>}
           </div>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '2px', flexShrink: 0 }}>
+          <Button variant="icon" onClick={() => onStartCall('audio')} disabled={!activeConversation?.id} title="Sesli Ara" style={{ color: iconColor }} icon={<svg viewBox="0 0 24 24" width="23" height="23" fill="currentColor"><path d="M6.62 10.79a15.05 15.05 0 0 0 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1C10.61 21 3 13.39 3 4c0-.55.45-1 1-1h3.49c.55 0 1 .45 1 1 0 1.24.2 2.45.57 3.57.11.35.03.74-.25 1.02z"></path></svg>} />
+          <Button variant="icon" onClick={() => onStartCall('video')} disabled={!activeConversation?.id} title="Görüntülü Ara" style={{ color: iconColor }} icon={<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M17 10.5V6c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v12c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-4.5l4 4v-11z"></path></svg>} />
           <Button variant="icon" onClick={() => setIsPendingModalOpen(!isPendingModalOpen)} title="Bekleyen Mesajlar" style={{ color: iconColor, position: 'relative' }} icon={<><svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M12 2C6.486 2 2 6.486 2 12s4.486 10 10 10 10-4.486 10-10S17.514 2 12 2zm0 18c-4.411 0-8-3.589-8-8s3.589-8 8-8 8 3.589 8 8-3.589 8-8 8zm.5-13H11v6l5.2 3.2.8-1.3-4.5-2.7V7z"></path></svg>{pendingMessages.length > 0 && (<span style={{ position: 'absolute', top: '-2px', right: '-2px', background: '#e53935', color: 'white', fontSize: '10px', fontWeight: 'bold', width: '16px', height: '16px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', border: `2px solid ${panelBg}` }}>{pendingMessages.length}</span>)}</>} />
           <Button variant="icon" onClick={() => { setIsSearchOpen(!isSearchOpen); setMessageSearchTerm(''); }} title="Mesajlarda Ara" style={{ color: iconColor }} icon={<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M15.009 13.805h-.636l-.22-.219a5.184 5.184 0 0 0 1.256-3.386 5.207 5.207 0 1 0-5.207 5.208 5.183 5.183 0 0 0 3.385-1.255l.221.22v.635l4.004 3.999 1.194-1.195-3.997-4.007zm-4.8 0a3.6 3.6 0 1 1 0-7.2 3.6 3.6 0 0 1 0 7.2z"></path></svg>} />
           {activeConversation?.isGroup && (<Button variant="icon" onClick={openGroupSettings} title="Grup Bilgisi" style={{ color: iconColor }} icon={<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M12 7a2 2 0 1 0-.001-4.001A2 2 0 0 0 12 7zm0 2a2 2 0 1 0-.001 3.999A2 2 0 0 0 12 9zm0 6a2 2 0 1 0-.001 3.999A2 2 0 0 0 12 15z"></path></svg>} />)}

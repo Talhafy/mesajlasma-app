@@ -79,6 +79,11 @@ export const chatSchemas = {
   addGroupMembers: z.object({ userIdsToAdd: z.array(uuid).min(1).max(100) }).strict(),
   transferAdmin: z.object({ newAdminId: uuid }).strict(),
   readConversation: z.object({ emitReceipt: z.boolean().optional() }).strict(),
+  callToken: z.object({
+    conversationId: uuid,
+    callId: uuid,
+    callType: z.enum(['audio', 'video'])
+  }).strict(),
   searchQuery: z.object({ q: z.string().trim().min(2).max(100) }),
   scheduledMessage: scheduledMessageBody,
   scheduledConversationParams: z.object({ conversationId: uuid }),

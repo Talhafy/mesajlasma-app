@@ -5,12 +5,13 @@ import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import { clientOrigin, port, trustProxy } from './config/env';
-import { logger } from './config/logger';
+import { flushLogs, logger } from './config/logger';
 import { loginLimiter, refreshLimiter, registerLimiter, uploadLimiter } from './config/rateLimiters';
 import prisma from './db';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 import { requestLogger, securityStatusLogger } from './middleware/requestLogger';
 import authRoutes from './routes/auth';
+import callRoutes from './routes/calls';
 import chatRoutes from './routes/chat';
 import healthRoutes from './routes/health';
 import scheduledMessageRoutes from './routes/scheduledMessages';
@@ -45,6 +46,7 @@ app.use('/api/refresh', refreshLimiter);
 app.use('/api/upload', uploadLimiter);
 
 app.use('/api', authRoutes);
+app.use('/api', callRoutes);
 app.use('/api', healthRoutes);
 app.use('/api', chatRoutes);
 app.use('/api', scheduledMessageRoutes);
@@ -69,7 +71,11 @@ const shutdown = (signal: string) => {
   stopScheduledWorker();
   io.disconnectSockets(true);
   httpServer.close(async () => {
-    await prisma.$disconnect();
+    try {
+      await prisma.$disconnect();
+    } finally {
+      await flushLogs();
+    }
   });
 };
 

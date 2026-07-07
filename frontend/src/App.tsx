@@ -5,6 +5,8 @@ import './App.css';
 import Auth from './components/Auth/Auth';
 import Sidebar from './components/Sidebar/Sidebar';
 import ChatArea from './components/ChatArea/ChatArea';
+import CallModal, { type ActiveCall, type CallType } from './components/Call/CallModal';
+import IncomingCallPrompt, { type IncomingCall } from './components/Call/IncomingCallPrompt';
 import CreateGroupModal from './components/Modals/CreateGroupModal';
 import GroupSettingsModal from './components/Modals/GroupSettingsModal';
 import SettingsModal from './components/Modals/SettingsModal';
@@ -53,6 +55,8 @@ export default function App() {
   const [groupMembers, setGroupMembers] = useState<User[]>([]);
   const [typingByConversation, setTypingByConversation] = useState<Record<string, string>>({});
   const [socketConnectionStatus, setSocketConnectionStatus] = useState<'connected' | 'inactive' | 'reconnecting' | 'disconnected'>('connected');
+  const [activeCall, setActiveCall] = useState<ActiveCall | null>(null);
+  const [incomingCall, setIncomingCall] = useState<IncomingCall | null>(null);
 
   const [isDarkMode, setIsDarkMode] = useState(() => localStorage.getItem('theme') === 'dark');
 
@@ -69,6 +73,8 @@ export default function App() {
   const socketInactivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSocketActivityPingRef = useRef(0);
   const lastUserActivityAtRef = useRef(Date.now());
+  const activeCallRef = useRef<ActiveCall | null>(null);
+  const incomingCallRef = useRef<IncomingCall | null>(null);
 
   const resetClientSession = () => {
     setAccessToken(null);
@@ -83,6 +89,8 @@ export default function App() {
   useEffect(() => { groupsListRef.current = groupsList; }, [groupsList]);
   useEffect(() => { usersListRef.current = usersList; }, [usersList]);
   useEffect(() => { conversationListRef.current = conversationList; }, [conversationList]);
+  useEffect(() => { activeCallRef.current = activeCall; }, [activeCall]);
+  useEffect(() => { incomingCallRef.current = incomingCall; }, [incomingCall]);
   useEffect(() => { if (autoScrollRef.current) { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); } }, [messages]);
   useEffect(() => {
     if (isDarkMode) { document.body.classList.add('dark-theme'); localStorage.setItem('theme', 'dark'); }
@@ -301,6 +309,67 @@ export default function App() {
   };
 
   const toggleMemberSelection = (userId: string) => { setSelectedMembers(prev => prev.includes(userId) ? prev.filter(id => id !== userId) : [...prev, userId]); };
+
+  const getCallTitle = (conversationId: string, fallback?: string | null) => {
+    const conversation = activeConversationRef.current?.id === conversationId
+      ? activeConversationRef.current
+      : conversationListRef.current.find((item) => item.id === conversationId) || groupsListRef.current.find((item) => item.id === conversationId);
+
+    if (conversation?.isGroup) return conversation.name || fallback || 'Grup görüşmesi';
+    return conversation?.otherUser?.username || selectedUserRef.current?.username || fallback || 'Görüşme';
+  };
+
+  const createCallConnection = async (conversationId: string, callId: string, callType: CallType): Promise<ActiveCall> => {
+    const response = await api.post('/calls/token', { conversationId, callId, callType });
+    return response.data;
+  };
+
+  const emitCallSignal = (eventName: 'call:invite' | 'call:accepted' | 'call:declined' | 'call:ended', call: {
+    conversationId: string;
+    callId: string;
+    callType: CallType;
+  }) => {
+    socket?.emit(eventName, {
+      conversationId: call.conversationId,
+      callId: call.callId,
+      callType: call.callType
+    });
+  };
+
+  const startConversationCall = async (callType: CallType) => {
+    if (!activeConversation?.id) return;
+    const callId = crypto.randomUUID();
+
+    try {
+      const nextCall = await createCallConnection(activeConversation.id, callId, callType);
+      setActiveCall(nextCall);
+      emitCallSignal('call:invite', nextCall);
+    } catch {
+      alert('Görüşme başlatılamadı. LiveKit ayarlarını kontrol edin.');
+    }
+  };
+
+  const acceptIncomingCall = async () => {
+    if (!incomingCall) return;
+    try {
+      const nextCall = await createCallConnection(incomingCall.conversationId, incomingCall.callId, incomingCall.callType);
+      emitCallSignal('call:accepted', incomingCall);
+      setIncomingCall(null);
+      setActiveCall(nextCall);
+    } catch {
+      alert('Görüşmeye bağlanılamadı.');
+    }
+  };
+
+  const declineIncomingCall = () => {
+    if (incomingCall) emitCallSignal('call:declined', incomingCall);
+    setIncomingCall(null);
+  };
+
+  const closeActiveCall = () => {
+    if (activeCallRef.current) emitCallSignal('call:ended', activeCallRef.current);
+    setActiveCall(null);
+  };
 
   const openGroupSettings = async () => {
     if (!activeConversation) return;
@@ -524,6 +593,36 @@ export default function App() {
       });
     });
 
+    newSocket.on('call:incoming', (call: IncomingCall) => {
+      if (call.caller.id === currentUserRef.current?.id) return;
+
+      if (activeCallRef.current || incomingCallRef.current) {
+        newSocket.emit('call:declined', {
+          conversationId: call.conversationId,
+          callId: call.callId,
+          callType: call.callType
+        });
+        return;
+      }
+
+      setIncomingCall(call);
+      if ('Notification' in window && Notification.permission === 'granted' && document.hidden) {
+        new Notification(call.callType === 'video' ? 'Görüntülü çağrı' : 'Sesli çağrı', {
+          body: `${call.caller.username} arıyor`
+        });
+      }
+    });
+
+    newSocket.on('call:declined', ({ callId, user }: { callId: string; user?: { username?: string } }) => {
+      if (activeCallRef.current?.callId !== callId) return;
+      if (user?.username) console.info(`${user.username} çağrıyı reddetti.`);
+    });
+
+    newSocket.on('call:ended', ({ callId }: { callId: string }) => {
+      if (activeCallRef.current?.callId === callId) setActiveCall(null);
+      if (incomingCallRef.current?.callId === callId) setIncomingCall(null);
+    });
+
     newSocket.on('grup_olusturuldu', (yeniGrup: Conversation) => {
       setGroupsList(prev => { if (prev.some(g => g.id === yeniGrup.id)) return prev; return [...prev, yeniGrup]; });
       newSocket.emit('odaya_katil', yeniGrup.id);
@@ -680,6 +779,7 @@ export default function App() {
           onToggleConversationArchive={handleToggleConversationArchive}
           onToggleConversationMute={handleToggleConversationMute}
           onSetDisappearingMode={handleSetDisappearingMode}
+          onStartCall={startConversationCall}
 
           />
       )}
@@ -694,6 +794,22 @@ export default function App() {
 
       {isSettingsOpen && (
         <SettingsModal setIsSettingsOpen={setIsSettingsOpen} settingsMessage={settingsMessage} setSettingsMessage={setSettingsMessage} newUsernameSettings={newUsernameSettings} setNewUsernameSettings={setNewUsernameSettings} handleUpdateUsername={handleUpdateUsername} currentUser={currentUser} handleToggleReadReceipts={handleToggleReadReceipts} oldPasswordSettings={oldPasswordSettings} setOldPasswordSettings={setOldPasswordSettings} newPasswordSettings={newPasswordSettings} setNewPasswordSettings={setNewPasswordSettings} handleUpdatePassword={handleUpdatePassword} handleUpdateAvatar={handleUpdateAvatar} handleDeleteAccount={handleDeleteAccount} cikisYap={cikisYap} />
+      )}
+
+      {incomingCall && (
+        <IncomingCallPrompt
+          call={incomingCall}
+          onAccept={acceptIncomingCall}
+          onDecline={declineIncomingCall}
+        />
+      )}
+
+      {activeCall && (
+        <CallModal
+          call={activeCall}
+          title={getCallTitle(activeCall.conversationId, activeCall.conversation?.name)}
+          onClose={closeActiveCall}
+        />
       )}
     </div>
   );
