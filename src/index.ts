@@ -5,10 +5,14 @@ import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import { clientOrigin, port, trustProxy } from './config/env';
+import { logger } from './config/logger';
 import { loginLimiter, refreshLimiter, registerLimiter, uploadLimiter } from './config/rateLimiters';
 import prisma from './db';
+import { errorHandler, notFoundHandler } from './middleware/errorHandler';
+import { requestLogger, securityStatusLogger } from './middleware/requestLogger';
 import authRoutes from './routes/auth';
 import chatRoutes from './routes/chat';
+import healthRoutes from './routes/health';
 import scheduledMessageRoutes from './routes/scheduledMessages';
 import userRoutes from './routes/user';
 import { registerSocketHandlers } from './socket/registerSocketHandlers';
@@ -31,6 +35,8 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   credentials: true
 }));
+app.use(requestLogger);
+app.use(securityStatusLogger);
 
 // Hassas endpoint'lerin limitleri genel API trafiğinden bağımsızdır.
 app.use('/api/login', loginLimiter);
@@ -39,6 +45,7 @@ app.use('/api/refresh', refreshLimiter);
 app.use('/api/upload', uploadLimiter);
 
 app.use('/api', authRoutes);
+app.use('/api', healthRoutes);
 app.use('/api', chatRoutes);
 app.use('/api', scheduledMessageRoutes);
 app.use('/api/user', userRoutes);
@@ -49,13 +56,16 @@ app.get('/', (_req, res) => res.send('Mesajlaşma API çalışıyor 🚀'));
 registerSocketHandlers(io);
 const stopScheduledWorker = startScheduledMessageWorker(io);
 
+app.use(notFoundHandler);
+app.use(errorHandler);
+
 httpServer.listen(port, () => {
-  console.info(`API http://localhost:${port} adresinde çalışıyor.`);
+  logger.info({ event: 'system.server_started', port }, 'API server started');
 });
 
 // Interval, socket ve DB bağlantısı kontrollü sırayla kapatılır.
 const shutdown = (signal: string) => {
-  console.info(`${signal} alındı, sunucu kapatılıyor.`);
+  logger.info({ event: 'system.server_shutdown', signal }, 'Server shutting down');
   stopScheduledWorker();
   io.disconnectSockets(true);
   httpServer.close(async () => {

@@ -1,6 +1,7 @@
 import express, { Response } from 'express';
 import { Prisma } from '@prisma/client';
 import prisma from '../db';
+import { logger } from '../config/logger';
 import { authenticateToken, CustomRequest } from '../middleware/authMiddleware';
 import { validateRequest } from '../middleware/validateRequest';
 import { isConversationMember } from '../services/conversationAccess';
@@ -47,7 +48,7 @@ router.post('/messages/schedule', validateRequest({ body: chatSchemas.scheduledM
 
     return res.status(200).json({ success: true, message: 'Mesaj zamanlandı.' });
   } catch (error) {
-    console.error('Mesaj zamanlanamadı:', error);
+    logger.error({ event: 'chat.scheduled_message_failed', err: error, userId: req.user?.userId, ip: req.ip }, 'Scheduled message creation failed');
     return res.status(500).json({ error: 'Mesaj zamanlanamadı.' });
   }
 });

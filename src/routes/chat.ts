@@ -10,11 +10,18 @@ import {
   uploadPrivateFile,
   withSignedFileUrl
 } from '../services/fileStorage';
+import { logger } from '../config/logger';
 import { deleteFileIfUnreferenced } from '../services/fileCleanup';
 import { isConversationMember } from '../services/conversationAccess';
 import { getAuthenticatedUserId as getUserId, getRouteParam as getParam } from '../utils/request';
 
 const router = express.Router();
+const visibleMessageWhere = () => ({
+  OR: [
+    { expiresAt: null },
+    { expiresAt: { gt: new Date() } }
+  ]
+});
 
 // Bu router altındaki tüm mesaj, sohbet ve dosya endpoint'leri access token gerektirir.
 router.use(authenticateToken);
@@ -39,8 +46,8 @@ router.post('/upload', uploadSingleFile, async (req: CustomRequest, res: Respons
                 req.file.mimetype.startsWith('audio/') || req.file.mimetype.startsWith('video/') ? 'audio' : 'document'
     });
   } catch (error) {
-    console.error("Buluta yükleme hatası:", error);
-    return res.status(500).json({ error: "Dosya buluta yüklenemedi." });
+    logger.error({ event: 'chat.file_upload_failed', err: error, userId: req.user?.userId, ip: req.ip }, 'File upload failed');
+    return res.status(500).json({ error: 'Dosya buluta yüklenemedi.' });
   }
 });
 
@@ -79,7 +86,7 @@ router.get('/conversations', async (req: CustomRequest, res: Response): Promise<
               }
             },
             messages: {
-              where: { NOT: { deletedForIds: { has: userId } } },
+              where: { NOT: { deletedForIds: { has: userId } }, ...visibleMessageWhere() },
               orderBy: { createdAt: 'desc' },
               take: 1,
               include: { sender: { select: { username: true } } }
@@ -111,12 +118,17 @@ router.get('/conversations', async (req: CustomRequest, res: Response): Promise<
         name: conversation.name,
         adminId: conversation.adminId,
         createdAt: conversation.createdAt,
+        isPinned: conversation.pinnedByIds.includes(userId),
+        isArchived: conversation.archivedByIds.includes(userId),
+        isMuted: conversation.mutedByIds.includes(userId),
+        disappearingDurationSeconds: conversation.disappearingDurationSeconds,
         otherUser,
         lastMessage
       };
     }));
 
     conversations.sort((a, b) => {
+      if (a.isPinned !== b.isPinned) return a.isPinned ? -1 : 1;
       const aTime = new Date(a.lastMessage?.createdAt || a.createdAt).getTime();
       const bTime = new Date(b.lastMessage?.createdAt || b.createdAt).getTime();
       return bTime - aTime;
@@ -124,8 +136,98 @@ router.get('/conversations', async (req: CustomRequest, res: Response): Promise<
 
     return res.status(200).json(conversations);
   } catch (error) {
-    console.error('Sohbet listesi alınamadı:', error);
+    logger.error({ event: 'chat.conversations_fetch_failed', err: error, userId: req.user?.userId, ip: req.ip }, 'Conversations fetch failed');
     return res.status(500).json({ error: 'Sohbet listesi alınamadı.' });
+  }
+});
+
+router.put('/conversations/:id/pin', validateRequest({ params: chatSchemas.conversationIdParams }), async (req: CustomRequest, res: Response): Promise<any> => {
+  try {
+    const conversationId = getParam(req, 'id');
+    const userId = getUserId(req);
+    if (!(await isConversationMember(conversationId, userId))) return res.status(403).json({ error: 'Bu sohbeti sabitleme yetkiniz yok.' });
+
+    const conversation = await prisma.conversation.findUnique({ where: { id: conversationId } });
+    if (!conversation) return res.status(404).json({ error: 'Sohbet bulunamadı.' });
+    const nextPinnedByIds = conversation.pinnedByIds.includes(userId)
+      ? conversation.pinnedByIds.filter((id) => id !== userId)
+      : [...conversation.pinnedByIds, userId];
+
+    const updated = await prisma.conversation.update({
+      where: { id: conversationId },
+      data: { pinnedByIds: nextPinnedByIds }
+    });
+    return res.status(200).json({ conversationId, isPinned: updated.pinnedByIds.includes(userId) });
+  } catch {
+    return res.status(500).json({ error: 'Sohbet sabitleme durumu güncellenemedi.' });
+  }
+});
+
+router.put('/conversations/:id/archive', validateRequest({ params: chatSchemas.conversationIdParams }), async (req: CustomRequest, res: Response): Promise<any> => {
+  try {
+    const conversationId = getParam(req, 'id');
+    const userId = getUserId(req);
+    if (!(await isConversationMember(conversationId, userId))) return res.status(403).json({ error: 'Bu sohbeti arşivleme yetkiniz yok.' });
+
+    const conversation = await prisma.conversation.findUnique({ where: { id: conversationId } });
+    if (!conversation) return res.status(404).json({ error: 'Sohbet bulunamadı.' });
+    const nextArchivedByIds = conversation.archivedByIds.includes(userId)
+      ? conversation.archivedByIds.filter((id) => id !== userId)
+      : [...conversation.archivedByIds, userId];
+
+    const updated = await prisma.conversation.update({
+      where: { id: conversationId },
+      data: { archivedByIds: nextArchivedByIds }
+    });
+    return res.status(200).json({ conversationId, isArchived: updated.archivedByIds.includes(userId) });
+  } catch {
+    return res.status(500).json({ error: 'Sohbet arşiv durumu güncellenemedi.' });
+  }
+});
+
+router.put('/conversations/:id/mute', validateRequest({ params: chatSchemas.conversationIdParams }), async (req: CustomRequest, res: Response): Promise<any> => {
+  try {
+    const conversationId = getParam(req, 'id');
+    const userId = getUserId(req);
+    if (!(await isConversationMember(conversationId, userId))) return res.status(403).json({ error: 'Bu sohbeti sessize alma yetkiniz yok.' });
+
+    const conversation = await prisma.conversation.findUnique({ where: { id: conversationId } });
+    if (!conversation) return res.status(404).json({ error: 'Sohbet bulunamadÄ±.' });
+    const nextMutedByIds = conversation.mutedByIds.includes(userId)
+      ? conversation.mutedByIds.filter((id) => id !== userId)
+      : [...conversation.mutedByIds, userId];
+
+    const updated = await prisma.conversation.update({
+      where: { id: conversationId },
+      data: { mutedByIds: nextMutedByIds }
+    });
+    return res.status(200).json({ conversationId, isMuted: updated.mutedByIds.includes(userId) });
+  } catch {
+    return res.status(500).json({ error: 'Sohbet sessize alma durumu gÃ¼ncellenemedi.' });
+  }
+});
+
+router.put('/conversations/:id/disappearing', validateRequest({
+  params: chatSchemas.conversationIdParams,
+  body: chatSchemas.disappearingMode
+}), async (req: CustomRequest, res: Response): Promise<any> => {
+  try {
+    const conversationId = getParam(req, 'id');
+    const userId = getUserId(req);
+    const { durationSeconds } = req.body;
+    if (!(await isConversationMember(conversationId, userId))) return res.status(403).json({ error: 'Bu sohbetin kaybolan mesaj modunu değiştirme yetkiniz yok.' });
+
+    const updated = await prisma.conversation.update({
+      where: { id: conversationId },
+      data: { disappearingDurationSeconds: durationSeconds && durationSeconds > 0 ? durationSeconds : null }
+    });
+    req.app.get('io').to(conversationId).emit('sohbet_ayarlari_guncellendi', {
+      conversationId,
+      disappearingDurationSeconds: updated.disappearingDurationSeconds
+    });
+    return res.status(200).json({ conversationId, disappearingDurationSeconds: updated.disappearingDurationSeconds });
+  } catch {
+    return res.status(500).json({ error: 'Kaybolan mesaj modu güncellenemedi.' });
   }
 });
 
@@ -168,8 +270,8 @@ router.post('/conversations/direct', validateRequest({ body: chatSchemas.directC
 
     return res.status(200).json(conversation);
   } catch (error) {
-    console.error("Oda oluşturma hatası:", error);
-    return res.status(500).json({ error: "Sohbet odası oluşturulamadı." });
+    logger.error({ event: 'chat.direct_conversation_failed', err: error, userId: req.user?.userId, ip: req.ip }, 'Direct conversation creation failed');
+    return res.status(500).json({ error: 'Sohbet odası oluşturulamadı.' });
   }
 });
 
@@ -207,7 +309,10 @@ router.post('/messages', validateRequest({ body: chatSchemas.message }), async (
           isForwarded: isForwarded || false,
           fileKey: fileKey || null,
           fileType: fileType || null,
-          fileName: fileName || null
+          fileName: fileName || null,
+          expiresAt: conversation.disappearingDurationSeconds
+            ? new Date(Date.now() + conversation.disappearingDurationSeconds * 1000)
+            : null
         },
         include: {
           sender: { select: { username: true } },
@@ -240,8 +345,8 @@ router.post('/messages', validateRequest({ body: chatSchemas.message }), async (
     io.to(targetRooms).emit('yeni_mesaj_geldi', responseMessage);
     return res.status(201).json(responseMessage);
   } catch (error) {
-    console.error("Mesaj kaydetme hatası:", error);
-    return res.status(500).json({ error: "Mesaj gönderilemedi." });
+    logger.error({ event: 'chat.message_send_failed', err: error, userId: req.user?.userId, ip: req.ip }, 'Message send failed');
+    return res.status(500).json({ error: 'Mesaj gönderilemedi.' });
   }
 });
 
@@ -262,7 +367,8 @@ router.get('/conversations/:conversationId/messages', validateRequest({
     const messages = await prisma.message.findMany({
       where: {
         conversationId,
-        NOT: { deletedForIds: { has: userId } }
+        NOT: { deletedForIds: { has: userId } },
+        ...visibleMessageWhere()
       },
       take: 50,
       skip: cursor ? 1 : 0,
@@ -277,8 +383,8 @@ router.get('/conversations/:conversationId/messages', validateRequest({
     const responseMessages = await Promise.all(messages.reverse().map(withSignedFileUrl));
     return res.status(200).json(responseMessages);
   } catch (error) {
-    console.error("Mesajlar çekilirken hata:", error);
-    return res.status(500).json({ error: "Mesajlar yüklenemedi." });
+    logger.error({ event: 'chat.messages_fetch_failed', err: error, userId: req.user?.userId, ip: req.ip }, 'Messages fetch failed');
+    return res.status(500).json({ error: 'Mesajlar yüklenemedi.' });
   }
 });
 
@@ -565,7 +671,8 @@ router.post('/conversations/:id/read', validateRequest({
     const allMessages = await prisma.message.findMany({
       where: {
         conversationId: conversationId,
-        senderId: { not: userId }
+        senderId: { not: userId },
+        ...visibleMessageWhere()
       }
     });
 
@@ -589,8 +696,8 @@ router.post('/conversations/:id/read', validateRequest({
 
     return res.status(200).json({ success: true, updatedCount: unreadMessages.length });
   } catch (error) {
-    console.error("[GÖRÜLDÜ HATASI]:", error);
-    return res.status(500).json({ error: "Görüldü atılamadı." });
+    logger.error({ event: 'chat.read_receipt_failed', err: error, userId: req.user?.userId, ip: req.ip }, 'Read receipt failed');
+    return res.status(500).json({ error: 'Görüldü atılamadı.' });
   }
 });
 
@@ -608,7 +715,8 @@ router.get('/unread-counts', async (req: CustomRequest, res: Response): Promise<
     const allPossibleUnread = await prisma.message.findMany({
       where: {
         conversationId: { in: validConversationIds },
-        senderId: { not: userId }
+        senderId: { not: userId },
+        ...visibleMessageWhere()
       },
       select: {
         conversationId: true,
@@ -635,8 +743,8 @@ router.get('/unread-counts', async (req: CustomRequest, res: Response): Promise<
 
     return res.status(200).json(counts);
   } catch (error) {
-    console.error("Unread Counts Hatası:", error);
-    return res.status(500).json({ error: "Okunmamış mesajlar getirilemedi." });
+    logger.error({ event: 'chat.unread_counts_failed', err: error, userId: req.user?.userId, ip: req.ip }, 'Unread counts failed');
+    return res.status(500).json({ error: 'Okunmamış mesajlar getirilemedi.' });
   }
 });
 
@@ -655,6 +763,7 @@ router.get('/messages/search', validateRequest({ query: chatSchemas.searchQuery 
       where: {
         content: { contains: searchTerm.trim(), mode: 'insensitive' },
         NOT: { deletedForIds: { has: userId } },
+        ...visibleMessageWhere(),
         conversation: {
           participants: { some: { userId: userId } }
         }
@@ -674,8 +783,8 @@ router.get('/messages/search', validateRequest({ query: chatSchemas.searchQuery 
     const responseMessages = await Promise.all(messages.map(withSignedFileUrl));
     return res.status(200).json(responseMessages);
   } catch (error) {
-    console.error("Arama hatası:", error);
-    return res.status(500).json({ error: "Arama yapılamadı." });
+    logger.error({ event: 'chat.search_failed', err: error, userId: req.user?.userId, ip: req.ip }, 'Search failed');
+    return res.status(500).json({ error: 'Arama yapılamadı.' });
   }
 });
 
@@ -711,6 +820,47 @@ router.put('/messages/:id', validateRequest({
     return res.status(200).json(responseMessage);
   } catch (error) {
     return res.status(500).json({ error: "Mesaj düzenlenemedi." });
+  }
+});
+
+router.get('/conversations/:conversationId/media', validateRequest({
+  params: chatSchemas.conversationParams
+}), async (req: CustomRequest, res: Response): Promise<any> => {
+  try {
+    const conversationId = getParam(req, 'conversationId');
+    const userId = getUserId(req);
+    if (!(await isConversationMember(conversationId, userId))) {
+      return res.status(403).json({ error: 'Bu sohbetin medya bilgilerini görme yetkiniz yok.' });
+    }
+
+    const records = await prisma.message.findMany({
+      where: {
+        conversationId,
+        NOT: { deletedForIds: { has: userId } },
+        AND: [
+          visibleMessageWhere(),
+          {
+            OR: [
+              { fileKey: { not: null } },
+              { content: { contains: 'http', mode: 'insensitive' } }
+            ]
+          }
+        ]
+      },
+      orderBy: { createdAt: 'desc' },
+      include: { sender: { select: { username: true } } }
+    });
+
+    const signedRecords = await Promise.all(records.map(withSignedFileUrl));
+    const mediaMessages = signedRecords.filter((message) => Boolean(message.fileKey));
+    const linkItems = signedRecords.flatMap((message) => {
+      const urls = message.content?.match(/https?:\/\/[^\s]+/g) || [];
+      return urls.map((url) => ({ messageId: message.id, url, createdAt: message.createdAt }));
+    });
+
+    return res.status(200).json({ mediaMessages, linkItems });
+  } catch (error) {
+    return res.status(500).json({ error: 'Medya bilgileri getirilemedi.' });
   }
 });
 

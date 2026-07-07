@@ -65,6 +65,15 @@ export const chatSchemas = {
     participantIds: z.array(uuid).min(1).max(100)
   }).strict(),
   groupParams: z.object({ id: uuid }),
+  conversationIdParams: z.object({ id: uuid }),
+  disappearingMode: z.object({
+    durationSeconds: z.union([
+      z.literal(0),
+      z.literal(3600),
+      z.literal(86400),
+      z.literal(604800)
+    ]).nullable()
+  }).strict(),
   groupMemberParams: z.object({ id: uuid, userId: uuid }),
   groupName: z.object({ newName: z.string().trim().min(1).max(100) }).strict(),
   addGroupMembers: z.object({ userIdsToAdd: z.array(uuid).min(1).max(100) }).strict(),

@@ -4,6 +4,7 @@ import {
   PutObjectCommand,
   S3Client
 } from '@aws-sdk/client-s3';
+import { logger } from '../config/logger';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { randomUUID } from 'crypto';
 import path from 'path';
@@ -56,11 +57,18 @@ export const uploadPrivateFile = async (
   return fileKey;
 };
 
-export const createSignedFileUrl = async (fileKey: string) => getSignedUrl(
-  s3,
-  new GetObjectCommand({ Bucket: bucketName, Key: fileKey }),
-  { expiresIn: signedUrlTtlSeconds }
-);
+export const createSignedFileUrl = async (fileKey: string) => {
+  try {
+    return await getSignedUrl(
+      s3,
+      new GetObjectCommand({ Bucket: bucketName, Key: fileKey }),
+      { expiresIn: signedUrlTtlSeconds }
+    );
+  } catch (error) {
+    logger.error({ event: 'storage.signed_url_failed', err: error, fileKey }, 'Signed URL generation failed');
+    throw error;
+  }
+};
 
 export const deletePrivateFile = async (fileKey: string) => {
   await s3.send(new DeleteObjectCommand({ Bucket: bucketName, Key: fileKey }));

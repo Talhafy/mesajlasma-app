@@ -28,26 +28,39 @@ interface ChatAreaProps {
   isLoadingMore: boolean;
   typingUsername?: string;
   onTyping: (isTyping: boolean) => void;
+  onToggleConversationPin: (conversationId: string) => void;
+  onToggleConversationArchive: (conversationId: string) => void;
+  onToggleConversationMute: (conversationId: string) => void;
+  onSetDisappearingMode: (conversationId: string, durationSeconds: number | null) => void;
 }
 
 export default function ChatArea({
   currentUser, activeConversation, selectedUser, messages, newMessage,
   setNewMessage, mesajGonder, messagesEndRef, openGroupSettings, closeChat, isDarkMode,
-  usersList, groupMembers, loadMoreMessages, hasMore, isLoadingMore, typingUsername, onTyping
+  usersList, groupMembers, loadMoreMessages, hasMore, isLoadingMore, typingUsername, onTyping,
+  onToggleConversationPin, onToggleConversationArchive, onToggleConversationMute, onSetDisappearingMode
 }: ChatAreaProps) {
 
   // ARAMA VE MENÜ DURUMLARI
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [messageSearchTerm, setMessageSearchTerm] = useState('');
+  const [isMediaPanelOpen, setIsMediaPanelOpen] = useState(false);
+  const [mediaPanelData, setMediaPanelData] = useState<{ mediaMessages: Message[]; linkItems: Array<{ messageId: string; url: string; createdAt?: string }> }>({ mediaMessages: [], linkItems: [] });
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [showAttachmentMenu, setShowAttachmentMenu] = useState(false);
   const [openOptionsId, setOpenOptionsId] = useState<string | null>(null);
+  const [isChatMenuOpen, setIsChatMenuOpen] = useState(false);
+  const [isDisappearingSettingsOpen, setIsDisappearingSettingsOpen] = useState(false);
+  const [systemNotice, setSystemNotice] = useState<string | null>(null);
 
   // MESAJ İŞLEM DURUMLARI (BİLGİ, YANITLA, İLET)
   const [messageInfo, setMessageInfo] = useState<Message | null>(null);
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const [forwardMessage, setForwardMessage] = useState<Message | null>(null);
   const [pinnedIndex, setPinnedIndex] = useState(0);
+  const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
+  const [editingMessage, setEditingMessage] = useState<Message | null>(null);
+  const [editMessageText, setEditMessageText] = useState('');
 
   // ZAMANLAMA VE BEKLEYEN MESAJ DURUMLARI
   const [isScheduling, setIsScheduling] = useState(false);
@@ -69,13 +82,20 @@ export default function ChatArea({
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scheduledFileInputRef = useRef<HTMLInputElement>(null);
   const [scheduledFileTarget, setScheduledFileTarget] = useState<string | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordedAudioChunksRef = useRef<Blob[]>([]);
+  const [isRecordingAudio, setIsRecordingAudio] = useState(false);
 
   const messagesListRef = useRef<HTMLDivElement>(null);
   const previousScrollHeight = useRef<number>(0);
+  const previousDisappearingModeRef = useRef<number | null | undefined>(undefined);
+  const previousConversationIdRef = useRef<string | null>(null);
 
   // TEMA RENKLERİ
   const panelBg = isDarkMode ? '#202c33' : '#f0f2f5';
-  const chatBg = isDarkMode ? '#0b141a' : '#efeae2';
+  const isDisappearingMode = Boolean(activeConversation?.disappearingDurationSeconds);
+  const baseChatBg = isDarkMode ? '#0b141a' : '#efeae2';
+  const chatBg = isDisappearingMode ? (isDarkMode ? '#0f241f' : '#e5f5ee') : baseChatBg;
   const textColor = isDarkMode ? '#e9edef' : '#111b21';
   const iconColor = isDarkMode ? '#aebac1' : '#54656f';
   const borderColor = isDarkMode ? '#313d45' : '#d1d7db';
@@ -104,6 +124,7 @@ export default function ChatArea({
   useEffect(() => {
     if (activeConversation?.id) {
       setReplyingTo(null);
+      setIsMediaPanelOpen(false);
       cancelFile();
     }
   }, [activeConversation?.id, cancelFile]);
@@ -114,6 +135,34 @@ export default function ChatArea({
       fetchPendingMessages();
     }
   }, [isPendingModalOpen, activeConversation?.id, fetchPendingMessages]);
+
+  useEffect(() => {
+    if (!activeConversation?.id || !isMediaPanelOpen) return;
+    api.get(`/conversations/${activeConversation.id}/media`)
+      .then((response) => setMediaPanelData(response.data))
+      .catch(() => setMediaPanelData({ mediaMessages: [], linkItems: [] }));
+  }, [activeConversation?.id, isMediaPanelOpen]);
+
+  useEffect(() => {
+    const conversationId = activeConversation?.id || null;
+    const currentMode = activeConversation?.disappearingDurationSeconds ?? null;
+
+    if (previousConversationIdRef.current !== conversationId) {
+      previousConversationIdRef.current = conversationId;
+      previousDisappearingModeRef.current = currentMode;
+      setSystemNotice(null);
+      return;
+    }
+
+    if (previousDisappearingModeRef.current !== undefined && previousDisappearingModeRef.current !== currentMode) {
+      setSystemNotice(currentMode ? 'Kaybolan mesaj modu açıldı.' : 'Kaybolan mesaj modu kapatıldı.');
+      const timeout = window.setTimeout(() => setSystemNotice(null), 2800);
+      previousDisappearingModeRef.current = currentMode;
+      return () => window.clearTimeout(timeout);
+    }
+
+    previousDisappearingModeRef.current = currentMode;
+  }, [activeConversation?.id, activeConversation?.disappearingDurationSeconds]);
 
   // 3. Geçmiş mesajlar yüklendiğinde kaydırma çubuğunu sabitleyici
   useEffect(() => {
@@ -161,6 +210,7 @@ export default function ChatArea({
 
   useEffect(() => () => {
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    mediaRecorderRef.current?.stream.getTracks().forEach((track) => track.stop());
   }, []);
 
   // Normal ve zamanlanmış gönderimler aynı dosya yükleme sonucunu kullanır.
@@ -288,12 +338,87 @@ export default function ChatArea({
     setOpenOptionsId(null);
   };
 
+  const handleDisappearingMode = () => {
+    if (!activeConversation?.id) return;
+    setIsDisappearingSettingsOpen(true);
+    setIsChatMenuOpen(false);
+  };
+
+  const uploadVoiceMessage = async (audioBlob: Blob) => {
+    if (!activeConversation?.id || audioBlob.size === 0) return;
+    setIsUploading(true);
+    try {
+      const file = new File([audioBlob], `voice-${Date.now()}.webm`, { type: audioBlob.type || 'audio/webm' });
+      const formData = new FormData();
+      formData.append('file', file);
+      const uploadRes = await api.post('/upload', formData, uploadConfig);
+
+      await api.post('/messages', {
+        conversationId: activeConversation.id,
+        clientId: crypto.randomUUID(),
+        content: '',
+        fileKey: uploadRes.data.fileKey,
+        fileType: uploadRes.data.fileType,
+        fileName: uploadRes.data.fileName
+      });
+    } catch {
+      alert('Sesli mesaj gönderilemedi.');
+    } finally {
+      setIsUploading(false);
+      setUploadProgress(0);
+    }
+  };
+
+  const toggleVoiceRecording = async () => {
+    if (isRecordingAudio) {
+      mediaRecorderRef.current?.stop();
+      setIsRecordingAudio(false);
+      return;
+    }
+
+    if (!activeConversation?.id) return;
+    if (!navigator.mediaDevices?.getUserMedia) {
+      alert('Tarayıcınız ses kaydını desteklemiyor.');
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      recordedAudioChunksRef.current = [];
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) recordedAudioChunksRef.current.push(event.data);
+      };
+
+      recorder.onstop = () => {
+        stream.getTracks().forEach((track) => track.stop());
+        const audioBlob = new Blob(recordedAudioChunksRef.current, { type: recorder.mimeType || 'audio/webm' });
+        recordedAudioChunksRef.current = [];
+        void uploadVoiceMessage(audioBlob);
+      };
+
+      recorder.start();
+      setIsRecordingAudio(true);
+    } catch {
+      alert('Mikrofon izni alınamadı.');
+    }
+  };
   const handleEditMessage = async (message: Message) => {
-    const content = prompt('Mesajı düzenle:', message.content);
-    if (content === null || !content.trim() || content.trim() === message.content) return;
-    try { await api.put(`/messages/${message.id}`, { content: content.trim() }); }
-    catch { alert('Mesaj düzenlenemedi.'); }
+    setEditingMessage(message);
+    setEditMessageText(message.content || '');
     setOpenOptionsId(null);
+  };
+
+  const handleSaveMessageEdit = async () => {
+    if (!editingMessage) return;
+    const content = editMessageText.trim();
+    if (!content || content === editingMessage.content) return setEditingMessage(null);
+    try {
+      await api.put(`/messages/${editingMessage.id}`, { content });
+      setEditingMessage(null);
+    } catch { alert('Mesaj düzenlenemedi.'); }
   };
 
   const replaceScheduledFile = (id: string) => {
@@ -361,6 +486,31 @@ export default function ChatArea({
 
   const getUnixEpoch = (dateString?: string) => dateString ? Math.floor(new Date(dateString).getTime() / 1000) : "-";
 
+  const getMessagePreview = (message?: Message | null) => {
+    if (!message) return '';
+    if (message.content?.trim()) return message.content;
+    if (message.fileType === 'image' || message.fileType?.startsWith('image')) return '📷 Görsel';
+    if (message.fileType === 'audio') return '🎧 Ses dosyası';
+    if (message.fileKey) return `📎 ${message.fileName || 'Dosya'}`;
+    return '';
+  };
+
+  const renderLinkedText = (content: string) => {
+    const parts = content.split(/(https?:\/\/[^\s]+)/g);
+    return parts.map((part, index) => /^https?:\/\/[^\s]+$/.test(part)
+      ? <a key={`${part}-${index}`} href={part} target="_blank" rel="noopener noreferrer" style={{ color: '#027eb5', textDecoration: 'underline' }}>{part}</a>
+      : <span key={`${part}-${index}`}>{part}</span>);
+  };
+
+  const scrollToMessage = (messageId?: string) => {
+    if (!messageId || !messagesListRef.current) return;
+    const target = messagesListRef.current.querySelector(`[data-message-id="${messageId}"]`);
+    if (!target) return;
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setHighlightedMessageId(messageId);
+    window.setTimeout(() => setHighlightedMessageId((current) => current === messageId ? null : current), 1600);
+  };
+
   if (!activeConversation && !selectedUser) {
     return (
       <div className="chat-area empty-chat-state" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1, backgroundColor: panelBg }}>
@@ -375,6 +525,8 @@ export default function ChatArea({
     : messages;
 
   const pinnedMessages = displayedMessages.filter(m => m.isPinned);
+  const mediaMessages = mediaPanelData.mediaMessages;
+  const linkItems = mediaPanelData.linkItems;
   const chatPartner = selectedUser || activeConversation?.otherUser;
   const partnerStatus = typingUsername
     ? `${typingUsername} yazıyor...`
@@ -383,6 +535,13 @@ export default function ChatArea({
       : chatPartner?.lastSeenAt
         ? `Son görülme: ${new Date(chatPartner.lastSeenAt).toLocaleString('tr-TR', { dateStyle: 'short', timeStyle: 'short' })}`
         : '';
+  const disappearingOptions: Array<{ label: string; description: string; seconds: number | null }> = [
+    { label: 'Kapalı', description: 'Mesajlar normal şekilde kalır.', seconds: null },
+    { label: '1 saat', description: 'Yeni mesajlar 1 saat sonra silinir.', seconds: 3600 },
+    { label: '24 saat', description: 'Günlük ve dengeli mod.', seconds: 86400 },
+    { label: '7 gün', description: 'Daha uzun süreli geçici sohbet.', seconds: 604800 }
+  ];
+  const disappearingLabel = disappearingOptions.find((option) => option.seconds === (activeConversation?.disappearingDurationSeconds ?? null))?.label || 'Kapalı';
 
   return (
     <div className="chat-area" onPaste={handlePaste} style={{ position: 'relative', display: 'flex', flexDirection: 'column', height: '100%', background: chatBg }}>
@@ -407,10 +566,108 @@ export default function ChatArea({
           <Button variant="icon" onClick={() => setIsPendingModalOpen(!isPendingModalOpen)} title="Bekleyen Mesajlar" style={{ color: iconColor, position: 'relative' }} icon={<><svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M12 2C6.486 2 2 6.486 2 12s4.486 10 10 10 10-4.486 10-10S17.514 2 12 2zm0 18c-4.411 0-8-3.589-8-8s3.589-8 8-8 8 3.589 8 8-3.589 8-8 8zm.5-13H11v6l5.2 3.2.8-1.3-4.5-2.7V7z"></path></svg>{pendingMessages.length > 0 && (<span style={{ position: 'absolute', top: '-2px', right: '-2px', background: '#e53935', color: 'white', fontSize: '10px', fontWeight: 'bold', width: '16px', height: '16px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', border: `2px solid ${panelBg}` }}>{pendingMessages.length}</span>)}</>} />
           <Button variant="icon" onClick={() => { setIsSearchOpen(!isSearchOpen); setMessageSearchTerm(''); }} title="Mesajlarda Ara" style={{ color: iconColor }} icon={<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M15.009 13.805h-.636l-.22-.219a5.184 5.184 0 0 0 1.256-3.386 5.207 5.207 0 1 0-5.207 5.208 5.183 5.183 0 0 0 3.385-1.255l.221.22v.635l4.004 3.999 1.194-1.195-3.997-4.007zm-4.8 0a3.6 3.6 0 1 1 0-7.2 3.6 3.6 0 0 1 0 7.2z"></path></svg>} />
           {activeConversation?.isGroup && (<Button variant="icon" onClick={openGroupSettings} title="Grup Bilgisi" style={{ color: iconColor }} icon={<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M12 7a2 2 0 1 0-.001-4.001A2 2 0 0 0 12 7zm0 2a2 2 0 1 0-.001 3.999A2 2 0 0 0 12 9zm0 6a2 2 0 1 0-.001 3.999A2 2 0 0 0 12 15z"></path></svg>} />)}
+          <div style={{ position: 'relative' }}>
+            <Button variant="icon" onClick={() => setIsChatMenuOpen((previous) => !previous)} title="Sohbet seçenekleri" style={{ color: iconColor }} icon={<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M12 8a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm0 2a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm0 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"></path></svg>} />
+            {isChatMenuOpen && activeConversation?.id && (
+              <>
+                <div style={{ position: 'fixed', inset: 0, zIndex: 90 }} onClick={() => setIsChatMenuOpen(false)} />
+                <div style={{ position: 'absolute', right: 0, top: '42px', width: '245px', background: inputBg, border: `1px solid ${borderColor}`, borderRadius: '14px', boxShadow: '0 14px 40px rgba(0,0,0,0.26)', zIndex: 100, overflow: 'hidden', color: textColor }}>
+                  <button className="msg-dropdown-btn" onClick={() => { setIsMediaPanelOpen(true); setIsChatMenuOpen(false); }}>🖼️ Medya, dosyalar ve linkler</button>
+                  <button className="msg-dropdown-btn" onClick={() => { onToggleConversationMute(activeConversation.id); setIsChatMenuOpen(false); }}>{activeConversation.isMuted ? '🔔 Sesi aç' : '🔕 Sessize al'}</button>
+                  <button className="msg-dropdown-btn" onClick={() => { onToggleConversationPin(activeConversation.id); setIsChatMenuOpen(false); }}>{activeConversation.isPinned ? '📌 Sabitlemeyi kaldır' : '📌 Sohbeti sabitle'}</button>
+                  <button className="msg-dropdown-btn" onClick={() => { onToggleConversationArchive(activeConversation.id); setIsChatMenuOpen(false); }}>{activeConversation.isArchived ? '🗄️ Arşivden çıkar' : '🗄️ Arşivle'}</button>
+                  <button className="msg-dropdown-btn" onClick={handleDisappearingMode}>⏳ Kaybolan mesaj modu</button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </div>
 
       {/* BEKLEYEN/ZAMANLANMIŞ MESAJLAR MODALI */}
+      {isMediaPanelOpen && (
+        <div style={{ position: 'absolute', top: '75px', right: '20px', width: '360px', maxWidth: 'calc(100% - 40px)', maxHeight: '70vh', overflowY: 'auto', background: inputBg, borderRadius: '14px', boxShadow: '0 14px 45px rgba(0,0,0,0.28)', zIndex: 20, padding: '16px', border: `1px solid ${borderColor}`, color: textColor }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+            <div>
+              <div style={{ color: '#00a884', fontSize: '12px', fontWeight: 700 }}>Sohbet bilgisi</div>
+              <h3 style={{ margin: 0, fontSize: '17px' }}>Medya, dosyalar ve linkler</h3>
+            </div>
+            <button onClick={() => setIsMediaPanelOpen(false)} style={{ border: 'none', background: panelBg, color: iconColor, borderRadius: '50%', width: '30px', height: '30px', cursor: 'pointer' }}>✕</button>
+          </div>
+
+          <div style={{ marginBottom: '14px' }}>
+            <strong style={{ fontSize: '13px', color: iconColor }}>Medya ve dosyalar ({mediaMessages.length})</strong>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
+              {mediaMessages.length === 0 ? (
+                <div style={{ color: iconColor, fontSize: '13px', padding: '8px 0' }}>Henüz medya veya dosya yok.</div>
+              ) : mediaMessages.map((message) => (
+                <div key={message.id} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '9px', borderRadius: '10px', background: panelBg }}>
+                  <button onClick={() => message.fileUrl && window.open(message.fileUrl, '_blank')} style={{ width: '44px', height: '44px', borderRadius: '8px', border: 'none', background: '#00a884', color: 'white', cursor: message.fileUrl ? 'pointer' : 'default', overflow: 'hidden', flexShrink: 0 }}>
+                    {(message.fileType === 'image' || message.fileType?.startsWith('image')) && message.fileUrl
+                      ? <img src={message.fileUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                      : '📎'}
+                  </button>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ fontSize: '13px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{message.fileName || getMessagePreview(message)}</div>
+                    <button onClick={() => scrollToMessage(message.id)} style={{ border: 'none', background: 'transparent', color: '#00a884', padding: 0, cursor: 'pointer', fontSize: '12px' }}>Mesaja git</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <strong style={{ fontSize: '13px', color: iconColor }}>Linkler ({linkItems.length})</strong>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
+              {linkItems.length === 0 ? (
+                <div style={{ color: iconColor, fontSize: '13px', padding: '8px 0' }}>Henüz link yok.</div>
+              ) : linkItems.map(({ messageId, url }, index) => (
+                <div key={`${messageId}-${index}`} style={{ padding: '9px', borderRadius: '10px', background: panelBg }}>
+                  <a href={url} target="_blank" rel="noopener noreferrer" style={{ color: '#00a884', fontSize: '13px', wordBreak: 'break-all', textDecoration: 'none' }}>{url}</a>
+                  <div>
+                    <button onClick={() => scrollToMessage(messageId)} style={{ border: 'none', background: 'transparent', color: iconColor, padding: '6px 0 0', cursor: 'pointer', fontSize: '12px' }}>Mesaja git</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isDisappearingSettingsOpen && activeConversation?.id && (
+        <div className="settings-overlay" onClick={() => setIsDisappearingSettingsOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 10000, background: 'rgba(0,0,0,0.42)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }}>
+          <div onClick={(event) => event.stopPropagation()} style={{ width: '430px', maxWidth: '100%', background: panelBg, border: `1px solid ${borderColor}`, borderRadius: '18px', boxShadow: '0 24px 70px rgba(0,0,0,0.38)', color: textColor, overflow: 'hidden' }}>
+            <div style={{ padding: '18px 18px 14px', background: isDisappearingMode ? 'linear-gradient(135deg, #0f8f6f, #145c4d)' : inputBg }}>
+              <div style={{ fontSize: '12px', fontWeight: 800, color: isDisappearingMode ? '#d8fff3' : '#00a884' }}>Kaybolan mesaj modu</div>
+              <h3 style={{ margin: '4px 0 6px', fontSize: '19px', color: isDisappearingMode ? 'white' : textColor }}>Mesajlar ne kadar sonra kaybolsun?</h3>
+              <p style={{ margin: 0, fontSize: '13px', color: isDisappearingMode ? '#d8fff3' : iconColor }}>Bu ayar açıldıktan sonra gönderilen yeni mesajlara uygulanır.</p>
+            </div>
+
+            <div style={{ padding: '14px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {disappearingOptions.map((option) => {
+                const isSelected = option.seconds === (activeConversation.disappearingDurationSeconds ?? null);
+                return (
+                  <button
+                    key={option.label}
+                    onClick={() => {
+                      onSetDisappearingMode(activeConversation.id, option.seconds);
+                      setIsDisappearingSettingsOpen(false);
+                    }}
+                    style={{ border: `1px solid ${isSelected ? '#00a884' : borderColor}`, background: isSelected ? (isDarkMode ? 'rgba(0,168,132,0.18)' : '#e1f7f0') : inputBg, color: textColor, borderRadius: '14px', padding: '12px 14px', cursor: 'pointer', textAlign: 'left', display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'center' }}
+                  >
+                    <span>
+                      <strong style={{ display: 'block', fontSize: '14px' }}>{option.label}</strong>
+                      <span style={{ display: 'block', fontSize: '12px', color: iconColor, marginTop: '3px' }}>{option.description}</span>
+                    </span>
+                    <span style={{ color: isSelected ? '#00a884' : iconColor, fontWeight: 800 }}>{isSelected ? '✓' : '○'}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
       {isPendingModalOpen && (
         <div style={{ position: 'absolute', top: '75px', right: '20px', width: '320px', background: inputBg, borderRadius: '8px', boxShadow: '0 4px 12px rgba(0,0,0,0.2)', zIndex: 10, padding: '15px', border: `1px solid ${borderColor}` }}>
           <h3 style={{ fontSize: '15px', color: '#00a884', margin: '0 0 10px 0', borderBottom: `1px solid ${borderColor}`, paddingBottom: '8px' }}>Zamanlanmış Mesajlar</h3>
@@ -448,8 +705,8 @@ export default function ChatArea({
       {/* SABİTLENMİŞ MESAJ BANNERI */}
       {pinnedMessages.length > 0 && (
         <div
-          onClick={() => setPinnedIndex((prev) => (prev + 1) % pinnedMessages.length)}
-          style={{ background: panelBg, borderBottom: `1px solid ${borderColor}`, padding: '8px 20px', display: 'flex', alignItems: 'center', gap: '10px', fontSize: '13px', color: textColor, zIndex: 5, boxShadow: '0 2px 5px rgba(0,0,0,0.05)', cursor: pinnedMessages.length > 1 ? 'pointer' : 'default' }}
+          onClick={() => scrollToMessage(pinnedMessages[pinnedIndex % pinnedMessages.length]?.id)}
+          style={{ background: panelBg, borderBottom: `1px solid ${borderColor}`, padding: '8px 20px', display: 'flex', alignItems: 'center', gap: '10px', fontSize: '13px', color: textColor, zIndex: 5, boxShadow: '0 2px 5px rgba(0,0,0,0.05)', cursor: 'pointer' }}
         >
            <span style={{ color: '#8696a0', fontSize: '16px' }}>📌</span>
            <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
@@ -457,9 +714,17 @@ export default function ChatArea({
                Sabitlenmiş Mesaj {pinnedMessages.length > 1 && `(${(pinnedIndex % pinnedMessages.length) + 1}/${pinnedMessages.length})`}
              </strong>
              <span style={{ opacity: 0.8 }}>
-               {pinnedMessages[pinnedIndex % pinnedMessages.length]?.content.substring(0, 60)}...
+               {getMessagePreview(pinnedMessages[pinnedIndex % pinnedMessages.length]).substring(0, 60)}...
              </span>
            </div>
+           {pinnedMessages.length > 1 && (
+             <button
+               onClick={(event) => { event.stopPropagation(); setPinnedIndex((prev) => (prev + 1) % pinnedMessages.length); }}
+               style={{ border: `1px solid ${borderColor}`, background: inputBg, color: textColor, borderRadius: '999px', padding: '4px 8px', cursor: 'pointer', fontSize: '12px' }}
+             >
+               Sonraki
+             </button>
+           )}
         </div>
       )}
 
@@ -510,7 +775,7 @@ export default function ChatArea({
           const isDeletedForEveryone = msg.content === "🚫 Bu mesaj silindi";
 
           return (
-            <div key={msg.id} className={`message-row ${isMe ? 'me' : 'them'}`}>
+            <div key={msg.id} data-message-id={msg.id} className={`message-row ${isMe ? 'me' : 'them'} ${highlightedMessageId === msg.id ? 'highlight-message' : ''}`}>
 
               {isDeletedForEveryone ? (
                 <div
@@ -571,7 +836,7 @@ export default function ChatArea({
                     </div>
                   )}
 
-                  {msg.content && <div style={{ wordBreak: 'break-word' }}>{msg.content}</div>}
+                  {msg.content && <div style={{ wordBreak: 'break-word' }}>{renderLinkedText(msg.content)}</div>}
 
                   <div className="message-meta">
                     {msg.starredByIds?.includes(currentUser.id) && <span style={{ color: '#fbc02d', fontSize: '12px' }}>⭐</span>}
@@ -619,6 +884,13 @@ export default function ChatArea({
             </div>
           );
         })}
+        {(systemNotice || isDisappearingMode) && (
+          <div style={{ display: 'flex', justifyContent: 'center', margin: '14px 0 4px' }}>
+            <div style={{ background: isDisappearingMode ? (isDarkMode ? '#113d34' : '#d9f5eb') : panelBg, color: isDisappearingMode ? '#00a884' : iconColor, border: `1px solid ${isDisappearingMode ? 'rgba(0,168,132,0.35)' : borderColor}`, padding: '8px 13px', borderRadius: '999px', fontSize: '12.5px', fontWeight: 700, boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }}>
+              ⏳ {systemNotice || `Kaybolan mesaj modu açık: ${disappearingLabel}`}
+            </div>
+          </div>
+        )}
         <div ref={messagesEndRef} />
       </div>
 
@@ -696,10 +968,43 @@ export default function ChatArea({
         </div>
       )}
 
+      {editingMessage && (
+        <div className="settings-overlay" onClick={() => setEditingMessage(null)} style={{ position: 'fixed', inset: 0, zIndex: 10000, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }}>
+          <div style={{ width: '380px', maxWidth: '100%', background: panelBg, borderRadius: '16px', padding: '18px', boxShadow: '0 20px 60px rgba(0,0,0,0.35)', color: textColor, border: `1px solid ${borderColor}` }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
+              <div>
+                <div style={{ fontSize: '12px', color: '#00a884', fontWeight: 700 }}>Mesaj düzenleme</div>
+                <h3 style={{ margin: '2px 0 0', fontSize: '18px' }}>Gönderilmiş mesaj</h3>
+              </div>
+              <button onClick={() => setEditingMessage(null)} style={{ border: 'none', background: inputBg, color: iconColor, borderRadius: '50%', width: '32px', height: '32px', cursor: 'pointer' }}>✕</button>
+            </div>
+
+            {editingMessage.fileKey && (
+              <div style={{ marginBottom: '12px', padding: '10px', borderRadius: '12px', background: inputBg, border: `1px solid ${borderColor}`, fontSize: '13px', color: iconColor }}>
+                {editingMessage.fileType === 'image' || editingMessage.fileType?.startsWith('image') ? '📷 Görsel eklentisi' : `📎 ${editingMessage.fileName || 'Dosya eklentisi'}`}
+              </div>
+            )}
+
+            <textarea
+              value={editMessageText}
+              onChange={(e) => setEditMessageText(e.target.value)}
+              autoFocus
+              style={{ width: '100%', minHeight: '110px', padding: '12px', borderRadius: '12px', border: `1px solid ${borderColor}`, background: inputBg, color: textColor, resize: 'vertical', outline: 'none', boxSizing: 'border-box', fontSize: '14px' }}
+              placeholder="Mesaj metni..."
+            />
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '14px' }}>
+              <Button text="Vazgeç" onClick={() => setEditingMessage(null)} style={{ background: 'transparent', color: iconColor, border: `1px solid ${borderColor}` }} />
+              <Button text="Kaydet" onClick={handleSaveMessageEdit} />
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ZAMANLANMIŞ MESAJ DÜZENLEME MODALI */}
       {editingScheduled && (
-        <div className="settings-overlay" onClick={() => setEditingScheduled(null)} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 10000, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ width: '350px', background: panelBg, borderRadius: '12px', padding: '20px', boxShadow: '0 15px 50px rgba(0,0,0,0.3)', color: textColor }} onClick={(e) => e.stopPropagation()}>
+        <div className="settings-overlay" onClick={() => setEditingScheduled(null)} style={{ position: 'fixed', inset: 0, zIndex: 10000, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }}>
+          <div style={{ width: '420px', maxWidth: '100%', background: panelBg, borderRadius: '16px', padding: '18px', boxShadow: '0 20px 60px rgba(0,0,0,0.35)', color: textColor, border: `1px solid ${borderColor}` }} onClick={(e) => e.stopPropagation()}>
             <h3 style={{ margin: '0 0 15px 0', borderBottom: `1px solid ${borderColor}`, paddingBottom: '10px', fontSize: '16px', display: 'flex', justifyContent: 'space-between' }}>
               Mesajı Düzenle
               <span style={{ cursor: 'pointer', color: iconColor }} onClick={() => setEditingScheduled(null)}>✖</span>
@@ -723,7 +1028,7 @@ export default function ChatArea({
             <textarea
               value={editScheduledText}
               onChange={(e) => setEditScheduledText(e.target.value)}
-              style={{ width: '100%', height: '80px', padding: '10px', borderRadius: '8px', border: `1px solid ${borderColor}`, background: inputBg, color: textColor, resize: 'none', outline: 'none', boxSizing: 'border-box' }}
+              style={{ width: '100%', minHeight: '110px', padding: '12px', borderRadius: '12px', border: `1px solid ${borderColor}`, background: inputBg, color: textColor, resize: 'vertical', outline: 'none', boxSizing: 'border-box', fontSize: '14px' }}
               placeholder="Mesajınızı düzenleyin..."
             />
 
@@ -826,6 +1131,33 @@ export default function ChatArea({
           disabled={isUploading}
           style={{ flex: 1, padding: '12px 15px', borderRadius: '8px', border: `1px solid ${borderColor}`, outline: 'none', backgroundColor: inputBg, color: textColor, fontSize: '15px' }}
         />
+
+        <button
+          onClick={toggleVoiceRecording}
+          disabled={isUploading}
+          title={isRecordingAudio ? 'Kaydı bitir ve gönder' : 'Sesli mesaj kaydet'}
+          style={{
+            width: '44px',
+            height: '44px',
+            borderRadius: '50%',
+            border: 'none',
+            background: isRecordingAudio ? '#e53935' : '#00a884',
+            color: 'white',
+            cursor: isUploading ? 'default' : 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            boxShadow: isRecordingAudio ? '0 0 0 6px rgba(229,57,53,0.18)' : 'none',
+            transition: 'all 0.2s ease',
+            flexShrink: 0
+          }}
+        >
+          {isRecordingAudio ? (
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M6 6h12v12H6z"></path></svg>
+          ) : (
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.49 6-3.31 6-6.72h-1.7z"></path></svg>
+          )}
+        </button>
 
         {/* GÖNDER BUTONU */}
         <div style={{ display: 'flex', borderRadius: '8px', overflow: 'hidden', opacity: (newMessage.trim() || selectedFile) ? 1 : 0.5, pointerEvents: ((newMessage.trim() || selectedFile) && !isUploading) ? 'auto' : 'none', transition: 'all 0.2s ease' }}>

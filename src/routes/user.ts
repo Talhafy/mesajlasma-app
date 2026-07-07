@@ -67,7 +67,7 @@ router.put('/password', authenticateToken, validateRequest({ body: userSchemas.p
 router.delete('/account', authenticateToken, async (req: CustomRequest, res: any) => {
   try {
     const userId = getUserId(req);
-    const deletedFileKeys = await prisma.$transaction(async (tx) => {
+    const deleteResult = await prisma.$transaction(async (tx) => {
       const account = await tx.user.findUnique({ where: { id: userId }, select: { avatarFileKey: true } });
       const memberships = await tx.participant.findMany({
         where: { userId },
@@ -88,6 +88,20 @@ router.delete('/account', authenticateToken, async (req: CustomRequest, res: any
           conversation.adminId === userId && conversation.participants.length === 1
         ))
         .map(({ conversation }) => conversation.id);
+      const affectedUserIds = [...new Set(memberships
+        .flatMap(({ conversation }) => conversation.participants.map((participant) => participant.userId))
+        .filter((participantUserId) => participantUserId !== userId))];
+      const deletedGroupIds = memberships
+        .filter(({ conversation }) => conversation.isGroup && conversation.adminId === userId && conversation.participants.length === 1)
+        .map(({ conversation }) => conversation.id);
+      const updatedGroups = memberships
+        .filter(({ conversation }) => conversation.isGroup && !deletedGroupIds.includes(conversation.id))
+        .map(({ conversation }) => {
+          const successor = conversation.adminId === userId
+            ? conversation.participants.find((participant) => participant.userId !== userId)
+            : null;
+          return { groupId: conversation.id, removedUserId: userId, newAdminId: successor?.userId || null };
+        });
 
       const [messageFiles, scheduledFiles] = await Promise.all([
         tx.message.findMany({
@@ -134,12 +148,27 @@ router.delete('/account', authenticateToken, async (req: CustomRequest, res: any
       }
 
       await tx.user.delete({ where: { id: userId } });
-      return [...messageFiles, ...scheduledFiles, { fileKey: account?.avatarFileKey || null }]
-        .map((entry) => entry.fileKey)
-        .filter((key): key is string => Boolean(key));
+      return {
+        affectedUserIds,
+        deletedConversationIds,
+        deletedGroupIds,
+        updatedGroups,
+        deletedFileKeys: [...messageFiles, ...scheduledFiles, { fileKey: account?.avatarFileKey || null }]
+          .map((entry) => entry.fileKey)
+          .filter((key): key is string => Boolean(key))
+      };
     });
 
-    await Promise.all([...new Set(deletedFileKeys)].map(deleteFileIfUnreferenced));
+    await Promise.all([...new Set(deleteResult.deletedFileKeys)].map(deleteFileIfUnreferenced));
+    const io = req.app.get('io');
+    deleteResult.affectedUserIds.forEach((affectedUserId) => {
+      io.to(affectedUserId).emit('kullanici_silindi', {
+        userId,
+        conversationIds: deleteResult.deletedConversationIds,
+        deletedGroupIds: deleteResult.deletedGroupIds,
+        updatedGroups: deleteResult.updatedGroups
+      });
+    });
     res.status(200).json({ message: "Hesabınız başarıyla silindi." });
   } catch (error) {
     res.status(500).json({ error: "Hesap silinirken bir hata oluştu." });

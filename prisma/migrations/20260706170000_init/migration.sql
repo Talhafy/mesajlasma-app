@@ -34,6 +34,10 @@ CREATE TABLE "Conversation" (
     "name" TEXT,
     "adminId" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "pinnedByIds" TEXT[] DEFAULT ARRAY[]::TEXT[],
+    "archivedByIds" TEXT[] DEFAULT ARRAY[]::TEXT[],
+    "mutedByIds" TEXT[] DEFAULT ARRAY[]::TEXT[],
+    "disappearingDurationSeconds" INTEGER,
 
     CONSTRAINT "Conversation_pkey" PRIMARY KEY ("id")
 );
@@ -56,6 +60,7 @@ CREATE TABLE "Message" (
     "conversationId" TEXT NOT NULL,
     "clientId" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "expiresAt" TIMESTAMP(3),
     "readByIds" TEXT[] DEFAULT ARRAY[]::TEXT[],
     "isPinned" BOOLEAN NOT NULL DEFAULT false,
     "isForwarded" BOOLEAN NOT NULL DEFAULT false,
@@ -114,6 +119,9 @@ ON "Participant"("userId", "conversationId");
 -- CreateIndex
 CREATE INDEX "Message_conversationId_createdAt_idx"
 ON "Message"("conversationId", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "Message_expiresAt_idx" ON "Message"("expiresAt");
 
 -- CreateIndex
 CREATE INDEX "Message_senderId_idx" ON "Message"("senderId");

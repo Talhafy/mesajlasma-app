@@ -1,4 +1,5 @@
 import { Server } from 'socket.io';
+import { logger } from '../config/logger';
 import prisma from '../db';
 import { deleteFileIfUnreferenced } from '../services/fileCleanup';
 import { withSignedFileUrl } from '../services/fileStorage';
@@ -52,7 +53,10 @@ export const startScheduledMessageWorker = (io: Server) => {
               conversationId: scheduled.conversationId,
               fileKey: scheduled.fileKey,
               fileType: scheduled.fileType,
-              fileName: scheduled.fileName
+              fileName: scheduled.fileName,
+              expiresAt: conversation.disappearingDurationSeconds
+                ? new Date(Date.now() + conversation.disappearingDurationSeconds * 1000)
+                : null
             },
             include: {
               sender: { select: { username: true } },
@@ -76,16 +80,27 @@ export const startScheduledMessageWorker = (io: Server) => {
         io.to(rooms).emit('yeni_mesaj_geldi', await withSignedFileUrl(delivery.savedMessage));
       }
       await Promise.all(result.discardedFileKeys.map(deleteFileIfUnreferenced));
+
+      const expiredFiles = await prisma.message.findMany({
+        where: { expiresAt: { lte: new Date() }, fileKey: { not: null } },
+        select: { fileKey: true }
+      });
+      await prisma.message.deleteMany({ where: { expiresAt: { lte: new Date() } } });
+      await Promise.all([...new Set(expiredFiles.map((file) => file.fileKey).filter((key): key is string => Boolean(key)))].map(deleteFileIfUnreferenced));
     } catch (error) {
-      console.error('Zamanlanmış mesaj işçisi hatası:', error);
+      logger.error({ event: 'worker.scheduled_message_failed', err: error }, 'Scheduled message worker failed');
     } finally {
       workerRunning = false;
     }
   };
 
+  logger.info({ event: 'worker.started' }, 'Scheduled message worker started');
   const interval = setInterval(() => void deliverScheduledMessages(), WORKER_INTERVAL_MS);
   void deliverScheduledMessages();
 
   // Sunucu kapanırken interval'in yeni DB işi başlatmasını engeller.
-  return () => clearInterval(interval);
+  return () => {
+    logger.info({ event: 'worker.stopped' }, 'Scheduled message worker stopped');
+    clearInterval(interval);
+  };
 };

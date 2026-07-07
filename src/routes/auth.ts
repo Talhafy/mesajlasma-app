@@ -5,6 +5,7 @@ import { authenticateToken, CustomRequest } from '../middleware/authMiddleware';
 import { validateRequest } from '../middleware/validateRequest';
 import { authSchemas } from '../validation/schemas';
 import { clientOrigin } from '../config/env';
+import { logger } from '../config/logger';
 import { createSignedFileUrl } from '../services/fileStorage';
 import {
   clearRefreshCookie,
@@ -50,12 +51,14 @@ router.post('/register', requireTrustedOrigin, validateRequest({ body: authSchem
     const newUser = await prisma.user.create({
       data: { username, email, password_hash: hashedPassword }
     });
+    req.app.get('io')?.emit('kullanici_eklendi', await publicUser(newUser));
+    logger.info({ event: 'auth.register_success', userId: newUser.id, ip: req.ip }, 'Register successful');
     res.status(201).json({
       message: 'Kullanıcı başarıyla oluşturuldu!',
       user: { id: newUser.id, username: newUser.username, email: newUser.email }
     });
   } catch (error) {
-    console.error('Veritabanı kayıt hatası:', error);
+    logger.error({ event: 'auth.register_failed', err: error, ip: req.ip }, 'Register failed');
     res.status(400).json({ error: 'Kullanıcı adı veya e-posta zaten kullanılıyor.' });
   }
 });
@@ -87,13 +90,14 @@ router.post('/login', requireTrustedOrigin, validateRequest({ body: authSchemas.
     ]);
 
     setRefreshCookie(res, refreshToken, refreshExpiresAt);
+    logger.info({ event: 'auth.login_success', userId: user.id, ip: req.ip }, 'Login successful');
     return res.status(200).json({
       message: 'Giriş başarılı!',
       accessToken: createAccessToken(user),
       user: await publicUser(user)
     });
   } catch (error) {
-    console.error('Giriş hatası:', error);
+    logger.error({ event: 'auth.login_failed', err: error, ip: req.ip }, 'Login failed');
     return res.status(500).json({ error: 'Giriş işlemi sırasında sunucu hatası oluştu.' });
   }
 });
@@ -101,6 +105,7 @@ router.post('/login', requireTrustedOrigin, validateRequest({ body: authSchemas.
 router.post('/refresh', requireTrustedOrigin, async (req, res) => {
   const presentedToken = readRefreshToken(req.headers.cookie);
   if (!presentedToken) {
+    logger.warn({ event: 'auth.refresh_missing', ip: req.ip }, 'Refresh token missing');
     clearRefreshCookie(res);
     return res.status(401).json({ error: 'Refresh oturumu bulunamadı.' });
   }
@@ -112,12 +117,14 @@ router.post('/refresh', requireTrustedOrigin, async (req, res) => {
   });
 
   if (!session) {
+    logger.warn({ event: 'auth.refresh_invalid', ip: req.ip }, 'Refresh session invalid');
     clearRefreshCookie(res);
     return res.status(401).json({ error: 'Refresh oturumu geçersiz.' });
   }
 
   // Daha önce döndürülmüş token'ın yeniden kullanılması token hırsızlığı göstergesidir.
   if (session.revokedAt) {
+    logger.warn({ event: 'auth.refresh_reuse_detected', ip: req.ip, userId: session.userId }, 'Refresh token reuse detected');
     await prisma.refreshSession.updateMany({
       where: { userId: session.userId, revokedAt: null },
       data: { revokedAt: new Date() }
@@ -127,6 +134,7 @@ router.post('/refresh', requireTrustedOrigin, async (req, res) => {
   }
 
   if (session.expiresAt <= new Date()) {
+    logger.warn({ event: 'auth.refresh_expired', ip: req.ip, userId: session.userId }, 'Refresh token expired');
     await prisma.refreshSession.updateMany({
       where: { id: session.id, revokedAt: null },
       data: { revokedAt: new Date() }
@@ -159,6 +167,7 @@ router.post('/refresh', requireTrustedOrigin, async (req, res) => {
   }
 
   setRefreshCookie(res, nextRefreshToken, session.expiresAt);
+  logger.info({ event: 'auth.refresh_success', userId: session.userId, ip: req.ip }, 'Refresh token rotated');
   return res.status(200).json({
     accessToken: createAccessToken(session.user),
     user: await publicUser(session.user)
@@ -166,6 +175,7 @@ router.post('/refresh', requireTrustedOrigin, async (req, res) => {
 });
 
 router.post('/logout', requireTrustedOrigin, async (req, res) => {
+  logger.info({ event: 'auth.logout', ip: req.ip }, 'Logout requested');
   const refreshToken = readRefreshToken(req.headers.cookie);
   if (refreshToken) {
     await prisma.refreshSession.updateMany({
@@ -174,6 +184,7 @@ router.post('/logout', requireTrustedOrigin, async (req, res) => {
     });
   }
   clearRefreshCookie(res);
+  logger.info({ event: 'auth.logout_success', ip: req.ip }, 'Logout successful');
   return res.status(204).send();
 });
 

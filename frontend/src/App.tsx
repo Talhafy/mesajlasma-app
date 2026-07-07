@@ -19,7 +19,7 @@ import {
   subscribeAccessToken
 } from './auth/tokenStore';
 
-const SOCKET_INACTIVITY_TIMEOUT_MS = 1 * 60 * 1000;
+const SOCKET_INACTIVITY_TIMEOUT_MS = 3 * 60 * 60 * 1000;
 const SOCKET_ACTIVITY_PING_INTERVAL_MS = 60 * 1000;
 
 export default function App() {
@@ -52,14 +52,17 @@ export default function App() {
   const [editGroupName, setEditGroupName] = useState('');
   const [groupMembers, setGroupMembers] = useState<User[]>([]);
   const [typingByConversation, setTypingByConversation] = useState<Record<string, string>>({});
+  const [socketConnectionStatus, setSocketConnectionStatus] = useState<'connected' | 'inactive' | 'reconnecting' | 'disconnected'>('connected');
 
   const [isDarkMode, setIsDarkMode] = useState(() => localStorage.getItem('theme') === 'dark');
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const activeConversationRef = useRef<Conversation | null>(null);
+  const selectedUserRef = useRef<User | null>(null);
   const currentUserRef = useRef<User | null>(null);
   const groupsListRef = useRef<Conversation[]>([]);
   const usersListRef = useRef<User[]>([]);
+  const conversationListRef = useRef<Conversation[]>([]);
   const processedMessagesRef = useRef<Set<string>>(new Set());
   const autoScrollRef = useRef(true);
   const isSocketActiveRef = useRef(true);
@@ -75,9 +78,11 @@ export default function App() {
   };
 
   useEffect(() => { activeConversationRef.current = activeConversation; }, [activeConversation]);
+  useEffect(() => { selectedUserRef.current = selectedUser; }, [selectedUser]);
   useEffect(() => { currentUserRef.current = currentUser; }, [currentUser]);
   useEffect(() => { groupsListRef.current = groupsList; }, [groupsList]);
   useEffect(() => { usersListRef.current = usersList; }, [usersList]);
+  useEffect(() => { conversationListRef.current = conversationList; }, [conversationList]);
   useEffect(() => { if (autoScrollRef.current) { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); } }, [messages]);
   useEffect(() => {
     if (isDarkMode) { document.body.classList.add('dark-theme'); localStorage.setItem('theme', 'dark'); }
@@ -339,9 +344,15 @@ export default function App() {
     const reconnectSocketIfActive = async () => {
       const isStillActive = Date.now() - lastUserActivityAtRef.current < SOCKET_INACTIVITY_TIMEOUT_MS;
       if (!isSocketActiveRef.current || !isStillActive || newSocket.connected) return;
-      const currentToken = getAccessToken() || (await refreshAccessSession()).accessToken;
-      newSocket.auth = { token: currentToken };
-      newSocket.connect();
+      setSocketConnectionStatus('reconnecting');
+      try {
+        await new Promise(resolve => window.setTimeout(resolve, 1000));
+        const currentToken = getAccessToken() || (await refreshAccessSession()).accessToken;
+        newSocket.auth = { token: currentToken };
+        newSocket.connect();
+      } catch {
+        setSocketConnectionStatus('disconnected');
+      }
     };
 
     const markSocketActive = () => {
@@ -352,6 +363,7 @@ export default function App() {
       if (socketInactivityTimerRef.current) clearTimeout(socketInactivityTimerRef.current);
       socketInactivityTimerRef.current = setTimeout(() => {
         isSocketActiveRef.current = false;
+        setSocketConnectionStatus('inactive');
         if (newSocket.connected) newSocket.disconnect();
       }, SOCKET_INACTIVITY_TIMEOUT_MS);
 
@@ -379,6 +391,7 @@ export default function App() {
     });
 
     newSocket.on('connect', () => {
+      setSocketConnectionStatus('connected');
       lastSocketActivityPingRef.current = Date.now();
       newSocket.emit('client_activity');
       if (currentUserRef.current) newSocket.emit('odaya_katil', currentUserRef.current.id);
@@ -387,12 +400,14 @@ export default function App() {
     });
 
     newSocket.on('disconnect', (reason) => {
-      if (reason !== 'io server disconnect') return;
       const isStillActive = Date.now() - lastUserActivityAtRef.current < SOCKET_INACTIVITY_TIMEOUT_MS;
       if (!isSocketActiveRef.current || !isStillActive) {
         isSocketActiveRef.current = false;
+        setSocketConnectionStatus('inactive');
         return;
       }
+      setSocketConnectionStatus('disconnected');
+      if (reason !== 'io server disconnect') return;
       void refreshAccessSession().then(({ accessToken }) => {
         newSocket.auth = { token: accessToken };
         newSocket.connect();
@@ -406,7 +421,8 @@ export default function App() {
       processedMessagesRef.current.add(gelenMesaj.id);
       void fetchConversations();
 
-      if (gelenMesaj.senderId !== currentUserRef.current?.id && document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+      const notificationConversation = conversationListRef.current.find((conversation) => conversation.id === gelenMesaj.conversationId);
+      if (!notificationConversation?.isMuted && gelenMesaj.senderId !== currentUserRef.current?.id && document.hidden && 'Notification' in window && Notification.permission === 'granted') {
         new Notification(gelenMesaj.sender?.username || 'Yeni mesaj', {
           body: gelenMesaj.content || (gelenMesaj.fileType === 'image' ? '📷 Görsel' : '📎 Dosya')
         });
@@ -464,6 +480,15 @@ export default function App() {
       void fetchConversations();
     });
 
+    newSocket.on('sohbet_ayarlari_guncellendi', (data: { conversationId: string; disappearingDurationSeconds: number | null }) => {
+      setConversationList(prev => prev.map(conversation => conversation.id === data.conversationId
+        ? { ...conversation, disappearingDurationSeconds: data.disappearingDurationSeconds }
+        : conversation));
+      setActiveConversation(prev => prev?.id === data.conversationId
+        ? { ...prev, disappearingDurationSeconds: data.disappearingDurationSeconds }
+        : prev);
+    });
+
     newSocket.on('presence_snapshot', ({ onlineUserIds }: { onlineUserIds: string[] }) => {
       const online = new Set(onlineUserIds);
       setUsersList((previous) => previous.map((user) => ({ ...user, isOnline: online.has(user.id) })));
@@ -479,6 +504,13 @@ export default function App() {
       setConversationList((previous) => previous.map((conversation) => conversation.otherUser?.id === userId
         ? { ...conversation, otherUser: { ...conversation.otherUser, isOnline, lastSeenAt: lastSeenAt || conversation.otherUser.lastSeenAt } }
         : conversation));
+    });
+
+    newSocket.on('kullanici_eklendi', (user: User) => {
+      if (user.id === currentUserRef.current?.id) return;
+      setUsersList(previous => previous.some(existing => existing.id === user.id)
+        ? previous
+        : [...previous, { ...user, isOnline: false }]);
     });
 
     newSocket.on('typing_changed', ({ conversationId, username, isTyping }: { conversationId: string; username: string; isTyping: boolean }) => {
@@ -502,13 +534,55 @@ export default function App() {
     newSocket.on('gruptan_atildi', (data: { groupId: string, removedUserId: string }) => {
       if (data.removedUserId === currentUserRef.current?.id) {
         if (activeConversationRef.current?.adminId !== currentUserRef.current?.id) { alert("Grup yöneticisi sizi gruptan çıkardı."); }
-        setGroupsList(prev => prev.filter(g => g.id !== data.groupId)); setActiveConversation(prev => prev?.id === data.groupId ? null : prev);
+        setGroupsList(prev => prev.filter(g => g.id !== data.groupId));
+        setConversationList(prev => prev.filter(conversation => conversation.id !== data.groupId));
+        setActiveConversation(prev => prev?.id === data.groupId ? null : prev);
       }
     });
 
     newSocket.on('grup_silindi', (data: { groupId: string }) => {
       alert("Bu grup yönetici tarafından kalıcı olarak silindi.");
-      setGroupsList(prev => prev.filter(g => g.id !== data.groupId)); setActiveConversation(prev => prev?.id === data.groupId ? null : prev);
+      setGroupsList(prev => prev.filter(g => g.id !== data.groupId));
+      setConversationList(prev => prev.filter(conversation => conversation.id !== data.groupId));
+      setActiveConversation(prev => prev?.id === data.groupId ? null : prev);
+    });
+
+    newSocket.on('kullanici_silindi', (data: {
+      userId: string;
+      conversationIds: string[];
+      deletedGroupIds: string[];
+      updatedGroups: Array<{ groupId: string; removedUserId: string; newAdminId: string | null }>;
+    }) => {
+      setUsersList(prev => prev.filter(user => user.id !== data.userId));
+      setConversationList(prev => prev.filter(conversation =>
+        !data.conversationIds.includes(conversation.id) &&
+        !data.deletedGroupIds.includes(conversation.id) &&
+        conversation.otherUser?.id !== data.userId
+      ));
+      setGroupsList(prev => prev
+        .filter(group => !data.deletedGroupIds.includes(group.id))
+        .map(group => {
+          const update = data.updatedGroups.find(item => item.groupId === group.id);
+          return update?.newAdminId ? { ...group, adminId: update.newAdminId } : group;
+        }));
+      setGroupMembers(prev => prev.filter(member => member.id !== data.userId));
+      setActiveConversation(prev => {
+        if (!prev) return prev;
+        if (data.deletedGroupIds.includes(prev.id) || data.conversationIds.includes(prev.id)) return null;
+        const update = data.updatedGroups.find(item => item.groupId === prev.id);
+        return update?.newAdminId ? { ...prev, adminId: update.newAdminId } : prev;
+      });
+      setUnreadCounts(prev => {
+        const next = { ...prev };
+        delete next[data.userId];
+        data.conversationIds.forEach(id => delete next[id]);
+        data.deletedGroupIds.forEach(id => delete next[id]);
+        return next;
+      });
+      if (selectedUserRef.current?.id === data.userId || (activeConversationRef.current && data.conversationIds.includes(activeConversationRef.current.id))) {
+        setSelectedUser(null);
+        setMessages([]);
+      }
     });
 
     return () => {
@@ -526,6 +600,55 @@ export default function App() {
 
   const closeChat = () => { setActiveConversation(null); setSelectedUser(null); };
 
+  const reconnectRealtime = async () => {
+    if (!socket) return;
+    try {
+      isSocketActiveRef.current = true;
+      lastUserActivityAtRef.current = Date.now();
+      setSocketConnectionStatus('reconnecting');
+      await new Promise(resolve => window.setTimeout(resolve, 1000));
+      const { accessToken } = await refreshAccessSession();
+      socket.auth = { token: accessToken };
+      socket.connect();
+    } catch {
+      setSocketConnectionStatus('disconnected');
+    }
+  };
+
+  const handleToggleConversationPin = async (conversationId: string) => {
+    try {
+      const response = await api.put(`/conversations/${conversationId}/pin`);
+      setConversationList(prev => prev
+        .map(conversation => conversation.id === conversationId ? { ...conversation, isPinned: response.data.isPinned } : conversation)
+        .sort((a, b) => Number(b.isPinned) - Number(a.isPinned)));
+      setActiveConversation(prev => prev?.id === conversationId ? { ...prev, isPinned: response.data.isPinned } : prev);
+    } catch { alert('Sohbet sabitleme durumu güncellenemedi.'); }
+  };
+
+  const handleToggleConversationArchive = async (conversationId: string) => {
+    try {
+      const response = await api.put(`/conversations/${conversationId}/archive`);
+      setConversationList(prev => prev.map(conversation => conversation.id === conversationId ? { ...conversation, isArchived: response.data.isArchived } : conversation));
+      setActiveConversation(prev => prev?.id === conversationId ? { ...prev, isArchived: response.data.isArchived } : prev);
+    } catch { alert('Sohbet arşiv durumu güncellenemedi.'); }
+  };
+
+  const handleToggleConversationMute = async (conversationId: string) => {
+    try {
+      const response = await api.put(`/conversations/${conversationId}/mute`);
+      setConversationList(prev => prev.map(conversation => conversation.id === conversationId ? { ...conversation, isMuted: response.data.isMuted } : conversation));
+      setActiveConversation(prev => prev?.id === conversationId ? { ...prev, isMuted: response.data.isMuted } : prev);
+    } catch { alert('Sohbet sessize alma durumu gÃ¼ncellenemedi.'); }
+  };
+
+  const handleSetDisappearingMode = async (conversationId: string, durationSeconds: number | null) => {
+    try {
+      const response = await api.put(`/conversations/${conversationId}/disappearing`, { durationSeconds });
+      setConversationList(prev => prev.map(conversation => conversation.id === conversationId ? { ...conversation, disappearingDurationSeconds: response.data.disappearingDurationSeconds } : conversation));
+      setActiveConversation(prev => prev?.id === conversationId ? { ...prev, disappearingDurationSeconds: response.data.disappearingDurationSeconds } : prev);
+    } catch { alert('Kaybolan mesaj modu güncellenemedi.'); }
+  };
+
   const cikisYap = () => {
     void closeRefreshSession().catch(() => undefined);
     resetClientSession();
@@ -539,6 +662,8 @@ export default function App() {
        <Sidebar
           currentUser={currentUser} conversationList={conversationList} usersList={usersList} activeConversation={activeConversation} selectedUser={selectedUser} unreadCounts={unreadCounts}
           startGroupChat={startGroupChat} startChat={startChat} setIsGroupModalOpen={setIsGroupModalOpen} setIsSettingsOpen={setIsSettingsOpen} isDarkMode={isDarkMode} setIsDarkMode={setIsDarkMode}
+          socketConnectionStatus={socketConnectionStatus}
+          onReconnectRealtime={reconnectRealtime}
         />
       )}
 
@@ -551,6 +676,10 @@ export default function App() {
           isLoadingMore={isLoadingMore}
           typingUsername={activeConversation ? typingByConversation[activeConversation.id] : undefined}
           onTyping={(isTyping) => activeConversation && socket?.emit('typing_changed', { conversationId: activeConversation.id, isTyping })}
+          onToggleConversationPin={handleToggleConversationPin}
+          onToggleConversationArchive={handleToggleConversationArchive}
+          onToggleConversationMute={handleToggleConversationMute}
+          onSetDisappearingMode={handleSetDisappearingMode}
 
           />
       )}

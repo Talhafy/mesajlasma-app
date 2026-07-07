@@ -20,6 +20,7 @@ export interface Message {
   fileType?: string;
   fileName?: string;
   editedAt?: string;
+  expiresAt?: string;
 }
 
 export interface User {
@@ -39,6 +40,10 @@ export interface Conversation {
   name?: string;
   adminId?: string;
   createdAt?: string;
+  isPinned?: boolean;
+  isArchived?: boolean;
+  isMuted?: boolean;
+  disappearingDurationSeconds?: number | null;
   otherUser?: User | null;
   lastMessage?: Message | null;
 }

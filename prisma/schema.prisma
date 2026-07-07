@@ -42,6 +42,10 @@ model Conversation {
   name              String?
   adminId           String?
   createdAt         DateTime           @default(now())
+  pinnedByIds       String[]           @default([])
+  archivedByIds     String[]           @default([])
+  mutedByIds        String[]           @default([])
+  disappearingDurationSeconds Int?
   admin             User?              @relation("ConversationAdmin", fields: [adminId], references: [id], onDelete: SetNull)
   messages          Message[]
   scheduledMessages ScheduledMessage[]
@@ -69,6 +73,7 @@ model Message {
   conversationId String
   clientId       String?
   createdAt      DateTime     @default(now())
+  expiresAt       DateTime?
   editedAt       DateTime?
   readByIds      String[]     @default([])
   isPinned       Boolean      @default(false)
@@ -86,6 +91,7 @@ model Message {
 
   @@unique([senderId, clientId])
   @@index([conversationId, createdAt])
+  @@index([expiresAt])
   @@index([senderId])
 }
 

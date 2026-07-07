@@ -1,4 +1,5 @@
 import prisma from '../db';
+import { logger } from '../config/logger';
 import { deletePrivateFile } from './fileStorage';
 
 export const deleteFileIfUnreferenced = async (fileKey: string | null) => {
@@ -15,7 +16,7 @@ export const deleteFileIfUnreferenced = async (fileKey: string | null) => {
     try {
       await deletePrivateFile(fileKey);
     } catch (error) {
-      console.error(`R2 nesnesi silinemedi (${fileKey}):`, error);
+      logger.error({ event: 'storage.r2_delete_failed', err: error, fileKey }, 'R2 object deletion failed');
     }
   }
 };

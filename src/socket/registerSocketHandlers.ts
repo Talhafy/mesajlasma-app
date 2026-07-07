@@ -1,4 +1,5 @@
 import { Server } from 'socket.io';
+import { logger } from '../config/logger';
 import prisma from '../db';
 import { verifyAccessToken } from '../services/authTokens';
 
@@ -9,7 +10,7 @@ interface SocketUser {
 
 // Bir kullanıcının birden fazla sekmesi olabileceği için socket kimlikleri küme halinde tutulur.
 const onlineSockets = new Map<string, Set<string>>();
-const SOCKET_INACTIVITY_TIMEOUT_MS = 1 * 60 * 1000;
+const SOCKET_INACTIVITY_TIMEOUT_MS = 3 * 60 * 60 * 1000;
 
 export const registerSocketHandlers = (io: Server) => {
   // Socket el sıkışması yalnızca kısa ömürlü access token kabul eder.
@@ -51,6 +52,7 @@ export const registerSocketHandlers = (io: Server) => {
     onlineSockets.set(currentUser.userId, userSockets);
     void socket.join(currentUser.userId);
 
+    logger.info({ event: 'socket.connected', userId: currentUser.userId, socketId: socket.id }, 'Socket connected');
     socket.emit('presence_snapshot', { onlineUserIds: [...onlineSockets.keys()] });
     socket.broadcast.emit('presence_changed', { userId: currentUser.userId, isOnline: true, lastSeenAt: null });
 
@@ -82,7 +84,7 @@ export const registerSocketHandlers = (io: Server) => {
           select: { id: true }
         });
         if (!membership) {
-          console.warn(`Güvenlik uyarısı: Kullanıcı (${currentUser.userId}) yetkisiz odaya (${cleanId}) katılmaya çalıştı.`);
+          logger.warn({ event: 'security.unauthorized_room_join', userId: currentUser.userId, roomId: cleanId }, 'Unauthorized room join attempt');
           acknowledge?.({ ok: false, error: 'Bu sohbet odasına katılma yetkiniz yok.' });
           return;
         }
@@ -90,7 +92,7 @@ export const registerSocketHandlers = (io: Server) => {
         await socket.join(cleanId);
         acknowledge?.({ ok: true });
       } catch (error) {
-        console.error('Socket oda katılım hatası:', error);
+        logger.error({ event: 'socket.room_join_failed', err: error, userId: currentUser.userId, roomId: conversationId }, 'Socket room join failed');
         acknowledge?.({ ok: false, error: 'Sohbet odasına katılınamadı.' });
       }
     });
@@ -115,11 +117,12 @@ export const registerSocketHandlers = (io: Server) => {
           isTyping
         });
       } catch (error) {
-        console.error('Yazıyor durumu gönderilemedi:', error);
+        logger.error({ event: 'socket.typing_failed', err: error, userId: currentUser.userId, roomId: conversationId }, 'Typing state delivery failed');
       }
     });
 
     socket.on('disconnect', async () => {
+      logger.info({ event: 'socket.disconnected', userId: currentUser.userId, socketId: socket.id }, 'Socket disconnected');
       if (inactivityTimer) clearTimeout(inactivityTimer);
       const sockets = onlineSockets.get(currentUser.userId);
       sockets?.delete(socket.id);
@@ -130,7 +133,7 @@ export const registerSocketHandlers = (io: Server) => {
       try {
         await prisma.user.update({ where: { id: currentUser.userId }, data: { lastSeenAt } });
       } catch (error) {
-        console.error('Son görülme güncellenemedi:', error);
+        logger.error({ event: 'socket.last_seen_failed', err: error, userId: currentUser.userId }, 'Last seen update failed');
       }
 
       socket.broadcast.emit('presence_changed', {
