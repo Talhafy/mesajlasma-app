@@ -255,16 +255,20 @@ router.post('/conversations/direct', validateRequest({ body: chatSchemas.directC
     });
 
     if (!conversation) {
-      conversation = await prisma.conversation.create({
-        data: {
-          isGroup: false,
-          participants: {
-            create: [
-              { userId: currentUserId },
-              { userId: targetUserId }
-            ]
-          }
-        }
+      // İlk kez birebir sohbet açılıyorsa önce Conversation, sonra Participant kayıtlarını oluşturuyoruz.
+      // Nested create yerine açık transaction kullanmamızın sebebi Prisma 7 adapter-pg deprecation warning'lerini azaltmak.
+      conversation = await prisma.$transaction(async (tx) => {
+        const createdConversation = await tx.conversation.create({
+          data: { isGroup: false }
+        });
+        await tx.participant.createMany({
+          data: [
+            { userId: currentUserId, conversationId: createdConversation.id },
+            { userId: targetUserId, conversationId: createdConversation.id }
+          ],
+          skipDuplicates: true
+        });
+        return createdConversation;
       });
     }
 
@@ -285,11 +289,14 @@ router.post('/messages', validateRequest({ body: chatSchemas.message }), async (
       where: { id: conversationId }, include: { participants: true }
     });
     if (!conversation) return res.status(404).json({ error: "Sohbet bulunamadı." });
+    // Mesaj gönderme yetkisi frontend'den gelen senderId'ye göre değil,
+    // JWT'den çıkan senderId'nin gerçekten bu konuşmanın katılımcısı olmasına göre verilir.
     if (!conversation.participants.some((participant) => participant.userId === senderId)) {
       return res.status(403).json({ error: "Bu sohbete mesaj gönderme yetkiniz yok." });
     }
 
     if (replyToId) {
+      // Yanıtlanan mesajın aynı konuşmada olduğundan emin olmazsak kullanıcı başka odadaki mesajı referanslayabilir.
       const repliedMessage = await prisma.message.findFirst({
         where: { id: String(replyToId), conversationId },
         select: { id: true }
@@ -299,7 +306,9 @@ router.post('/messages', validateRequest({ body: chatSchemas.message }), async (
 
     let savedMessage;
     try {
-      savedMessage = await prisma.message.create({
+      // Mesajı sade create ile yazıp ilişkili sender/reply/conversation bilgisini ayrı okuyoruz.
+      // create({ include }) Prisma adapter-pg tarafında iç transaction + paralel query warning'i üretebildiği için ayrıldı.
+      const createdMessage = await prisma.message.create({
         data: {
           clientId,
           content: content.trim(),
@@ -313,15 +322,20 @@ router.post('/messages', validateRequest({ body: chatSchemas.message }), async (
           expiresAt: conversation.disappearingDurationSeconds
             ? new Date(Date.now() + conversation.disappearingDurationSeconds * 1000)
             : null
-        },
+        }
+      });
+      savedMessage = await prisma.message.findUnique({
+        where: { id: createdMessage.id },
         include: {
           sender: { select: { username: true } },
           replyTo: { select: { id: true, content: true, sender: { select: { username: true } } } },
           conversation: { select: { isGroup: true } }
         }
       });
+      if (!savedMessage) throw new Error('Created message could not be loaded.');
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        // clientId idempotency anahtarıdır. Aynı mesaj retry ile tekrar gelirse ikinci kayıt açmadan mevcut mesajı döneriz.
         const existingMessage = await prisma.message.findUnique({
           where: { senderId_clientId: { senderId, clientId } },
           include: {
@@ -339,6 +353,8 @@ router.post('/messages', validateRequest({ body: chatSchemas.message }), async (
     const responseMessage = await withSignedFileUrl(savedMessage);
 
     const io = req.app.get('io');
+    // Mesaj hem konuşma odasına hem de kullanıcı odalarına gönderilir.
+    // Böylece aktif sohbetteki kullanıcı mesajı görür, sidebar/conversation listesi de anlık güncellenebilir.
     const targetRooms = conversation.participants.map(p => p.userId);
     targetRooms.push(conversationId);
 
@@ -410,13 +426,21 @@ router.post('/conversations/group', validateRequest({ body: chatSchemas.group })
       return res.status(400).json({ error: "Seçilen kullanıcılardan biri bulunamadı." });
     }
 
-    const newGroup = await prisma.conversation.create({
-      data: {
-        isGroup: true,
-        name: name.trim(),
-        adminId: currentUserId,
-        participants: { create: allMemberIds.map((id: string) => ({ userId: id })) }
-      }
+    const newGroup = await prisma.$transaction(async (tx) => {
+      // Grup ve katılımcılar tek transaction'da oluşturulur; yarım grup/eksik üyelik kalmaz.
+      // Participant kayıtlarını createMany ile açıkça eklemek nested write kaynaklı adapter uyarılarını da azaltır.
+      const createdGroup = await tx.conversation.create({
+        data: {
+          isGroup: true,
+          name: name.trim(),
+          adminId: currentUserId
+        }
+      });
+      await tx.participant.createMany({
+        data: allMemberIds.map((id: string) => ({ userId: id, conversationId: createdGroup.id })),
+        skipDuplicates: true
+      });
+      return createdGroup;
     });
 
     const io = req.app.get('io');
@@ -513,14 +537,14 @@ router.delete('/conversations/group/:id/participants/:userId', validateRequest({
       return res.status(403).json({ error: "Sadece grup yöneticisi kişi çıkarabilir!" });
     }
 
-    await prisma.$transaction([
-      prisma.participant.deleteMany({
+    await prisma.$transaction(async (tx) => {
+      await tx.participant.deleteMany({
         where: { conversationId: groupId, userId }
-      }),
-      prisma.scheduledMessage.deleteMany({
+      });
+      await tx.scheduledMessage.deleteMany({
         where: { conversationId: groupId, senderId: userId }
-      })
-    ]);
+      });
+    });
 
     const io = req.app.get('io');
     io.to(groupId).emit('gruptan_atildi', { groupId, removedUserId: userId });
@@ -530,15 +554,15 @@ router.delete('/conversations/group/:id/participants/:userId', validateRequest({
     });
 
     if (remainingParticipants.length === 0) {
-      const [messageFiles, scheduledFiles] = await Promise.all([
-        prisma.message.findMany({ where: { conversationId: groupId, fileKey: { not: null } }, select: { fileKey: true } }),
-        prisma.scheduledMessage.findMany({ where: { conversationId: groupId, fileKey: { not: null } }, select: { fileKey: true } })
-      ]);
+      const messageFiles = await prisma.message.findMany({ where: { conversationId: groupId, fileKey: { not: null } }, select: { fileKey: true } });
+      const scheduledFiles = await prisma.scheduledMessage.findMany({ where: { conversationId: groupId, fileKey: { not: null } }, select: { fileKey: true } });
       await prisma.conversation.delete({ where: { id: groupId } });
       const deletedFileKeys = [...messageFiles, ...scheduledFiles]
         .map((entry) => entry.fileKey)
         .filter((key): key is string => Boolean(key));
-      await Promise.all([...new Set(deletedFileKeys)].map(deleteFileIfUnreferenced));
+      for (const fileKey of [...new Set(deletedFileKeys)]) {
+        await deleteFileIfUnreferenced(fileKey);
+      }
       io.to(groupId).emit('grup_silindi', { groupId });
     }
     else if (group.adminId === userId) {
@@ -630,10 +654,8 @@ router.delete('/conversations/group/:id', validateRequest({ params: chatSchemas.
       const group = await tx.conversation.findUnique({ where: { id: groupId } });
       if (!group?.isGroup || group.adminId !== adminId) return null;
 
-      const [messageFiles, scheduledFiles] = await Promise.all([
-        tx.message.findMany({ where: { conversationId: groupId, fileKey: { not: null } }, select: { fileKey: true } }),
-        tx.scheduledMessage.findMany({ where: { conversationId: groupId, fileKey: { not: null } }, select: { fileKey: true } })
-      ]);
+      const messageFiles = await tx.message.findMany({ where: { conversationId: groupId, fileKey: { not: null } }, select: { fileKey: true } });
+      const scheduledFiles = await tx.scheduledMessage.findMany({ where: { conversationId: groupId, fileKey: { not: null } }, select: { fileKey: true } });
 
       await tx.conversation.delete({ where: { id: groupId } });
       return [...messageFiles, ...scheduledFiles]
@@ -645,7 +667,9 @@ router.delete('/conversations/group/:id', validateRequest({ params: chatSchemas.
       return res.status(403).json({ error: "Grubu yalnızca yönetici silebilir." });
     }
 
-    await Promise.all([...new Set(deletedFileKeys)].map(deleteFileIfUnreferenced));
+    for (const fileKey of [...new Set(deletedFileKeys)]) {
+      await deleteFileIfUnreferenced(fileKey);
+    }
 
     const io = req.app.get('io');
     io.to(groupId).emit('grup_silindi', { groupId });
@@ -805,15 +829,19 @@ router.put('/messages/:id', validateRequest({
       return res.status(403).json({ error: "Bu sohbetin üyesi değilsiniz." });
     }
 
-    const updatedMessage = await prisma.message.update({
+    const updatedMessageRecord = await prisma.message.update({
       where: { id },
-      data: { content: req.body.content.trim(), editedAt: new Date() },
+      data: { content: req.body.content.trim(), editedAt: new Date() }
+    });
+    const updatedMessage = await prisma.message.findUnique({
+      where: { id: updatedMessageRecord.id },
       include: {
         sender: { select: { username: true } },
         replyTo: { select: { id: true, content: true, sender: { select: { username: true } } } },
         conversation: { select: { isGroup: true } }
       }
     });
+    if (!updatedMessage) return res.status(404).json({ error: "Mesaj bulunamadÄ±." });
 
     const responseMessage = await withSignedFileUrl(updatedMessage);
     req.app.get('io').to(message.conversationId).emit('mesaj_guncellendi', responseMessage);
@@ -939,13 +967,38 @@ router.delete('/messages/:id', validateRequest({
     if (forEveryone === 'true') {
       if (message.senderId !== userId) return res.status(403).json({ error: "Sadece kendi mesajınızı herkesten silebilirsiniz." });
 
-      await prisma.$transaction([
-        prisma.message.updateMany({ where: { replyToId: id }, data: { replyToId: null } }),
-        prisma.message.delete({ where: { id } })
-      ]);
+      // WhatsApp benzeri davranış: mesajı fiziksel olarak silmiyoruz, placeholder içeriğe çeviriyoruz.
+      // Böylece diğer client'larda mesaj balonu kaybolmak yerine "Bu mesaj silindi" olarak kalır.
+      const updatedMessageId = await prisma.$transaction(async (tx) => {
+        // Bu mesaja verilen yanıtların foreign key'i kırılmasın diye önce reply bağlantılarını koparıyoruz.
+        await tx.message.updateMany({ where: { replyToId: id }, data: { replyToId: null } });
+        const updatedMessageRecord = await tx.message.update({
+          where: { id },
+          data: {
+            content: '🚫 Bu mesaj silindi',
+            fileKey: null,
+            fileType: null,
+            fileName: null,
+            replyToId: null,
+            isForwarded: false
+          }
+        });
+        return updatedMessageRecord.id;
+      });
+      // Transaction'da sadece id döndürülür; socket'e gidecek ilişkili veri transaction dışında okunur.
+      // Bu da adapter-pg'nin aynı transaction client'ında paralel ilişki sorgusu çalıştırmasını engeller.
+      const updatedMessage = await prisma.message.findUnique({
+        where: { id: updatedMessageId },
+        include: {
+          sender: { select: { username: true } },
+          conversation: { select: { isGroup: true } }
+        }
+      });
+      if (!updatedMessage) return res.status(404).json({ error: "Mesaj bulunamadÄ±." });
+      // Mesajdaki dosya referansı kaldırıldı; başka mesaj/plan/avatar kullanmıyorsa R2 nesnesi temizlenir.
       await deleteFileIfUnreferenced(message.fileKey);
 
-      io.to(message.conversationId).emit('mesaj_silindi', { messageId: id, conversationId: message.conversationId });
+      io.to(message.conversationId).emit('mesaj_guncellendi', await withSignedFileUrl(updatedMessage));
       return res.status(200).json({ message: "Mesaj herkesten silindi." });
 
     } else {

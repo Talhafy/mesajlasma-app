@@ -1,5 +1,7 @@
 # Merkezi logging ve Elastic/Kibana kurulum rehberi
 
+Dashboard ve alert KQL taslakları için ayrıca `kibana-dashboard-alerts.md` dosyasına bakın.
+
 Bu kurulumda uygulama logları `pino` ile JSON formatında hem stdout'a hem de `logs/app.log` dosyasına yazılır. Logstash bu dosyayı okuyup Elasticsearch'e aktarır. Kibana üzerinden `mesajlasma-api-*` indexleri aranır.
 
 ## 1) Ortam değişkenleri
@@ -100,9 +102,3 @@ Alert önerileri:
 - 3 ardışık worker hatası
 - 5 dakika içinde 5'ten fazla `level:error`
 
-## 6) Sorun giderme
-
-- Kibana'da log yoksa önce `logs/app.log` dosyasının oluştuğunu kontrol edin.
-- `npm run logging:logs` ile Logstash'in dosyayı okuyup okumadığını kontrol edin.
-- `curl http://localhost:9200/_cat/indices?v` çıktısında `mesajlasma-api-*` indexi görünmelidir.
-- Logstash eski offset'te kaldıysa `npm run logging:down` çalıştırıp `logstash-data` volume'unu temizleyerek yeniden başlatabilirsiniz.

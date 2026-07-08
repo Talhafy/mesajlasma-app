@@ -69,6 +69,8 @@ router.delete('/account', authenticateToken, async (req: CustomRequest, res: any
     const userId = getUserId(req);
     const deleteResult = await prisma.$transaction(async (tx) => {
       const account = await tx.user.findUnique({ where: { id: userId }, select: { avatarFileKey: true } });
+      // Kullanıcının dahil olduğu bütün konuşmaları ve katılımcıları başta yüklüyoruz.
+      // Böylece silme/devir kararlarını tek transaction içinde tutarlı veriyle verebiliyoruz.
       const memberships = await tx.participant.findMany({
         where: { userId },
         include: {
@@ -88,6 +90,8 @@ router.delete('/account', authenticateToken, async (req: CustomRequest, res: any
           conversation.adminId === userId && conversation.participants.length === 1
         ))
         .map(({ conversation }) => conversation.id);
+      // Silme tamamlandıktan sonra bu kullanıcılara socket olayı gönderilecek.
+      // Böylece F5 atmadan sidebar/chat listesi güncellenebilir.
       const affectedUserIds = [...new Set(memberships
         .flatMap(({ conversation }) => conversation.participants.map((participant) => participant.userId))
         .filter((participantUserId) => participantUserId !== userId))];
@@ -97,14 +101,17 @@ router.delete('/account', authenticateToken, async (req: CustomRequest, res: any
       const updatedGroups = memberships
         .filter(({ conversation }) => conversation.isGroup && !deletedGroupIds.includes(conversation.id))
         .map(({ conversation }) => {
+          // Grup admini hesabını siliyorsa grupta kalan ilk üyeye adminlik devredilir.
+          // Kalan kimse yoksa grup zaten deletedGroupIds üzerinden silinecektir.
           const successor = conversation.adminId === userId
             ? conversation.participants.find((participant) => participant.userId !== userId)
             : null;
           return { groupId: conversation.id, removedUserId: userId, newAdminId: successor?.userId || null };
         });
 
-      const [messageFiles, scheduledFiles] = await Promise.all([
-        tx.message.findMany({
+      // Silinecek kullanıcı/sohbet dosyalarının key'lerini önceden topluyoruz.
+      // Transaction bitince dosya gerçekten sahipsizse R2 temizliği yapılır.
+      const messageFiles = await tx.message.findMany({
           where: {
             fileKey: { not: null },
             OR: [
@@ -113,8 +120,8 @@ router.delete('/account', authenticateToken, async (req: CustomRequest, res: any
             ]
           },
           select: { fileKey: true }
-        }),
-        tx.scheduledMessage.findMany({
+        });
+      const scheduledFiles = await tx.scheduledMessage.findMany({
           where: {
             fileKey: { not: null },
             OR: [
@@ -123,13 +130,13 @@ router.delete('/account', authenticateToken, async (req: CustomRequest, res: any
             ]
           },
           select: { fileKey: true }
-        })
-      ]);
+        });
 
       for (const membership of memberships) {
         const conversation = membership.conversation;
 
         if (!conversation.isGroup) {
+          // Birebir sohbetlerde kullanıcının silinmesi konuşmayı da kaldırır.
           await tx.conversation.delete({ where: { id: conversation.id } });
           continue;
         }
@@ -159,8 +166,13 @@ router.delete('/account', authenticateToken, async (req: CustomRequest, res: any
       };
     });
 
-    await Promise.all([...new Set(deleteResult.deletedFileKeys)].map(deleteFileIfUnreferenced));
+    // DB transaction tamamlandıktan sonra dış sistem olan R2'ye dokunuyoruz.
+    // DB rollback olursa dosya silinmiş kalmasın diye R2 temizliği transaction dışındadır.
+    for (const fileKey of [...new Set(deleteResult.deletedFileKeys)]) {
+      await deleteFileIfUnreferenced(fileKey);
+    }
     const io = req.app.get('io');
+    // Etkilenen kullanıcılara anlık bildirim gönderilir; silinen kullanıcı/sohbetler frontend state'inden düşürülebilir.
     deleteResult.affectedUserIds.forEach((affectedUserId) => {
       io.to(affectedUserId).emit('kullanici_silindi', {
         userId,

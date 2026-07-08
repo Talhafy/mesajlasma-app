@@ -19,12 +19,13 @@ interface SidebarProps {
   setIsDarkMode: (val: boolean) => void;
   socketConnectionStatus: 'connected' | 'inactive' | 'reconnecting' | 'disconnected';
   onReconnectRealtime: () => void;
+  typingByConversation: Record<string, string>;
 }
 
 export default function Sidebar({
   currentUser, conversationList, usersList, activeConversation, selectedUser,
   unreadCounts, isDarkMode, setIsDarkMode, startGroupChat, startChat, setIsGroupModalOpen, setIsSettingsOpen,
-  socketConnectionStatus, onReconnectRealtime
+  socketConnectionStatus, onReconnectRealtime, typingByConversation
 }: SidebarProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [messageResults, setMessageResults] = useState<Message[]>([]);
@@ -39,6 +40,9 @@ export default function Sidebar({
   const iconColor = isDarkMode ? '#aebac1' : '#54656f';
   const borderColor = isDarkMode ? '#313d45' : '#d1d7db';
   const isReconnecting = socketConnectionStatus === 'reconnecting';
+  // Arama 2 karakterden sonra "global arama modu"na geçer.
+  // Bu modda son sohbetler filtrelenip karışmaz; ayrı arama kartı öne çıkar, sohbet listesi arkada kalır.
+  const isGlobalSearchActive = searchTerm.trim().length >= 2;
 
   const handleSearchChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
@@ -87,10 +91,16 @@ export default function Sidebar({
   const filteredConversations = conversationList.filter((conversation) => {
     if (conversation.isArchived !== isArchiveView) return false;
     const title = getConversationTitle(conversation);
+    // Arama kartı açıkken alttaki sohbet listesi normal sırasını korur; sonuçlar ayrı çerçevede gösterilir.
+    if (isGlobalSearchActive) return true;
     return title?.toLowerCase().includes(searchTerm.toLowerCase());
   });
   const filteredContactUsers = usersList.filter(user => user.username.toLowerCase().includes(contactsSearchTerm.toLowerCase()));
-  const shouldShowContactsInMainList = !isArchiveView && contactsSearchTerm.length < 0;
+  const searchUserResults = isGlobalSearchActive
+    ? usersList.filter(user => user.username.toLowerCase().includes(searchTerm.toLowerCase()))
+    : [];
+  // Kişiler listesi artık ana listede gösterilmiyor; üç nokta menüsündeki rehber panelinden yönetiliyor.
+  const showLegacyContactsInMainList = false;
 
   const openContactsPanel = () => {
     setIsContactsPanelOpen(true);
@@ -113,6 +123,8 @@ export default function Sidebar({
     const otherUser = conversation.otherUser;
     const unreadKey = conversation.isGroup ? conversation.id : otherUser?.id || conversation.id;
     const preview = getConversationPreview(conversation);
+    // WhatsApp benzeri davranış: biri yazarken son mesaj önizlemesi geçici olarak yeşil "yazıyor..." metnine döner.
+    const typingUsername = typingByConversation[conversation.id];
 
     return (
       <div
@@ -133,8 +145,8 @@ export default function Sidebar({
           <span className="user-name">
             {conversation.isPinned ? '📌 ' : ''}{conversation.isMuted ? '🔕 ' : ''}{getConversationTitle(conversation)}
           </span>
-          <div style={{ fontSize: '12px', color: iconColor, marginTop: '3px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '190px' }}>
-            {preview}
+          <div style={{ fontSize: '12px', color: typingUsername ? '#00a884' : iconColor, fontWeight: typingUsername ? 700 : 400, marginTop: '3px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '190px' }}>
+            {typingUsername ? `${typingUsername} yazıyor...` : preview}
           </div>
         </div>
         {unreadCounts[unreadKey] > 0 && (
@@ -254,7 +266,63 @@ export default function Sidebar({
         </div>
       )}
 
-      <div className="users-list" style={{ flex: 1, overflowY: 'auto' }}>
+      <div className="users-list" style={{ flex: 1, overflowY: 'auto', position: 'relative' }}>
+        {isGlobalSearchActive && (
+          <>
+          {/* Arama sonuçları normal sohbet listesinin içinde değil, üstte ayrı bir panel olarak gösterilir.
+              Böylece kullanıcı son sohbetlerle arama sonuçlarını aynı liste gibi algılamaz. */}
+          <div style={{ position: 'absolute', top: '10px', left: '10px', right: '10px', bottom: '10px', zIndex: 25, background: isDarkMode ? 'rgba(32,44,51,0.97)' : 'rgba(255,255,255,0.97)', border: `1px solid ${borderColor}`, borderRadius: '16px', boxShadow: '0 18px 48px rgba(0,0,0,0.28)', overflow: 'hidden', color: textColor, display: 'flex', flexDirection: 'column', backdropFilter: 'blur(5px)' }}>
+            <div style={{ padding: '14px 15px', borderBottom: `1px solid ${borderColor}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
+              <div>
+                <div style={{ color: '#00a884', fontSize: '12px', fontWeight: 800, textTransform: 'uppercase' }}>Arama Sonuçları</div>
+                <div style={{ fontSize: '13px', color: iconColor, marginTop: '3px' }}>"{searchTerm}" için kişiler ve mesajlar</div>
+              </div>
+              <button onClick={() => { setSearchTerm(''); setMessageResults([]); }} style={{ border: 'none', background: panelBg, color: iconColor, width: '32px', height: '32px', borderRadius: '50%', cursor: 'pointer', fontSize: '18px' }}>×</button>
+            </div>
+
+            <div style={{ flex: 1, overflowY: 'auto', paddingBottom: '10px' }}>
+              {searchUserResults.length > 0 && (
+                <>
+                  <h3 className="list-title" style={{ padding: '15px 15px 5px 15px', margin: 0, fontSize: '13px', color: '#00a884', textTransform: 'uppercase' }}>Kullanıcılar</h3>
+                  {searchUserResults.map((user) => (
+                    <div key={user.id} className={`user-item ${selectedUser?.id === user.id ? 'active' : ''}`} onClick={() => startContactChat(user)} style={{ color: textColor, cursor: 'pointer' }}>
+                      <div className="avatar-small" style={{ position: 'relative', overflow: 'visible' }}>
+                        {user.avatarUrl ? <img src={user.avatarUrl} alt="" style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }} /> : user.username.charAt(0).toUpperCase()}
+                        {user.isOnline && <span style={{ position: 'absolute', right: '-1px', bottom: '1px', width: '11px', height: '11px', borderRadius: '50%', background: '#25d366', border: `2px solid ${panelBg}` }} />}
+                      </div>
+                      <div className="user-info">
+                        <span className="user-name">{user.username}</span>
+                        <div style={{ fontSize: '12px', color: iconColor, marginTop: '3px' }}>Sohbet başlat</div>
+                      </div>
+                      <button onClick={(event) => { event.stopPropagation(); startContactChat(user); }} style={{ border: 'none', background: '#00a884', color: 'white', borderRadius: '999px', padding: '6px 10px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', marginLeft: 'auto' }}>
+                        Başlat
+                      </button>
+                    </div>
+                  ))}
+                </>
+              )}
+
+              <h3 className="list-title" style={{ padding: '15px 15px 5px 15px', margin: 0, fontSize: '13px', color: '#00a884', textTransform: 'uppercase' }}>Mesajlarda Bulunanlar</h3>
+              {isSearching ? (
+                <div style={{ padding: '14px 15px', fontSize: '13px', color: iconColor }}>Aranıyor...</div>
+              ) : messageResults.length > 0 ? (
+                messageResults.map((msg) => (
+                  <div key={msg.id} className="user-item" onClick={() => handleMessageClick(msg)} style={{ flexDirection: 'column', alignItems: 'flex-start', padding: '12px 15px', borderBottom: `1px solid ${borderColor}`, cursor: 'pointer' }}>
+                    <div style={{ fontSize: '12px', color: iconColor, marginBottom: '4px' }}>
+                      <strong style={{ color: textColor }}>{msg.sender?.username}</strong> yazdı:
+                    </div>
+                    <div style={{ fontSize: '14px', color: textColor, opacity: 0.9 }}>
+                      {msg.content.length > 40 ? msg.content.substring(0, 40) + '...' : msg.content}
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div style={{ padding: '14px 15px', fontSize: '13px', color: iconColor }}>Mesaj bulunamadı.</div>
+              )}
+            </div>
+          </div>
+          </>
+        )}
         {!isArchiveView && archivedConversations.length > 0 && searchTerm.trim() === '' && (
           <div onClick={() => setIsArchiveView(true)} className="user-item" style={{ color: textColor, borderBottom: `1px solid ${borderColor}`, cursor: 'pointer' }}>
             <div className="avatar-small" style={{ background: '#607d8b', color: 'white' }}>🗄️</div>
@@ -277,7 +345,7 @@ export default function Sidebar({
           ? filteredConversations.map(renderConversationRow)
           : <div style={{ padding: '10px 15px', fontSize: '13px', color: iconColor }}>{isArchiveView ? 'Arşivde sohbet yok.' : 'Henüz sohbet yok.'}</div>}
 
-        {shouldShowContactsInMainList && (filteredContactUsers.length > 0 || searchTerm === '') && (
+        {showLegacyContactsInMainList && (
           <>
             <h3 className="list-title" style={{ padding: '15px 15px 5px 15px', margin: 0, fontSize: '13px', color: iconColor, textTransform: 'uppercase' }}>Kişiler</h3>
             {filteredContactUsers.map((user) => (
@@ -299,8 +367,28 @@ export default function Sidebar({
           </>
         )}
 
-        {searchTerm.length >= 2 && (
+        {!isGlobalSearchActive && searchTerm.length >= 2 && (
           <>
+            {searchUserResults.length > 0 && (
+              <>
+                <h3 className="list-title" style={{ padding: '15px 15px 5px 15px', margin: 0, fontSize: '13px', color: '#00a884', textTransform: 'uppercase' }}>Kullanıcılar</h3>
+                {searchUserResults.map((user) => (
+                  <div key={user.id} className={`user-item ${selectedUser?.id === user.id ? 'active' : ''}`} onClick={() => startContactChat(user)} style={{ color: textColor, cursor: 'pointer' }}>
+                    <div className="avatar-small" style={{ position: 'relative', overflow: 'visible' }}>
+                      {user.avatarUrl ? <img src={user.avatarUrl} alt="" style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }} /> : user.username.charAt(0).toUpperCase()}
+                      {user.isOnline && <span style={{ position: 'absolute', right: '-1px', bottom: '1px', width: '11px', height: '11px', borderRadius: '50%', background: '#25d366', border: `2px solid ${panelBg}` }} />}
+                    </div>
+                    <div className="user-info">
+                      <span className="user-name">{user.username}</span>
+                      <div style={{ fontSize: '12px', color: iconColor, marginTop: '3px' }}>Sohbet başlat</div>
+                    </div>
+                    <button onClick={(event) => { event.stopPropagation(); startContactChat(user); }} style={{ border: 'none', background: '#00a884', color: 'white', borderRadius: '999px', padding: '6px 10px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', marginLeft: 'auto' }}>
+                      Başlat
+                    </button>
+                  </div>
+                ))}
+              </>
+            )}
             <h3 className="list-title" style={{ padding: '15px 15px 5px 15px', margin: 0, fontSize: '13px', color: '#00a884', textTransform: 'uppercase' }}>Mesajlarda Bulunanlar</h3>
             {isSearching ? (
               <div style={{ padding: '10px 15px', fontSize: '13px', color: iconColor }}>Aranıyor...</div>

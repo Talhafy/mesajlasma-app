@@ -776,6 +776,8 @@ export default function ChatArea({
 
           const timeString = msg.createdAt ? new Date(msg.createdAt).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
           const isNearBottom = index >= displayedMessages.length - 2 && displayedMessages.length > 5;
+          // Backend "herkesten sil" işleminde mesajı fiziksel silmez; içeriği bu sabit placeholder'a çevirir.
+          // Frontend bu değeri görünce normal mesaj menüsünü kapatır ve WhatsApp benzeri silindi balonu gösterir.
           const isDeletedForEveryone = msg.content === "🚫 Bu mesaj silindi";
 
           return (
@@ -790,7 +792,7 @@ export default function ChatArea({
                     <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" opacity="0.6" style={{ flexShrink: 0 }}>
                       <path d="M12 2C6.486 2 2 6.486 2 12s4.486 10 10 10 10-4.486 10-10S17.514 2 12 2zm4.207 12.793-1.414 1.414L12 13.414l-2.793 2.793-1.414-1.414L10.586 12 7.793 9.207l1.414-1.414L12 10.586l2.793-2.793 1.414 1.414L13.414 12l2.793 2.793z"></path>
                     </svg>
-                    <span>{isMe ? "Bu mesajı sildiniz" : "Bu mesaj silindi"}</span>
+                    <span>{isMe ? "Bu mesajı herkesten sildiniz" : "Bu mesaj silindi"}</span>
                   </div>
                   <div className="message-meta" style={{ opacity: 0.7 }}><span>{timeString}</span></div>
                 </div>

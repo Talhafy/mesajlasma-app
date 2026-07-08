@@ -8,6 +8,8 @@ export interface RequestWithId extends CustomRequest {
   id: string;
 }
 
+// Her HTTP isteğine tekil requestId veriyoruz.
+// Bu id hem response header'a yazılır hem de bütün loglara eklenir; Kibana'da tek isteğin izini sürmeyi kolaylaştırır.
 export const requestLogger = pinoHttp({
   logger,
   genReqId: (req, res) => {
@@ -16,9 +18,16 @@ export const requestLogger = pinoHttp({
     res.setHeader('x-request-id', requestId);
     return requestId;
   },
-  customProps: (req) => {
+  customProps: (req, res) => {
+    // pino-http varsayılan req/res alanlarını basar; customProps ile aradığımız operasyonel alanları düzleştiriyoruz.
+    // Böylece dashboardlarda method/url/statusCode/userId/ip alanlarına direkt filtre atılabilir.
     const request = req as Request & { ip?: string };
     return {
+      event: 'http.request',
+      requestId: req.id,
+      method: req.method,
+      url: req.url,
+      statusCode: res.statusCode,
       userId: (req as CustomRequest).user?.userId || null,
       ip: request.ip || request.socket.remoteAddress || null
     };
@@ -44,6 +53,8 @@ export const requestLogger = pinoHttp({
   }
 });
 
+// 401/403/429 durumları güvenlik açısından ayrıca izlenir.
+// Request logger zaten genel kaydı atar; bu middleware ise security.* dashboard ve alertleri için ikinci, daha net sinyal üretir.
 export const securityStatusLogger = (req: Request, res: Response, next: NextFunction) => {
   res.on('finish', () => {
     if (![401, 403, 429].includes(res.statusCode)) return;

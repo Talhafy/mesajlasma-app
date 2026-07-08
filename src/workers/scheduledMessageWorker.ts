@@ -6,16 +6,22 @@ import { withSignedFileUrl } from '../services/fileStorage';
 
 const WORKER_INTERVAL_MS = 30_000;
 
+// Zamanlanmış mesajlar HTTP isteği gelmeden de gönderilebilmelidir.
+// Bu worker periyodik olarak zamanı gelen ScheduledMessage kayıtlarını gerçek Message kaydına dönüştürür.
 export const startScheduledMessageWorker = (io: Server) => {
   let workerRunning = false;
 
   const deliverScheduledMessages = async () => {
+    // Aynı Node sürecinde önceki tur bitmeden ikinci tur başlamaz.
+    // Bu local kilit, uzun süren DB/R2 işlemlerinde aynı process'in kendisiyle yarışmasını engeller.
     // Aynı Node sürecinde önceki tur bitmeden ikinci tur başlamaz.
     if (workerRunning) return;
     workerRunning = true;
 
     try {
       const result = await prisma.$transaction(async (tx) => {
+        // FOR UPDATE SKIP LOCKED çoklu backend instance çalıştığında kritik hale gelir.
+        // Aynı scheduled message kaydını iki worker'ın aynı anda almasını engeller.
         // Birden fazla sunucu aynı DB'yi kullansa bile SKIP LOCKED aynı kaydı iki kez seçtirmez.
         const candidates = await tx.$queryRaw<Array<{ id: string }>>`
           SELECT "id"
@@ -45,7 +51,9 @@ export const startScheduledMessageWorker = (io: Server) => {
             continue;
           }
 
-          const savedMessage = await tx.message.create({
+          // Transaction içinde include kullanmıyoruz; sadece mesajı oluşturup id'sini dışarı taşıyoruz.
+          // İlişkili sender/conversation verisi transaction dışında okunur; adapter-pg paralel query warning'i azalır.
+          const createdMessage = await tx.message.create({
             data: {
               clientId: `scheduled:${scheduled.id}`,
               content: scheduled.content,
@@ -57,16 +65,12 @@ export const startScheduledMessageWorker = (io: Server) => {
               expiresAt: conversation.disappearingDurationSeconds
                 ? new Date(Date.now() + conversation.disappearingDurationSeconds * 1000)
                 : null
-            },
-            include: {
-              sender: { select: { username: true } },
-              conversation: { select: { isGroup: true } }
             }
           });
 
           await tx.scheduledMessage.delete({ where: { id: scheduled.id } });
           completed.push({
-            savedMessage,
+            savedMessageId: createdMessage.id,
             conversationId: conversation.id,
             participantIds: conversation.participants.map(({ userId }) => userId)
           });
@@ -76,17 +80,32 @@ export const startScheduledMessageWorker = (io: Server) => {
       });
 
       for (const delivery of result.completed) {
+        // Transaction commit olduktan sonra socket'e yayınlanacak zengin mesaj bilgisini okuyoruz.
+        // Böylece kullanıcıya gönderilen payload normal anlık mesaj payload'ıyla aynı şekle gelir.
+        const savedMessage = await prisma.message.findUnique({
+          where: { id: delivery.savedMessageId },
+          include: {
+            sender: { select: { username: true } },
+            conversation: { select: { isGroup: true } }
+          }
+        });
+        if (!savedMessage) continue;
         const rooms = [...new Set([delivery.conversationId, ...delivery.participantIds])];
-        io.to(rooms).emit('yeni_mesaj_geldi', await withSignedFileUrl(delivery.savedMessage));
+        io.to(rooms).emit('yeni_mesaj_geldi', await withSignedFileUrl(savedMessage));
       }
-      await Promise.all(result.discardedFileKeys.map(deleteFileIfUnreferenced));
+      for (const fileKey of result.discardedFileKeys) {
+        await deleteFileIfUnreferenced(fileKey);
+      }
 
       const expiredFiles = await prisma.message.findMany({
         where: { expiresAt: { lte: new Date() }, fileKey: { not: null } },
         select: { fileKey: true }
       });
+      // Kaybolan mesajların süresi dolduğunda DB kaydı silinir; dosyaları ise referans kontrolünden sonra temizlenir.
       await prisma.message.deleteMany({ where: { expiresAt: { lte: new Date() } } });
-      await Promise.all([...new Set(expiredFiles.map((file) => file.fileKey).filter((key): key is string => Boolean(key)))].map(deleteFileIfUnreferenced));
+      for (const fileKey of [...new Set(expiredFiles.map((file) => file.fileKey).filter((key): key is string => Boolean(key)))]) {
+        await deleteFileIfUnreferenced(fileKey);
+      }
     } catch (error) {
       logger.error({ event: 'worker.scheduled_message_failed', err: error }, 'Scheduled message worker failed');
     } finally {

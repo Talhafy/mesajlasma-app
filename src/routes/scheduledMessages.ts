@@ -13,6 +13,9 @@ import { chatSchemas } from '../validation/schemas';
 const router = express.Router();
 router.use(authenticateToken);
 
+// Bu dosyada zamanlanmış mesajlar normal mesajlardan ayrı tutulur.
+// Kullanıcı zamanlanmış mesajı düzenlediğinde chat'e mesaj düşmez; yalnızca ScheduledMessage kaydı güncellenir.
+
 // Zamanlama route'ları normal mesaj route'larından ayrıdır; düzenleme işlemi sohbet mesajı üretmez.
 router.post('/messages/schedule', validateRequest({ body: chatSchemas.scheduledMessage }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
@@ -26,6 +29,7 @@ router.post('/messages/schedule', validateRequest({ body: chatSchemas.scheduledM
     if (targetDate.getTime() <= Date.now()) return res.status(400).json({ error: 'Geçmiş zaman seçilemez.' });
 
     try {
+      // clientId sayesinde zamanlama isteği retry edilirse aynı mesaj ikinci kez planlanmaz.
       await prisma.scheduledMessage.create({
         data: {
           clientId,
@@ -65,6 +69,7 @@ router.get('/messages/scheduled/:conversationId', validateRequest({ params: chat
       where: { conversationId, senderId: userId },
       orderBy: { sendAt: 'asc' }
     });
+    // Bekleyen mesajlarda dosya varsa frontend önizleyebilsin diye her kayıt için geçici signed URL eklenir.
     return res.status(200).json(await Promise.all(pending.map(withSignedFileUrl)));
   } catch {
     return res.status(500).json({ error: 'Bekleyen mesajlar listelenemedi.' });
@@ -99,10 +104,13 @@ router.post('/messages/schedule/send-now/:id', validateRequest({ params: chatSch
     }
 
     // deleteMany kaydı atomik olarak sahiplenir; worker ile aynı anda yalnızca biri kazanır.
-    const savedMessage = await prisma.$transaction(async (tx) => {
+    // "Şimdi gönder" ile background worker aynı anda davranırsa ikisi de aynı kaydı göndermeye çalışabilir.
+    // deleteMany burada atomik sahiplenme görevi görür; count 1 değilse mesajı başka işlem kazanmıştır.
+    const savedMessageId = await prisma.$transaction(async (tx) => {
       const claimed = await tx.scheduledMessage.deleteMany({ where: { id, senderId: userId } });
       if (claimed.count !== 1) return null;
-      return tx.message.create({
+
+      const createdMessage = await tx.message.create({
         data: {
           content: scheduled.content,
           senderId: scheduled.senderId,
@@ -111,20 +119,29 @@ router.post('/messages/schedule/send-now/:id', validateRequest({ params: chatSch
           fileKey: scheduled.fileKey,
           fileType: scheduled.fileType,
           fileName: scheduled.fileName
-        },
-        include: {
-          sender: { select: { username: true } },
-          conversation: { select: { isGroup: true } }
         }
       });
+      return createdMessage.id;
     });
-    if (!savedMessage) return res.status(409).json({ error: 'Mesaj başka bir işlem tarafından gönderildi veya iptal edildi.' });
+    if (!savedMessageId) return res.status(409).json({ error: 'Mesaj başka bir işlem tarafından gönderildi veya iptal edildi.' });
+
+    // Transaction içinde yalnızca mesaj id'si döndürülür; ilişkili sender/conversation verisi dışarıda okunur.
+    // Bu ayrım Prisma adapter-pg'nin aynı transaction client'ında paralel include sorgusu çalıştırmasını engeller.
+    const savedMessage = await prisma.message.findUnique({
+      where: { id: savedMessageId },
+      include: {
+        sender: { select: { username: true } },
+        conversation: { select: { isGroup: true } }
+      }
+    });
+    if (!savedMessage) return res.status(404).json({ error: 'Gönderilen mesaj yüklenemedi.' });
 
     const conversation = await prisma.conversation.findUnique({
       where: { id: scheduled.conversationId },
       include: { participants: { select: { userId: true } } }
     });
-    const rooms = [scheduled.conversationId, ...(conversation?.participants.map(({ userId: id }) => id) || [])];
+    // Socket olayı hem conversation odasına hem de kullanıcı odalarına gider; sidebar ve açık chat aynı anda güncellenir.
+    const rooms = [scheduled.conversationId, ...(conversation?.participants.map(({ userId: participantId }) => participantId) || [])];
     req.app.get('io').to([...new Set(rooms)]).emit('yeni_mesaj_geldi', await withSignedFileUrl(savedMessage));
     return res.status(200).json({ success: true, message: 'Mesaj hemen gönderildi.' });
   } catch {
@@ -148,6 +165,7 @@ router.put('/messages/schedule/:id', validateRequest({
     const nextFileKey = fileKey !== undefined ? fileKey : scheduled.fileKey;
     if (!nextContent && !nextFileKey) return res.status(400).json({ error: 'Zamanlanmış mesaj tamamen boş olamaz.' });
 
+    // Zamanlanmış mesaj düzenlenirken hem metin hem dosya tamamen boş hale getirilemez.
     const updated = await prisma.scheduledMessage.update({
       where: { id },
       data: {
@@ -158,6 +176,7 @@ router.put('/messages/schedule/:id', validateRequest({
       }
     });
     if (fileKey !== undefined && scheduled.fileKey !== nextFileKey) {
+      // Dosya değiştirildiyse eski dosya başka kayıt tarafından kullanılmıyorsa silinir.
       await deleteFileIfUnreferenced(scheduled.fileKey);
     }
     return res.status(200).json({ success: true, updatedMessage: await withSignedFileUrl(updated) });

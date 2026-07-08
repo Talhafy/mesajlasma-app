@@ -53,7 +53,10 @@ export default function App() {
   const [isGroupSettingsOpen, setIsGroupSettingsOpen] = useState(false);
   const [editGroupName, setEditGroupName] = useState('');
   const [groupMembers, setGroupMembers] = useState<User[]>([]);
+  // typingByConversation: conversationId -> yazan kullanıcının adı.
+  // Bu tek state hem ChatArea üst barındaki "yazıyor" bilgisini hem Sidebar son mesaj önizlemesini besler.
   const [typingByConversation, setTypingByConversation] = useState<Record<string, string>>({});
+  // Socket bağlantısının kullanıcıya görünen durumudur; inactive/disconnected olunca Sidebar'da bağlan uyarısı çıkar.
   const [socketConnectionStatus, setSocketConnectionStatus] = useState<'connected' | 'inactive' | 'reconnecting' | 'disconnected'>('connected');
   const [activeCall, setActiveCall] = useState<ActiveCall | null>(null);
   const [incomingCall, setIncomingCall] = useState<IncomingCall | null>(null);
@@ -761,8 +764,10 @@ export default function App() {
        <Sidebar
           currentUser={currentUser} conversationList={conversationList} usersList={usersList} activeConversation={activeConversation} selectedUser={selectedUser} unreadCounts={unreadCounts}
           startGroupChat={startGroupChat} startChat={startChat} setIsGroupModalOpen={setIsGroupModalOpen} setIsSettingsOpen={setIsSettingsOpen} isDarkMode={isDarkMode} setIsDarkMode={setIsDarkMode}
+          // Sidebar gerçek zamanlı durumları kendi içinde gösterebilmek için socket status ve typing map alır.
           socketConnectionStatus={socketConnectionStatus}
           onReconnectRealtime={reconnectRealtime}
+          typingByConversation={typingByConversation}
         />
       )}
 
@@ -773,6 +778,7 @@ export default function App() {
           loadMoreMessages={loadMoreMessages}
           hasMore={hasMore}
           isLoadingMore={isLoadingMore}
+          // Aktif konuşmada biri yazıyorsa ChatArea header'ında gösterilir.
           typingUsername={activeConversation ? typingByConversation[activeConversation.id] : undefined}
           onTyping={(isTyping) => activeConversation && socket?.emit('typing_changed', { conversationId: activeConversation.id, isTyping })}
           onToggleConversationPin={handleToggleConversationPin}
