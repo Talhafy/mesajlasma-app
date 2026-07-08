@@ -14,6 +14,8 @@ import {
 let fileStream: fs.WriteStream | null = null;
 let logFilePath: string | null = null;
 
+// Logger iki hedefe yazabilir: terminal ve dosya.
+// Dosya açılamazsa uygulama durmaz; terminal loglarıyla çalışmaya devam eder.
 if (logFileEnabled) {
   try {
     fs.mkdirSync(logDirectory, { recursive: true });
@@ -34,11 +36,15 @@ const streams = fileStream
   ? [{ stream: process.stdout }, { stream: fileStream }]
   : [{ stream: process.stdout }];
 
+// Merkezi logger: backend'deki tüm modüller console.* yerine bunu kullanır.
+// Pino JSON log ürettiği için Logstash/Elasticsearch tarafında alan bazlı filtreleme kolaylaşır.
 export const logger = pino(
   {
     level: logLevel,
     messageKey: 'message',
     base: {
+      // Her log kaydına servis ve environment bilgisi eklenir.
+      // Aynı Elastic cluster içinde birden fazla servis olursa ayırmayı kolaylaştırır.
       service: serviceName,
       env: nodeEnv
     },
@@ -53,6 +59,8 @@ export const logger = pino(
       err: pino.stdSerializers.err
     },
     redact: {
+      // Güvenlik: token, cookie ve şifre benzeri alanlar loga düz metin yazılmaz.
+      // Bir hata objesi request body taşısa bile bu alanlar [REDACTED] olarak maskelenir.
       paths: [
         'req.headers.authorization',
         'req.headers.cookie',
@@ -80,6 +88,7 @@ export const logger = pino(
 );
 
 export const loggerRuntime = Object.freeze({
+  // Health endpoint bu bilgiyi döner; logging gerçekten dosyaya yazıyor mu hızlıca kontrol edilir.
   level: logLevel,
   service: serviceName,
   env: nodeEnv,
@@ -90,6 +99,7 @@ export const loggerRuntime = Object.freeze({
 });
 
 export const flushLogs = () => new Promise<void>((resolve) => {
+  // Graceful shutdown sırasında dosya stream'i kapanmadan process sonlanırsa son loglar kaybolabilir.
   if (!fileStream || fileStream.destroyed || fileStream.writableEnded) {
     resolve();
     return;

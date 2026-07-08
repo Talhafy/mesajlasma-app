@@ -34,6 +34,17 @@ export default function Sidebar({
   const [isSidebarMenuOpen, setIsSidebarMenuOpen] = useState(false);
   const [isContactsPanelOpen, setIsContactsPanelOpen] = useState(false);
   const [contactsSearchTerm, setContactsSearchTerm] = useState('');
+  const [isSearchHistoryOpen, setIsSearchHistoryOpen] = useState(false);
+  const [isStarredPanelOpen, setIsStarredPanelOpen] = useState(false);
+  const [starredMessages, setStarredMessages] = useState<Message[]>([]);
+  const [isLoadingStarred, setIsLoadingStarred] = useState(false);
+  const [searchHistory, setSearchHistory] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('chatSearchHistory') || '[]');
+    } catch {
+      return [];
+    }
+  });
 
   const panelBg = isDarkMode ? '#202c33' : '#f0f2f5';
   const textColor = isDarkMode ? '#e9edef' : '#111b21';
@@ -55,6 +66,7 @@ export default function Sidebar({
     }
 
     setIsSearching(true);
+    rememberSearchTerm(val);
     try {
       const res = await api.get(`/messages/search?q=${encodeURIComponent(val)}`);
       setMessageResults(res.data);
@@ -102,6 +114,36 @@ export default function Sidebar({
   // Kişiler listesi artık ana listede gösterilmiyor; üç nokta menüsündeki rehber panelinden yönetiliyor.
   const showLegacyContactsInMainList = false;
 
+  const rememberSearchTerm = (term: string) => {
+    const cleanTerm = term.trim();
+    if (cleanTerm.length < 2) return;
+
+    setSearchHistory((previous) => {
+      const next = [cleanTerm, ...previous.filter((item) => item.toLowerCase() !== cleanTerm.toLowerCase())].slice(0, 12);
+      localStorage.setItem('chatSearchHistory', JSON.stringify(next));
+      return next;
+    });
+  };
+
+  const clearSearchHistory = () => {
+    localStorage.removeItem('chatSearchHistory');
+    setSearchHistory([]);
+  };
+
+  const openStarredMessages = async () => {
+    setIsSidebarMenuOpen(false);
+    setIsStarredPanelOpen(true);
+    setIsLoadingStarred(true);
+    try {
+      const res = await api.get('/messages/starred');
+      setStarredMessages(res.data);
+    } catch {
+      alert('Yıldızlı mesajlar getirilemedi.');
+    } finally {
+      setIsLoadingStarred(false);
+    }
+  };
+
   const openContactsPanel = () => {
     setIsContactsPanelOpen(true);
     setIsSidebarMenuOpen(false);
@@ -116,6 +158,8 @@ export default function Sidebar({
   const startContactChat = (user: User) => {
     startChat(user);
     setIsContactsPanelOpen(false);
+    setIsSearchHistoryOpen(false);
+    setIsStarredPanelOpen(false);
     setContactsSearchTerm('');
   };
 
@@ -159,7 +203,36 @@ export default function Sidebar({
   };
 
   return (
-    <div className="sidebar" style={{ position: 'relative', display: 'flex', flexDirection: 'column', height: '100%', background: isDarkMode ? '#111b21' : '#ffffff' }}>
+    <div className="sidebar" style={{ position: 'relative', display: 'flex', flexDirection: 'row', height: '100%', background: isDarkMode ? '#111b21' : '#ffffff' }}>
+      <div style={{ width: '58px', flexShrink: 0, background: panelBg, borderRight: `1px solid ${borderColor}`, display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '12px 8px', boxSizing: 'border-box', gap: '10px' }}>
+        <button
+          title={`${currentUser.username} • Profil`}
+          onClick={() => setIsSettingsOpen(true)}
+          style={{ width: '40px', height: '40px', borderRadius: '50%', border: 'none', background: '#00a884', color: 'white', fontWeight: 800, fontSize: '17px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', boxShadow: '0 2px 8px rgba(0,0,0,0.18)' }}
+        >
+          {currentUser.avatarUrl ? <img src={currentUser.avatarUrl} alt={currentUser.username} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : currentUser.username?.[0]?.toUpperCase()}
+        </button>
+
+        <div style={{ flex: 1 }} />
+
+        <button
+          title="Arama geçmişi"
+          onClick={() => { setIsSearchHistoryOpen((previous) => !previous); setIsStarredPanelOpen(false); }}
+          style={{ width: '38px', height: '38px', borderRadius: '12px', border: 'none', background: isSearchHistoryOpen ? '#00a884' : 'transparent', color: isSearchHistoryOpen ? 'white' : iconColor, cursor: 'pointer', fontSize: '19px' }}
+        >
+          ⌕
+        </button>
+
+        <button
+          title="Ayarlar"
+          onClick={() => setIsSettingsOpen(true)}
+          style={{ width: '38px', height: '38px', borderRadius: '12px', border: 'none', background: 'transparent', color: iconColor, cursor: 'pointer', fontSize: '20px' }}
+        >
+          ⚙
+        </button>
+      </div>
+
+      <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
       <div className="sidebar-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '15px 20px', background: panelBg, borderBottom: `1px solid ${borderColor}` }}>
         <h2 style={{ margin: 0, fontSize: '22px', color: textColor, fontWeight: 'bold' }}>
           {isArchiveView ? 'Arşiv' : 'Sohbetler'}

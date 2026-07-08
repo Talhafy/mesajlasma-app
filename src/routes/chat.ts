@@ -813,6 +813,41 @@ router.get('/messages/search', validateRequest({ query: chatSchemas.searchQuery 
 });
 
 // GÖNDERİLMİŞ MESAJI DÜZENLEME
+// YILDIZLI MESAJLAR
+router.get('/messages/starred', async (req: CustomRequest, res: Response): Promise<any> => {
+  try {
+    const userId = getUserId(req);
+
+    // Yıldızlama kişiseldir; starredByIds içinde mevcut kullanıcı varsa bu mesaj kullanıcının yıldızlı listesindedir.
+    // Konuşma membership kontrolü de eklenir ki kullanıcı ayrıldığı/silindiği sohbetin mesajını göremesin.
+    const messages = await prisma.message.findMany({
+      where: {
+        starredByIds: { has: userId },
+        NOT: { deletedForIds: { has: userId } },
+        ...visibleMessageWhere(),
+        conversation: {
+          participants: { some: { userId } }
+        }
+      },
+      include: {
+        sender: { select: { username: true } },
+        conversation: {
+          include: {
+            participants: { include: { user: { select: { id: true, username: true, email: true } } } }
+          }
+        }
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 50
+    });
+
+    return res.status(200).json(await Promise.all(messages.map(withSignedFileUrl)));
+  } catch (error) {
+    logger.error({ event: 'chat.starred_messages_failed', err: error, userId: req.user?.userId, ip: req.ip }, 'Starred messages fetch failed');
+    return res.status(500).json({ error: 'Yıldızlı mesajlar getirilemedi.' });
+  }
+});
+
 router.put('/messages/:id', validateRequest({
   params: chatSchemas.idParams,
   body: chatSchemas.editMessage

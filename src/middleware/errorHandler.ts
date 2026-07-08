@@ -2,6 +2,8 @@ import { NextFunction, Request, Response } from 'express';
 import { logger } from '../config/logger';
 import { RequestWithId } from './requestLogger';
 
+// Hiçbir route ile eşleşmeyen istekler buraya düşer.
+// 404'leri de logluyoruz çünkü yanlış URL taramaları veya bot istekleri güvenlik sinyali olabilir.
 export const notFoundHandler = (req: Request, res: Response) => {
   const request = req as RequestWithId;
   logger.warn({
@@ -15,6 +17,8 @@ export const notFoundHandler = (req: Request, res: Response) => {
   return res.status(404).json({ error: 'Endpoint bulunamadı.' });
 };
 
+// Express zincirinde yakalanmamış hata olursa tek formatta cevap ve structured log üretir.
+// Hata detayını kullanıcıya dönmeyiz; stack ve ayrıntı sadece log sisteminde kalır.
 export const errorHandler = (error: unknown, req: Request, res: Response, _next: NextFunction) => {
   const request = req as RequestWithId;
   logger.error({

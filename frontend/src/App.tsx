@@ -410,10 +410,14 @@ export default function App() {
   useEffect(() => {
     if (currentView !== 'chat' || !currentUser?.id) return;
     const token = getAccessToken();
+    // Chat ekranına girildiğinde tek Socket.IO bağlantısı kurulur.
+    // Socket auth token'ı access token'dır; refresh token socket'e gönderilmez.
     const newSocket = io(API_ORIGIN, { auth: { token } });
     setSocket(newSocket);
 
     const reconnectSocketIfActive = async () => {
+      // Kullanıcı uzun süre pasif kaldıysa socket'i otomatik geri açmayız.
+      // Ama kullanıcı aktifse ve bağlantı kopmuşsa önce yeni access token alıp socket'i yeniden bağlarız.
       const isStillActive = Date.now() - lastUserActivityAtRef.current < SOCKET_INACTIVITY_TIMEOUT_MS;
       if (!isSocketActiveRef.current || !isStillActive || newSocket.connected) return;
       setSocketConnectionStatus('reconnecting');
@@ -428,6 +432,8 @@ export default function App() {
     };
 
     const markSocketActive = () => {
+      // Mouse/klavye/scroll gibi gerçek kullanıcı hareketleri buraya düşer.
+      // Bu hareketler hem frontend timer'ını yeniler hem backend'e client_activity ping'i gönderir.
       const wasInactive = !isSocketActiveRef.current;
       isSocketActiveRef.current = true;
       lastUserActivityAtRef.current = Date.now();
@@ -452,6 +458,8 @@ export default function App() {
     };
 
     const activityEvents: Array<keyof WindowEventMap> = ['mousemove', 'mousedown', 'keydown', 'scroll', 'wheel', 'touchstart', 'pointerdown'];
+    // Aktivite eventleri sayesinde kullanıcı gerçekten bilgisayar başındaysa online kalır.
+    // Sadece arka planda refresh token yenileniyor diye kullanıcı online gösterilmez.
     activityEvents.forEach((eventName) => window.addEventListener(eventName, markSocketActive, { passive: true }));
     document.addEventListener('visibilitychange', handleVisibilityChange);
     markSocketActive();
@@ -463,6 +471,8 @@ export default function App() {
     });
 
     newSocket.on('connect', () => {
+      // Socket tekrar bağlandığında kişisel odaya, grup odalarına ve aktif konuşma odasına yeniden katılır.
+      // Socket.IO reconnect sonrasında oda üyelikleri server tarafında yeniden kurulmalıdır.
       setSocketConnectionStatus('connected');
       lastSocketActivityPingRef.current = Date.now();
       newSocket.emit('client_activity');
@@ -489,12 +499,15 @@ export default function App() {
     newSocket.off('yeni_mesaj_geldi'); newSocket.off('mesajlar_okundu');
 
     newSocket.on('yeni_mesaj_geldi', (gelenMesaj: Message) => {
+      // Aynı mesaj hem conversation odasından hem userId odasından gelebilir.
+      // processedMessagesRef çift eklemeyi engeller.
       if (processedMessagesRef.current.has(gelenMesaj.id)) return;
       processedMessagesRef.current.add(gelenMesaj.id);
       void fetchConversations();
 
       const notificationConversation = conversationListRef.current.find((conversation) => conversation.id === gelenMesaj.conversationId);
       if (!notificationConversation?.isMuted && gelenMesaj.senderId !== currentUserRef.current?.id && document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+        // Browser bildirimi yalnızca sayfa arka plandayken, sohbet sessizde değilken ve mesaj başkasından geldiyse gösterilir.
         new Notification(gelenMesaj.sender?.username || 'Yeni mesaj', {
           body: gelenMesaj.content || (gelenMesaj.fileType === 'image' ? '📷 Görsel' : '📎 Dosya')
         });
@@ -562,6 +575,8 @@ export default function App() {
     });
 
     newSocket.on('presence_snapshot', ({ onlineUserIds }: { onlineUserIds: string[] }) => {
+      // Bağlantı kurulduğunda server o an online olan kullanıcıların tamamını gönderir.
+      // Bu snapshot sonrası anlık değişimler presence_changed ile gelir.
       const online = new Set(onlineUserIds);
       setUsersList((previous) => previous.map((user) => ({ ...user, isOnline: online.has(user.id) })));
       setSelectedUser((previous) => previous ? { ...previous, isOnline: online.has(previous.id) } : previous);
@@ -586,6 +601,8 @@ export default function App() {
     });
 
     newSocket.on('typing_changed', ({ conversationId, username, isTyping }: { conversationId: string; username: string; isTyping: boolean }) => {
+      // Yazıyor bilgisi conversation bazlı tutulur.
+      // Aynı state hem Sidebar son mesaj alanını hem ChatArea üst bilgisini günceller.
       setTypingByConversation((previous) => {
         if (!isTyping) {
           const next = { ...previous };

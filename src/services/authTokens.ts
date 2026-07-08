@@ -5,16 +5,21 @@ import jwt, { JwtPayload } from 'jsonwebtoken';
 const jwtSecret = process.env.JWT_SECRET;
 if (!jwtSecret) throw new Error('JWT_SECRET ortam değişkeni tanımlı değil.');
 
+// Dual-token mimarisi:
+// - Access token kısa ömürlüdür ve API çağrılarında kullanılır.
+// - Refresh token 30 gün yaşar ama API yetkisi vermez; sadece yeni access token almak için kullanılır.
 export const ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
 export const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const REFRESH_COOKIE_NAME = 'refresh_token';
 
 const jwtOptions = {
+  // issuer/audience kontrolü token'ın bu uygulama ve bu API için üretildiğini doğrular.
   issuer: 'mesajlasma-app',
   audience: 'mesajlasma-api'
 } as const;
 
 export interface AccessTokenPayload extends JwtPayload {
+  // Bu payload backend'de req.user içine yazılır; userId/senderId frontend body/query'den kabul edilmez.
   userId: string;
   username: string;
   tokenType: 'access';
@@ -22,6 +27,7 @@ export interface AccessTokenPayload extends JwtPayload {
 }
 
 export const createAccessToken = (user: { id: string; username: string }) => jwt.sign(
+  // Access token içinde hassas bilgi yoktur; sadece kullanıcıyı tanımak için gereken minimum alanlar vardır.
   { userId: user.id, username: user.username, tokenType: 'access' },
   jwtSecret,
   {
@@ -32,6 +38,8 @@ export const createAccessToken = (user: { id: string; username: string }) => jwt
 );
 
 export const verifyAccessToken = (token: string): AccessTokenPayload => {
+  // İmza, süre, issuer ve audience burada doğrulanır.
+  // verify başarısızsa authMiddleware isteği 401 ile keser.
   const decoded = jwt.verify(token, jwtSecret, {
     algorithms: ['HS256'],
     ...jwtOptions
@@ -51,6 +59,7 @@ export const verifyAccessToken = (token: string): AccessTokenPayload => {
 };
 
 // Refresh token JWT değildir; tahmin edilemeyen, tek amaçlı bir oturum anahtarıdır.
+// İçinde userId veya başka anlamlı bilgi taşımaz; bu yüzden çalınsa bile DB kaydı/hash eşleşmesi gerekir.
 export const createRefreshToken = () => randomBytes(48).toString('base64url');
 
 // Veritabanı sızsa bile ham refresh token açığa çıkmasın diye yalnızca HMAC özeti saklanır.
@@ -61,6 +70,8 @@ export const hashRefreshToken = (token: string) => createHmac('sha256', jwtSecre
 export const getRefreshExpiry = () => new Date(Date.now() + REFRESH_TOKEN_TTL_MS);
 
 const cookieOptions = {
+  // path '/api' olduğu için refresh cookie yalnızca backend API isteklerine eklenir.
+  // Frontend route'larında veya statik asset isteklerinde gereksiz yere taşınmaz.
   // JavaScript refresh token'ı okuyamaz; production'da cookie yalnızca HTTPS üzerinden gider.
   httpOnly: true,
   secure: process.env.NODE_ENV === 'production',
@@ -80,6 +91,8 @@ export const clearRefreshCookie = (res: Response) => {
 };
 
 export const readRefreshToken = (cookieHeader?: string): string | null => {
+  // Express cookie-parser kullanmadan header'ı elle okuyoruz.
+  // Bu dosya refresh token adını tek yerde tuttuğu için isim değişikliği kolaydır.
   if (!cookieHeader) return null;
 
   for (const part of cookieHeader.split(';')) {

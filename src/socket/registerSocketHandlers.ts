@@ -18,10 +18,17 @@ interface CallSignalPayload {
 }
 
 // Bir kullanıcının birden fazla sekmesi olabileceği için socket kimlikleri küme halinde tutulur.
+// Bir kullanıcının birden fazla sekmesi olabilir.
+// Map değeri Set olduğu için aynı userId'ye ait bütün socket bağlantılarını takip ederiz.
+// Kullanıcı ancak son sekmesi de kapanınca çevrimdışı kabul edilir.
 const onlineSockets = new Map<string, Set<string>>();
+// Socket ömrü access token refresh'e değil gerçek kullanıcı aktivitesine bağlıdır.
+// Frontend mouse/klavye gibi aktivitelerde client_activity gönderir; uzun inaktivitede socket kapatılır.
 const SOCKET_INACTIVITY_TIMEOUT_MS = 3 * 60 * 60 * 1000;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+// Çağrı eventleri socket üzerinden geldiği için payload mutlaka elle doğrulanır.
+// Burada zod değil küçük bir guard kullanıyoruz; geçersiz id/tür gelirse event reddedilir.
 const parseCallPayload = (payload: unknown): { conversationId: string; callId: string; callType: CallType } | null => {
   if (!payload || typeof payload !== 'object') return null;
   const { conversationId, callId, callType } = payload as CallSignalPayload;
@@ -40,6 +47,8 @@ const parseCallPayload = (payload: unknown): { conversationId: string; callId: s
 };
 
 export const registerSocketHandlers = (io: Server) => {
+  // Socket handshake HTTP route'lardan geçmez; bu yüzden JWT doğrulaması burada ayrıca yapılır.
+  // Refresh token socket için kabul edilmez, sadece kısa ömürlü access token kullanılabilir.
   // Socket el sıkışması yalnızca kısa ömürlü access token kabul eder.
   io.use(async (socket, next) => {
     const rawToken = socket.handshake.auth.token || socket.handshake.headers.token;
@@ -48,6 +57,8 @@ export const registerSocketHandlers = (io: Server) => {
 
     try {
       const decoded = verifyAccessToken(token);
+      // Token geçerli olsa bile kullanıcı DB'de silinmiş olabilir.
+      // Bu kontrol silinmiş hesapların eski access token ile socket açmasını engeller.
       const userExists = await prisma.user.findUnique({ where: { id: decoded.userId }, select: { id: true } });
       if (!userExists) return next(new Error('Kimlik doğrulama hatası: Kullanıcı bulunamadı.'));
 
@@ -64,6 +75,8 @@ export const registerSocketHandlers = (io: Server) => {
   io.on('connection', (socket) => {
     const currentUser = socket.data.user as SocketUser;
 
+    // Her bağlantı kendi inactivity timer'ını taşır.
+    // Kullanıcı aynı hesabı iki sekmede açtıysa bir sekmenin inactive olması diğerini kapatmaz.
     // Socket yaşam süresi access token yenilemesine değil, gerçek kullanıcı aktivitesine bağlıdır.
     let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
     const resetInactivityTimer = () => {
@@ -77,13 +90,19 @@ export const registerSocketHandlers = (io: Server) => {
     const userSockets = onlineSockets.get(currentUser.userId) || new Set<string>();
     userSockets.add(socket.id);
     onlineSockets.set(currentUser.userId, userSockets);
+    // Her kullanıcı kendi userId odasına alınır.
+    // Sidebar yenilemeleri, çağrı davetleri ve kişisel bildirimler bu odaya gönderilebilir.
     void socket.join(currentUser.userId);
 
     logger.info({ event: 'socket.connected', userId: currentUser.userId, socketId: socket.id }, 'Socket connected');
+    // Yeni bağlanan client mevcut online kullanıcıları tek seferde alır.
+    // Sonraki değişiklikler presence_changed eventleriyle akar.
     socket.emit('presence_snapshot', { onlineUserIds: [...onlineSockets.keys()] });
     socket.broadcast.emit('presence_changed', { userId: currentUser.userId, isOnline: true, lastSeenAt: null });
 
     socket.on('client_activity', () => {
+      // Frontend görünür kullanıcı aktivitesi algıladığında bunu yollar.
+      // Böylece sadece token refresh olduğu için kullanıcı sonsuza kadar online görünmez.
       resetInactivityTimer();
     });
 
@@ -106,6 +125,10 @@ export const registerSocketHandlers = (io: Server) => {
           return;
         }
 
+        // Conversation odasına girmeden önce gerçek katılımcılık kontrolü yapılır.
+        // Yetkisiz kullanıcı odaya girerse başka kullanıcıların mesaj/eventlerini dinleyebilir.
+        // Kabul/red/bitirme eventleri de konuşma üyeliği gerektirir.
+        // Aksi halde kullanıcı başkasının çağrısını manipüle edebilir.
         const membership = await prisma.participant.findUnique({
           where: { userId_conversationId: { userId: currentUser.userId, conversationId: cleanId } },
           select: { id: true }
@@ -131,12 +154,16 @@ export const registerSocketHandlers = (io: Server) => {
       if (typeof conversationId !== 'string' || typeof isTyping !== 'boolean') return;
 
       try {
+        // Yazıyor bilgisi de üyelik kontrolünden geçer.
+        // Böylece kullanıcı üyesi olmadığı odada "yazıyor" spam'i gönderemez.
         const membership = await prisma.participant.findUnique({
           where: { userId_conversationId: { userId: currentUser.userId, conversationId } },
           select: { id: true }
         });
         if (!membership) return;
 
+        // socket.to(conversationId) gönderen socket hariç odadaki diğer client'lara yollar.
+        // Bu yüzden yazan kişi kendi ekranında kendi "yazıyor" bilgisini görmez.
         socket.to(conversationId).emit('typing_changed', {
           conversationId,
           userId: currentUser.userId,
@@ -188,6 +215,8 @@ export const registerSocketHandlers = (io: Server) => {
           }
         };
 
+        // Çağrı sinyali konuşmadaki diğer kullanıcıların kişisel userId odalarına gönderilir.
+        // Kullanıcı aktif sohbet odasında olmasa bile çağrı bildirimi alabilir.
         targetUserIds.forEach((userId) => {
           io.to(userId).emit(`call:${status}`, payloadBase);
         });
@@ -225,6 +254,8 @@ export const registerSocketHandlers = (io: Server) => {
       }
 
       try {
+        // Davet eventinde conversation bilgisi ve katılımcılar tek sorguda alınır.
+        // Kullanıcı konuşmanın üyesi değilse call:incoming hiç yayınlanmaz.
         const conversation = await prisma.conversation.findFirst({
           where: {
             id: call.conversationId,
@@ -295,11 +326,13 @@ export const registerSocketHandlers = (io: Server) => {
       if (inactivityTimer) clearTimeout(inactivityTimer);
       const sockets = onlineSockets.get(currentUser.userId);
       sockets?.delete(socket.id);
+      // Aynı kullanıcı başka sekmede hâlâ bağlıysa offline yayını yapmıyoruz.
       if (sockets && sockets.size > 0) return;
 
       onlineSockets.delete(currentUser.userId);
       const lastSeenAt = new Date();
       try {
+        // Son socket de kapandığında lastSeenAt DB'ye yazılır ve diğer client'lara presence_changed gider.
         await prisma.user.update({ where: { id: currentUser.userId }, data: { lastSeenAt } });
       } catch (error) {
         logger.error({ event: 'socket.last_seen_failed', err: error, userId: currentUser.userId }, 'Last seen update failed');

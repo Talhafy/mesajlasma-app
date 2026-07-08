@@ -13,10 +13,13 @@ import {
 
 const router = express.Router();
 
+// Çağrı token'ı da diğer chat API'leri gibi JWT ile korunur.
+// Kullanıcı sadece üyesi olduğu konuşma için LiveKit odasına katılma token'ı alabilir.
 router.use(authenticateToken);
 
 router.post('/calls/token', validateRequest({ body: chatSchemas.callToken }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
+    // LiveKit ayarı eksikse mesajlaşma sistemi çalışmaya devam eder, yalnızca çağrı özelliği kapalı olur.
     if (!isLivekitConfigured()) {
       return res.status(503).json({ error: 'LiveKit yapılandırması eksik. LIVEKIT_URL, LIVEKIT_API_KEY ve LIVEKIT_API_SECRET tanımlayın.' });
     }
@@ -28,6 +31,7 @@ router.post('/calls/token', validateRequest({ body: chatSchemas.callToken }), as
       callType: CallType;
     };
 
+    // Konuşma üyeliği DB'den doğrulanır; frontend'den gelen conversationId tek başına yeterli değildir.
     const membership = await prisma.participant.findUnique({
       where: { userId_conversationId: { userId, conversationId } },
       select: {
@@ -40,6 +44,8 @@ router.post('/calls/token', validateRequest({ body: chatSchemas.callToken }), as
       return res.status(403).json({ error: 'Bu görüşmeye katılma yetkiniz yok.' });
     }
 
+    // LiveKit token yalnızca bu konuşma/callId için üretilen oda adına geçerlidir.
+    // Kullanıcı başka bir odanın adını tahmin etse bile bu endpoint üyelik kontrolü yapar.
     const livekit = await createConversationCallToken({
       conversationId,
       callId,

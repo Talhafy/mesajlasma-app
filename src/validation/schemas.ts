@@ -1,8 +1,13 @@
 import { z } from 'zod';
 
+// Bütün route param/body/query doğrulamaları burada toplanır.
+// Böylece controller dosyaları ham input temizlemek yerine doğrulanmış veriyle iş kuralına odaklanır.
 const uuid = z.string().uuid('Geçerli bir UUID gönderilmelidir.');
 const clientId = uuid;
+// Mesaj metni opsiyonel olabilir; dosyalı mesajlarda içerik boş bırakılabilir.
 const messageContent = z.string().max(10_000).optional().default('');
+// Dosya alanları private R2 object key ve kullanıcıya gösterilecek tip/ad bilgisidir.
+// fileUrl schema'da yoktur; backend response sırasında signed URL olarak üretilir.
 const fileFields = {
   fileKey: z.string().min(1).max(300).optional().nullable(),
   fileType: z.enum(['image', 'audio', 'document']).optional().nullable(),
@@ -10,6 +15,7 @@ const fileFields = {
 };
 
 export const authSchemas = {
+  // .strict() body içinde beklenmeyen alanları reddeder; örn. frontend adminId/userId enjekte edemez.
   register: z.object({
     username: z.string().trim().min(3).max(30).regex(/^[\p{L}\p{N}_.-]+$/u),
     email: z.string().trim().email().max(254),
@@ -39,6 +45,7 @@ const messageBody = z.object({
   isForwarded: z.boolean().optional(),
   ...fileFields
 }).strict().refine(
+  // Metin veya dosya yoksa mesaj anlamsızdır; backend boş mesaj kaydı oluşturmaz.
   // Metinsiz mesaj mümkündür ancak mutlaka bir private dosya anahtarı taşımalıdır.
   (data) => Boolean(data.content.trim() || data.fileKey),
   { message: 'Mesaj içeriği veya dosya gereklidir.' }
@@ -51,11 +58,13 @@ const scheduledMessageBody = z.object({
   sendAt: z.string().datetime(),
   ...fileFields
 }).strict().refine(
+  // Zamanlanmış mesaj da normal mesaj gibi en az metin veya dosya taşımalıdır.
   (data) => Boolean(data.content.trim() || data.fileKey),
   { message: 'Mesaj içeriği veya dosya gereklidir.' }
 );
 
 export const chatSchemas = {
+  // directConversation sadece hedef kullanıcı id'si alır; gönderen kullanıcı JWT'den çıkarılır.
   directConversation: z.object({ targetUserId: uuid }).strict(),
   message: messageBody,
   conversationParams: z.object({ conversationId: uuid }),
@@ -67,6 +76,7 @@ export const chatSchemas = {
   groupParams: z.object({ id: uuid }),
   conversationIdParams: z.object({ id: uuid }),
   disappearingMode: z.object({
+    // Kaybolan mesaj modu serbest sayı kabul etmez; UI'daki sabit seçeneklerle sınırlıdır.
     durationSeconds: z.union([
       z.literal(0),
       z.literal(3600),
@@ -91,6 +101,8 @@ export const chatSchemas = {
   editScheduledMessage: z.object({
     content: z.string().trim().max(10_000).optional(),
     ...fileFields
+  // Partial update olduğu için zamanlanmış mesaj düzenlenirken chat'e yeni mesaj düşmez.
+  // Sadece gönderilmemiş ScheduledMessage kaydı güncellenir.
   // Partial update sayesinde dosya değişirken mesaj normal sohbet akışına gönderilmez.
   }).strict().refine((data) => Object.keys(data).length > 0, { message: 'En az bir alan güncellenmelidir.' }),
   editMessage: z.object({ content: z.string().trim().min(1).max(10_000) }).strict(),
