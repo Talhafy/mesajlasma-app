@@ -24,6 +24,16 @@ import {
 const SOCKET_INACTIVITY_TIMEOUT_MS = 3 * 60 * 60 * 1000;
 const SOCKET_ACTIVITY_PING_INTERVAL_MS = 60 * 1000;
 
+export interface CallHistoryItem {
+  callId: string;
+  conversationId: string;
+  title: string;
+  callType: CallType;
+  direction: 'incoming' | 'outgoing';
+  status: 'started' | 'accepted' | 'declined' | 'missed' | 'ended';
+  createdAt: string;
+}
+
 export default function App() {
   const [currentView, setCurrentView] = useState<'login' | 'register' | 'chat'>('login');
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -39,6 +49,7 @@ export default function App() {
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [newUsernameSettings, setNewUsernameSettings] = useState('');
+  const [newEmailSettings, setNewEmailSettings] = useState('');
   const [oldPasswordSettings, setOldPasswordSettings] = useState('');
   const [newPasswordSettings, setNewPasswordSettings] = useState('');
   const [settingsMessage, setSettingsMessage] = useState({ type: '', text: '' });
@@ -60,6 +71,13 @@ export default function App() {
   const [socketConnectionStatus, setSocketConnectionStatus] = useState<'connected' | 'inactive' | 'reconnecting' | 'disconnected'>('connected');
   const [activeCall, setActiveCall] = useState<ActiveCall | null>(null);
   const [incomingCall, setIncomingCall] = useState<IncomingCall | null>(null);
+  const [callHistory, setCallHistory] = useState<CallHistoryItem[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('callHistory') || '[]');
+    } catch {
+      return [];
+    }
+  });
 
   const [isDarkMode, setIsDarkMode] = useState(() => localStorage.getItem('theme') === 'dark');
 
@@ -136,6 +154,18 @@ export default function App() {
       setSettingsMessage({ type: 'success', text: res.data.message });
       setCurrentUser(prev => prev ? { ...prev, username: res.data.username } : null); setNewUsernameSettings('');
     } catch { setSettingsMessage({ type: 'error', text: "İsim güncellenemedi." }); }
+  };
+
+  const handleUpdateEmail = async () => {
+    if (!newEmailSettings.trim()) return;
+    try {
+      const res = await api.put('/user/email', { newEmail: newEmailSettings });
+      setSettingsMessage({ type: 'success', text: res.data.message });
+      setCurrentUser(prev => prev ? { ...prev, email: res.data.email } : null);
+      setNewEmailSettings('');
+    } catch {
+      setSettingsMessage({ type: 'error', text: "E-posta güncellenemedi." });
+    }
   };
 
   const handleUpdatePassword = async () => {
@@ -279,18 +309,22 @@ export default function App() {
   };
 
   const handleCreateGroup = async () => {
-    if (!newGroupName.trim() || selectedMembers.length === 0) return alert("Grup adı ve en az 1 kişi seçin!");
+    if (!newGroupName.trim()) return alert("Grup ismi yazmadınız.");
+    if (selectedMembers.length === 0) return alert("Gruba eklenecek en az 1 kişi seçin.");
     try {
-      const res = await api.post('/conversations/group', { name: newGroupName, participantIds: selectedMembers });
+      const groupName = newGroupName.trim();
+      const res = await api.post('/conversations/group', { name: groupName, participantIds: selectedMembers });
       setIsGroupModalOpen(false); setNewGroupName(''); setSelectedMembers([]);
-      const groupId = res.data?.id;
+      const createdGroup: Conversation = { ...res.data, isGroup: true, name: res.data?.name || groupName };
+      const groupId = createdGroup.id;
 
       if (currentUser && groupId) {
-        setGroupsList(prev => [...prev, { id: groupId, isGroup: true, name: newGroupName, adminId: currentUser.id }]);
+        setGroupsList(prev => prev.some(group => group.id === groupId) ? prev : [...prev, createdGroup]);
+        setConversationList(prev => prev.some(conversation => conversation.id === groupId) ? prev : [createdGroup, ...prev]);
         if (socket) socket.emit('odaya_katil', groupId);
-        selectedMembers.forEach(memberId => socket?.emit('yeni_grup_bildirimi', { groupId, memberId }));
-        setTimeout(() => fetchGroups(), 500);
-      } else { if (currentUser) setTimeout(() => fetchGroups(), 500); }
+        void fetchGroups();
+        void fetchConversations();
+      } else { if (currentUser) { void fetchGroups(); void fetchConversations(); } }
     } catch { alert("Grup oluşturulamadı."); }
   };
 
@@ -322,6 +356,22 @@ export default function App() {
     return conversation?.otherUser?.username || selectedUserRef.current?.username || fallback || 'Görüşme';
   };
 
+  const rememberCall = (entry: CallHistoryItem) => {
+    setCallHistory((previous) => {
+      const next = [entry, ...previous.filter((item) => item.callId !== entry.callId)].slice(0, 50);
+      localStorage.setItem('callHistory', JSON.stringify(next));
+      return next;
+    });
+  };
+
+  const updateCallStatus = (callId: string, status: CallHistoryItem['status']) => {
+    setCallHistory((previous) => {
+      const next = previous.map((item) => item.callId === callId ? { ...item, status } : item);
+      localStorage.setItem('callHistory', JSON.stringify(next));
+      return next;
+    });
+  };
+
   const createCallConnection = async (conversationId: string, callId: string, callType: CallType): Promise<ActiveCall> => {
     const response = await api.post('/calls/token', { conversationId, callId, callType });
     return response.data;
@@ -345,6 +395,15 @@ export default function App() {
 
     try {
       const nextCall = await createCallConnection(activeConversation.id, callId, callType);
+      rememberCall({
+        callId,
+        conversationId: activeConversation.id,
+        title: getCallTitle(activeConversation.id, activeConversation.name),
+        callType,
+        direction: 'outgoing',
+        status: 'started',
+        createdAt: new Date().toISOString()
+      });
       setActiveCall(nextCall);
       emitCallSignal('call:invite', nextCall);
     } catch {
@@ -357,6 +416,7 @@ export default function App() {
     try {
       const nextCall = await createCallConnection(incomingCall.conversationId, incomingCall.callId, incomingCall.callType);
       emitCallSignal('call:accepted', incomingCall);
+      updateCallStatus(incomingCall.callId, 'accepted');
       setIncomingCall(null);
       setActiveCall(nextCall);
     } catch {
@@ -366,11 +426,13 @@ export default function App() {
 
   const declineIncomingCall = () => {
     if (incomingCall) emitCallSignal('call:declined', incomingCall);
+    if (incomingCall) updateCallStatus(incomingCall.callId, 'declined');
     setIncomingCall(null);
   };
 
   const closeActiveCall = () => {
     if (activeCallRef.current) emitCallSignal('call:ended', activeCallRef.current);
+    if (activeCallRef.current) updateCallStatus(activeCallRef.current.callId, 'ended');
     setActiveCall(null);
   };
 
@@ -388,6 +450,19 @@ export default function App() {
       setActiveConversation({ ...activeConversation, name: editGroupName });
       setGroupsList(prev => prev.map(g => g.id === activeConversation.id ? { ...g, name: editGroupName } : g));
     } catch { alert("Ad güncellenemedi."); }
+  };
+
+  const handleUpdateGroupAvatar = async (file: File) => {
+    if (!activeConversation?.id) return;
+    const formData = new FormData();
+    formData.append('file', file);
+    const upload = await api.post('/upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    });
+    const response = await api.put(`/conversations/group/${activeConversation.id}/avatar`, { fileKey: upload.data.fileKey });
+    setActiveConversation(prev => prev?.id === activeConversation.id ? { ...prev, ...response.data } : prev);
+    setGroupsList(prev => prev.map(group => group.id === activeConversation.id ? { ...group, ...response.data } : group));
+    setConversationList(prev => prev.map(conversation => conversation.id === activeConversation.id ? { ...conversation, ...response.data } : conversation));
   };
 
   const handleRemoveMember = async (userId: string) => {
@@ -625,6 +700,15 @@ export default function App() {
         return;
       }
 
+      rememberCall({
+        callId: call.callId,
+        conversationId: call.conversationId,
+        title: call.isGroup && call.conversationName ? call.conversationName : call.caller.username,
+        callType: call.callType,
+        direction: 'incoming',
+        status: 'missed',
+        createdAt: new Date().toISOString()
+      });
       setIncomingCall(call);
       if ('Notification' in window && Notification.permission === 'granted' && document.hidden) {
         new Notification(call.callType === 'video' ? 'Görüntülü çağrı' : 'Sesli çağrı', {
@@ -635,24 +719,40 @@ export default function App() {
 
     newSocket.on('call:declined', ({ callId, user }: { callId: string; user?: { username?: string } }) => {
       if (activeCallRef.current?.callId !== callId) return;
+      updateCallStatus(callId, 'declined');
       if (user?.username) console.info(`${user.username} çağrıyı reddetti.`);
     });
 
     newSocket.on('call:ended', ({ callId }: { callId: string }) => {
+      updateCallStatus(callId, 'ended');
       if (activeCallRef.current?.callId === callId) setActiveCall(null);
       if (incomingCallRef.current?.callId === callId) setIncomingCall(null);
     });
 
     newSocket.on('grup_olusturuldu', (yeniGrup: Conversation) => {
       setGroupsList(prev => { if (prev.some(g => g.id === yeniGrup.id)) return prev; return [...prev, yeniGrup]; });
+      setConversationList(prev => { if (prev.some(conversation => conversation.id === yeniGrup.id)) return prev; return [yeniGrup, ...prev]; });
       newSocket.emit('odaya_katil', yeniGrup.id);
+      void fetchGroups();
+      void fetchConversations();
     });
 
-    newSocket.on('yeni_grup_bildirimi', () => { if (currentUserRef.current) fetchGroups(); });
+    newSocket.on('grup_guncellendi', (updatedGroup: Conversation) => {
+      setGroupsList(prev => prev.map(group => group.id === updatedGroup.id ? { ...group, ...updatedGroup } : group));
+      setConversationList(prev => prev.map(conversation => conversation.id === updatedGroup.id ? { ...conversation, ...updatedGroup } : conversation));
+      setActiveConversation(prev => prev?.id === updatedGroup.id ? { ...prev, ...updatedGroup } : prev);
+    });
 
-    newSocket.on('gruptan_atildi', (data: { groupId: string, removedUserId: string }) => {
+    newSocket.on('yeni_grup_bildirimi', () => {
+      if (currentUserRef.current) {
+        void fetchGroups();
+        void fetchConversations();
+      }
+    });
+
+    newSocket.on('gruptan_atildi', (data: { groupId: string, removedUserId: string, removedById?: string }) => {
       if (data.removedUserId === currentUserRef.current?.id) {
-        if (activeConversationRef.current?.adminId !== currentUserRef.current?.id) { alert("Grup yöneticisi sizi gruptan çıkardı."); }
+        alert(data.removedById === currentUserRef.current?.id ? "Gruptan başarıyla çıkıldı." : "Grup yöneticisi sizi gruptan çıkardı.");
         setGroupsList(prev => prev.filter(g => g.id !== data.groupId));
         setConversationList(prev => prev.filter(conversation => conversation.id !== data.groupId));
         setActiveConversation(prev => prev?.id === data.groupId ? null : prev);
@@ -785,6 +885,7 @@ export default function App() {
           socketConnectionStatus={socketConnectionStatus}
           onReconnectRealtime={reconnectRealtime}
           typingByConversation={typingByConversation}
+          callHistory={callHistory}
         />
       )}
 
@@ -812,11 +913,11 @@ export default function App() {
       )}
 
       {isGroupSettingsOpen && activeConversation && (
-        <GroupSettingsModal setIsGroupSettingsOpen={setIsGroupSettingsOpen} activeConversation={activeConversation} currentUser={currentUser} editGroupName={editGroupName} setEditGroupName={setEditGroupName} handleUpdateGroupName={handleUpdateGroupName} groupMembers={groupMembers} handleRemoveMember={handleRemoveMember} handleDeleteGroup={handleDeleteGroup} usersList={usersList} handleAddMembersToGroup={handleAddMembersToGroup} handleTransferAdmin={handleTransferAdmin} />
+        <GroupSettingsModal setIsGroupSettingsOpen={setIsGroupSettingsOpen} activeConversation={activeConversation} currentUser={currentUser} editGroupName={editGroupName} setEditGroupName={setEditGroupName} handleUpdateGroupName={handleUpdateGroupName} handleUpdateGroupAvatar={handleUpdateGroupAvatar} groupMembers={groupMembers} handleRemoveMember={handleRemoveMember} handleDeleteGroup={handleDeleteGroup} usersList={usersList} handleAddMembersToGroup={handleAddMembersToGroup} handleTransferAdmin={handleTransferAdmin} />
       )}
 
       {isSettingsOpen && (
-        <SettingsModal setIsSettingsOpen={setIsSettingsOpen} settingsMessage={settingsMessage} setSettingsMessage={setSettingsMessage} newUsernameSettings={newUsernameSettings} setNewUsernameSettings={setNewUsernameSettings} handleUpdateUsername={handleUpdateUsername} currentUser={currentUser} handleToggleReadReceipts={handleToggleReadReceipts} oldPasswordSettings={oldPasswordSettings} setOldPasswordSettings={setOldPasswordSettings} newPasswordSettings={newPasswordSettings} setNewPasswordSettings={setNewPasswordSettings} handleUpdatePassword={handleUpdatePassword} handleUpdateAvatar={handleUpdateAvatar} handleDeleteAccount={handleDeleteAccount} cikisYap={cikisYap} />
+        <SettingsModal setIsSettingsOpen={setIsSettingsOpen} settingsMessage={settingsMessage} setSettingsMessage={setSettingsMessage} newUsernameSettings={newUsernameSettings} setNewUsernameSettings={setNewUsernameSettings} handleUpdateUsername={handleUpdateUsername} newEmailSettings={newEmailSettings} setNewEmailSettings={setNewEmailSettings} handleUpdateEmail={handleUpdateEmail} currentUser={currentUser} handleToggleReadReceipts={handleToggleReadReceipts} oldPasswordSettings={oldPasswordSettings} setOldPasswordSettings={setOldPasswordSettings} newPasswordSettings={newPasswordSettings} setNewPasswordSettings={setNewPasswordSettings} handleUpdatePassword={handleUpdatePassword} handleUpdateAvatar={handleUpdateAvatar} handleDeleteAccount={handleDeleteAccount} cikisYap={cikisYap} />
       )}
 
       {incomingCall && (

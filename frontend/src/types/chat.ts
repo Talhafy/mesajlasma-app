@@ -32,6 +32,7 @@ export interface User {
   avatarUrl?: string;
   lastSeenAt?: string;
   isOnline?: boolean;
+  isBlocked?: boolean;
 }
 
 export interface Conversation {
@@ -39,6 +40,8 @@ export interface Conversation {
   isGroup: boolean;
   name?: string;
   adminId?: string;
+  avatarFileKey?: string | null;
+  avatarUrl?: string | null;
   createdAt?: string;
   isPinned?: boolean;
   isArchived?: boolean;

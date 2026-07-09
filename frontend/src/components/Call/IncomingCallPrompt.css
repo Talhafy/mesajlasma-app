@@ -3,54 +3,64 @@
   inset: 0;
   z-index: 25000;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: center;
   padding: 24px;
-  pointer-events: none;
+  background: radial-gradient(circle at 50% 20%, rgba(255,255,255,0.16), transparent 28%),
+    rgba(17, 27, 33, 0.78);
+  backdrop-filter: blur(14px);
 }
 
 .incoming-call-card {
-  width: min(420px, 100%);
-  background: #111b21;
-  color: #e9edef;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 8px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.42);
-  padding: 16px;
-  display: grid;
-  grid-template-columns: 54px 1fr auto;
-  gap: 14px;
+  width: min(360px, 100%);
+  min-height: 560px;
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 28px;
+  box-shadow: 0 26px 90px rgba(0, 0, 0, 0.52);
+  padding: 34px 26px 32px;
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  pointer-events: auto;
+  justify-content: space-between;
+  background:
+    linear-gradient(160deg, rgba(255,255,255,0.16), rgba(255,255,255,0.04)),
+    #1f2629;
+}
+
+.incoming-call-top-icons {
+  height: 26px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: rgba(255,255,255,0.82);
+  font-size: 22px;
 }
 
 .incoming-call-avatar {
-  width: 54px;
-  height: 54px;
+  width: 92px;
+  height: 92px;
   border-radius: 50%;
   background: #00a884;
   color: #ffffff;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 22px;
+  font-size: 38px;
   font-weight: 800;
+  box-shadow: 0 14px 30px rgba(0, 168, 132, 0.32);
 }
 
 .incoming-call-copy {
-  min-width: 0;
-}
-
-.incoming-call-label {
-  color: #00a884;
-  font-size: 12px;
-  font-weight: 800;
+  text-align: center;
+  margin-top: -34px;
 }
 
 .incoming-call-copy h2 {
-  margin: 2px 0;
-  font-size: 18px;
-  line-height: 1.2;
+  margin: 0 0 8px;
+  font-size: 25px;
+  line-height: 1.15;
+  max-width: 285px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -58,18 +68,29 @@
 
 .incoming-call-copy p {
   margin: 0;
-  color: #aebac1;
-  font-size: 13px;
+  color: rgba(255,255,255,0.78);
+  font-size: 15px;
 }
 
 .incoming-call-actions {
+  width: 100%;
   display: flex;
+  justify-content: space-around;
+  align-items: center;
+}
+
+.incoming-call-action {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   gap: 10px;
+  color: rgba(255,255,255,0.86);
+  font-size: 14px;
 }
 
 .incoming-call-button {
-  width: 44px;
-  height: 44px;
+  width: 66px;
+  height: 66px;
   border-radius: 50%;
   border: none;
   color: #ffffff;
@@ -77,34 +98,36 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.25);
+  transition: transform 0.16s ease, filter 0.16s ease;
+}
+
+.incoming-call-button:hover {
+  transform: translateY(-2px);
+  filter: brightness(1.06);
 }
 
 .incoming-call-button.decline {
-  background: #e53935;
+  background: #f44336;
   transform: rotate(135deg);
 }
 
+.incoming-call-button.decline:hover {
+  transform: rotate(135deg) translateY(-2px);
+}
+
 .incoming-call-button.accept {
-  background: #00a884;
+  background: #18c96e;
 }
 
 @media screen and (max-width: 576px) {
   .incoming-call-overlay {
-    padding: 12px;
+    padding: 0;
   }
 
   .incoming-call-card {
-    grid-template-columns: 46px 1fr;
-  }
-
-  .incoming-call-avatar {
-    width: 46px;
-    height: 46px;
-    font-size: 19px;
-  }
-
-  .incoming-call-actions {
-    grid-column: 1 / -1;
-    justify-content: flex-end;
+    width: 100%;
+    min-height: 100%;
+    border-radius: 0;
   }
 }

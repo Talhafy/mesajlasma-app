@@ -20,6 +20,21 @@ model User {
   participants              Participant[]
   refreshSessions           RefreshSession[]
   administeredConversations Conversation[]     @relation("ConversationAdmin")
+  blockedUsers              BlockedUser[]      @relation("BlockedBy")
+  blockedByUsers            BlockedUser[]      @relation("Blocks")
+}
+
+model BlockedUser {
+  id        String   @id @default(uuid())
+  userId    String
+  blockedId String
+  createdAt DateTime @default(now())
+  user      User     @relation("BlockedBy", fields: [userId], references: [id], onDelete: Cascade)
+  blocked   User     @relation("Blocks", fields: [blockedId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, blockedId])
+  @@index([userId])
+  @@index([blockedId])
 }
 
 model RefreshSession {
@@ -41,6 +56,7 @@ model Conversation {
   isGroup           Boolean            @default(false)
   name              String?
   adminId           String?
+  avatarFileKey     String?
   createdAt         DateTime           @default(now())
   pinnedByIds       String[]           @default([])
   archivedByIds     String[]           @default([])

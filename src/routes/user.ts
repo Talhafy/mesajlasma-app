@@ -33,6 +33,26 @@ router.put('/username', authenticateToken, validateRequest({ body: userSchemas.u
 });
 
 // Şifre değişince çalınmış olabilecek bütün refresh oturumları da iptal edilir.
+// E-posta hesabın kimlik bilgisidir; güncelleme yalnızca JWT sahibi kullanıcı için yapılır.
+router.put('/email', authenticateToken, validateRequest({ body: userSchemas.email }), async (req: CustomRequest, res: any) => {
+  try {
+    const { newEmail } = req.body;
+    const userId = getUserId(req);
+
+    const existingUser = await prisma.user.findUnique({ where: { email: newEmail } });
+    if (existingUser && existingUser.id !== userId) return res.status(400).json({ error: "Bu e-posta zaten kullanılıyor." });
+
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: { email: newEmail }
+    });
+
+    res.status(200).json({ message: "E-posta güncellendi.", email: updatedUser.email });
+  } catch (error) {
+    res.status(500).json({ error: "E-posta güncellenemedi." });
+  }
+});
+
 router.put('/password', authenticateToken, validateRequest({ body: userSchemas.password }), async (req: CustomRequest, res: any) => {
   try {
     const { oldPassword, newPassword } = req.body;

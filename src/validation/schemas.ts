@@ -29,6 +29,7 @@ export const authSchemas = {
 
 export const userSchemas = {
   username: z.object({ newUsername: z.string().trim().min(3).max(30) }).strict(),
+  email: z.object({ newEmail: z.string().trim().email().max(254) }).strict(),
   password: z.object({
     oldPassword: z.string().min(1).max(128),
     newPassword: z.string().min(8).max(128)
@@ -86,6 +87,7 @@ export const chatSchemas = {
   }).strict(),
   groupMemberParams: z.object({ id: uuid, userId: uuid }),
   groupName: z.object({ newName: z.string().trim().min(1).max(100) }).strict(),
+  groupAvatar: z.object({ fileKey: z.string().min(1).max(300).nullable() }).strict(),
   addGroupMembers: z.object({ userIdsToAdd: z.array(uuid).min(1).max(100) }).strict(),
   transferAdmin: z.object({ newAdminId: uuid }).strict(),
   readConversation: z.object({ emitReceipt: z.boolean().optional() }).strict(),

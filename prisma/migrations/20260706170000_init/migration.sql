@@ -184,3 +184,5 @@ FOREIGN KEY ("senderId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CAS
 ALTER TABLE "ScheduledMessage"
 ADD CONSTRAINT "ScheduledMessage_conversationId_fkey"
 FOREIGN KEY ("conversationId") REFERENCES "Conversation"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+ALTER TABLE "Conversation" ADD COLUMN "avatarFileKey" TEXT;

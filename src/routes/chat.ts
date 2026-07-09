@@ -23,6 +23,11 @@ const visibleMessageWhere = () => ({
   ]
 });
 
+const withConversationAvatarUrl = async <T extends { avatarFileKey?: string | null }>(conversation: T) => ({
+  ...conversation,
+  avatarUrl: conversation.avatarFileKey ? await createSignedFileUrl(conversation.avatarFileKey) : null
+});
+
 // Bu router altındaki tüm mesaj, sohbet ve dosya endpoint'leri access token gerektirir.
 router.use(authenticateToken);
 
@@ -66,6 +71,93 @@ router.get('/users', async (req: CustomRequest, res: Response): Promise<any> => 
     return res.status(200).json(responseUsers);
   } catch (error) {
     return res.status(500).json({ error: "Kullanıcılar getirilemedi." });
+  }
+});
+
+// TEK KULLANICI PROFİLİ (Kişiler sekmesinden "profile git" için)
+router.get('/users/:id', validateRequest({ params: chatSchemas.idParams }), async (req: CustomRequest, res: Response): Promise<any> => {
+  try {
+    const targetId = getParam(req, 'id');
+    const currentUserId = getUserId(req);
+
+    const user = await prisma.user.findUnique({
+      where: { id: targetId },
+      select: { id: true, username: true, email: true, avatarFileKey: true, lastSeenAt: true, createdAt: true }
+    });
+    if (!user) return res.status(404).json({ error: "Kullanıcı bulunamadı." });
+
+    const blockedRow = await prisma.blockedUser.findUnique({
+      where: { userId_blockedId: { userId: currentUserId, blockedId: targetId } }
+    });
+
+    return res.status(200).json({
+      ...user,
+      avatarUrl: user.avatarFileKey ? await createSignedFileUrl(user.avatarFileKey) : null,
+      isBlocked: Boolean(blockedRow)
+    });
+  } catch (error) {
+    return res.status(500).json({ error: "Kullanıcı profili alınamadı." });
+  }
+});
+
+// ENGELLENEN KULLANICILARI LİSTELEME
+router.get('/users/blocked/list', async (req: CustomRequest, res: Response): Promise<any> => {
+  try {
+    const currentUserId = getUserId(req);
+    const rows = await prisma.blockedUser.findMany({
+      where: { userId: currentUserId },
+      include: { blocked: { select: { id: true, username: true, avatarFileKey: true } } }
+    });
+    const responseRows = await Promise.all(rows.map(async (row) => ({
+      id: row.blocked.id,
+      username: row.blocked.username,
+      avatarUrl: row.blocked.avatarFileKey ? await createSignedFileUrl(row.blocked.avatarFileKey) : null,
+      blockedAt: row.createdAt
+    })));
+    return res.status(200).json(responseRows);
+  } catch (error) {
+    return res.status(500).json({ error: "Engellenen kullanıcılar getirilemedi." });
+  }
+});
+
+// KULLANICIYI ENGELLE
+router.post('/users/:id/block', validateRequest({ params: chatSchemas.idParams }), async (req: CustomRequest, res: Response): Promise<any> => {
+  try {
+    const currentUserId = getUserId(req);
+    const targetId = getParam(req, 'id');
+
+    if (currentUserId === targetId) {
+      return res.status(400).json({ error: "Kendinizi engelleyemezsiniz." });
+    }
+
+    const targetUser = await prisma.user.findUnique({ where: { id: targetId }, select: { id: true } });
+    if (!targetUser) return res.status(404).json({ error: "Kullanıcı bulunamadı." });
+
+    await prisma.blockedUser.upsert({
+      where: { userId_blockedId: { userId: currentUserId, blockedId: targetId } },
+      create: { userId: currentUserId, blockedId: targetId },
+      update: {}
+    });
+
+    return res.status(200).json({ isBlocked: true });
+  } catch (error) {
+    return res.status(500).json({ error: "Engelleme başarısız." });
+  }
+});
+
+// ENGELİ KALDIR
+router.delete('/users/:id/block', validateRequest({ params: chatSchemas.idParams }), async (req: CustomRequest, res: Response): Promise<any> => {
+  try {
+    const currentUserId = getUserId(req);
+    const targetId = getParam(req, 'id');
+
+    await prisma.blockedUser.deleteMany({
+      where: { userId: currentUserId, blockedId: targetId }
+    });
+
+    return res.status(200).json({ isBlocked: false });
+  } catch (error) {
+    return res.status(500).json({ error: "Engel kaldırma başarısız." });
   }
 });
 
@@ -117,6 +209,8 @@ router.get('/conversations', async (req: CustomRequest, res: Response): Promise<
         isGroup: conversation.isGroup,
         name: conversation.name,
         adminId: conversation.adminId,
+        avatarFileKey: conversation.avatarFileKey,
+        avatarUrl: conversation.avatarFileKey ? await createSignedFileUrl(conversation.avatarFileKey) : null,
         createdAt: conversation.createdAt,
         isPinned: conversation.pinnedByIds.includes(userId),
         isArchived: conversation.archivedByIds.includes(userId),
@@ -448,7 +542,7 @@ router.post('/conversations/group', validateRequest({ body: chatSchemas.group })
       io.to(userId).emit('grup_olusturuldu', newGroup);
     });
 
-    return res.status(201).json(newGroup);
+    return res.status(201).json(await withConversationAvatarUrl(newGroup));
   } catch (error) { return res.status(500).json({ error: "Grup oluşturulamadı." }); }
 });
 
@@ -465,7 +559,7 @@ router.get('/conversations/groups', async (req: CustomRequest, res: Response): P
       include: { conversation: true }
     });
 
-    const groups = myGroups.map(p => p.conversation);
+    const groups = await Promise.all(myGroups.map(p => withConversationAvatarUrl(p.conversation)));
     return res.status(200).json(groups);
   } catch (error) {
     return res.status(500).json({ error: "Gruplar getirilemedi." });
@@ -483,9 +577,27 @@ router.get('/conversations/group/:id/participants', validateRequest({ params: ch
 
     const participants = await prisma.participant.findMany({
       where: { conversationId: groupId },
-      include: { user: { select: { id: true, username: true } } }
+      include: { user: { select: { id: true, username: true, email: true, avatarFileKey: true, lastSeenAt: true } } }
     });
-    return res.status(200).json(participants.map(p => p.user));
+
+    // Kişiler sekmesinde "Engelle/Engeli Kaldır" butonunun doğru durumda açılması için
+    // mevcut kullanıcının kimleri engellediğini tek sorguda çekip üye listesine ekliyoruz.
+    const blockedRows = await prisma.blockedUser.findMany({
+      where: { userId: currentUserId },
+      select: { blockedId: true }
+    });
+    const blockedIds = new Set(blockedRows.map((row: { blockedId: string }) => row.blockedId));
+
+    const responseMembers = await Promise.all(participants.map(async (p) => ({
+      id: p.user.id,
+      username: p.user.username,
+      email: p.user.email,
+      lastSeenAt: p.user.lastSeenAt,
+      avatarUrl: p.user.avatarFileKey ? await createSignedFileUrl(p.user.avatarFileKey) : null,
+      isBlocked: blockedIds.has(p.user.id)
+    })));
+
+    return res.status(200).json(responseMembers);
   } catch (error) {
     return res.status(500).json({ error: "Grup üyeleri alınamadı." });
   }
@@ -524,6 +636,39 @@ router.put('/conversations/group/:id/name', validateRequest({
 });
 
 // GRUPTAN KİŞİ ÇIKARTMA VE OTOMATİK SİLME
+router.put('/conversations/group/:id/avatar', validateRequest({
+  params: chatSchemas.groupParams,
+  body: chatSchemas.groupAvatar
+}), async (req: CustomRequest, res: Response): Promise<any> => {
+  try {
+    const groupId = getParam(req, 'id');
+    const currentUserId = getUserId(req);
+    const { fileKey } = req.body;
+
+    const group = await prisma.conversation.findUnique({ where: { id: groupId } });
+    if (!group) return res.status(404).json({ error: "Grup bulunamadı." });
+    if (!group.isGroup || group.adminId !== currentUserId) {
+      return res.status(403).json({ error: "Grup resmini yalnızca yönetici değiştirebilir." });
+    }
+
+    const updatedGroup = await prisma.conversation.update({
+      where: { id: groupId },
+      data: { avatarFileKey: fileKey }
+    });
+
+    if (group.avatarFileKey && group.avatarFileKey !== fileKey) {
+      await deleteFileIfUnreferenced(group.avatarFileKey);
+    }
+
+    const responseGroup = await withConversationAvatarUrl(updatedGroup);
+    req.app.get('io').to(groupId).emit('grup_guncellendi', responseGroup);
+    return res.status(200).json(responseGroup);
+  } catch (error) {
+    logger.error({ event: 'chat.group_avatar_failed', err: error, userId: req.user?.userId, ip: req.ip }, 'Group avatar update failed');
+    return res.status(500).json({ error: "Grup resmi güncellenemedi." });
+  }
+});
+
 router.delete('/conversations/group/:id/participants/:userId', validateRequest({ params: chatSchemas.groupMemberParams }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const groupId = getParam(req, 'id');
@@ -547,7 +692,7 @@ router.delete('/conversations/group/:id/participants/:userId', validateRequest({
     });
 
     const io = req.app.get('io');
-    io.to(groupId).emit('gruptan_atildi', { groupId, removedUserId: userId });
+    io.to(groupId).emit('gruptan_atildi', { groupId, removedUserId: userId, removedById: adminId });
 
     const remainingParticipants = await prisma.participant.findMany({
       where: { conversationId: groupId }
@@ -557,7 +702,7 @@ router.delete('/conversations/group/:id/participants/:userId', validateRequest({
       const messageFiles = await prisma.message.findMany({ where: { conversationId: groupId, fileKey: { not: null } }, select: { fileKey: true } });
       const scheduledFiles = await prisma.scheduledMessage.findMany({ where: { conversationId: groupId, fileKey: { not: null } }, select: { fileKey: true } });
       await prisma.conversation.delete({ where: { id: groupId } });
-      const deletedFileKeys = [...messageFiles, ...scheduledFiles]
+      const deletedFileKeys = [...messageFiles, ...scheduledFiles, { fileKey: group.avatarFileKey }]
         .map((entry) => entry.fileKey)
         .filter((key): key is string => Boolean(key));
       for (const fileKey of [...new Set(deletedFileKeys)]) {
@@ -658,7 +803,7 @@ router.delete('/conversations/group/:id', validateRequest({ params: chatSchemas.
       const scheduledFiles = await tx.scheduledMessage.findMany({ where: { conversationId: groupId, fileKey: { not: null } }, select: { fileKey: true } });
 
       await tx.conversation.delete({ where: { id: groupId } });
-      return [...messageFiles, ...scheduledFiles]
+      return [...messageFiles, ...scheduledFiles, { fileKey: group.avatarFileKey }]
         .map((entry) => entry.fileKey)
         .filter((key): key is string => Boolean(key));
     });
@@ -976,7 +1121,10 @@ router.put('/messages/:id/star', validateRequest({ params: chatSchemas.idParams 
 
     const io = req.app.get('io');
     const responseMessage = await withSignedFileUrl(updatedMessage);
-    io.to(userId).emit('mesaj_guncellendi', responseMessage);
+    // DÜZELTME: önceden sadece io.to(userId) yapılıyordu, bu yüzden yıldızlama
+    // grup içindeki diğer üyelere (veya DM'deki karşı tarafa) real-time yansımıyordu.
+    // Diğer route'larla (pin, edit) tutarlı olması için conversationId odasına emit ediyoruz.
+    io.to(message.conversationId).emit('mesaj_guncellendi', responseMessage);
     return res.status(200).json(responseMessage);
   } catch (error) { return res.status(500).json({ error: "Yıldızlama başarısız." }); }
 });

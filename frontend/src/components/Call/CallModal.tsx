@@ -1,7 +1,8 @@
 import {
-  AudioConference,
   LiveKitRoom,
-  VideoConference
+  RoomAudioRenderer,
+  VideoConference,
+  useParticipants
 } from '@livekit/components-react';
 import '@livekit/components-styles';
 import type { Conversation } from '../../types/chat';
@@ -25,39 +26,104 @@ interface CallModalProps {
   onClose: () => void;
 }
 
+interface CallSessionContentProps {
+  title: string;
+  isVideoCall: boolean;
+  onClose: () => void;
+}
+
+function CallSessionContent({ title, isVideoCall, onClose }: CallSessionContentProps) {
+  const participants = useParticipants();
+  const hasRemoteParticipant = participants.some((participant) => !participant.isLocal);
+  const avatarLetter = title?.[0]?.toUpperCase() || '?';
+  const isWaitingVideoCall = isVideoCall && !hasRemoteParticipant;
+
+  const statusLabel = hasRemoteParticipant
+    ? (isVideoCall ? 'görüntülü görüşme devam ediyor' : 'sesli görüşme devam ediyor')
+    : (isVideoCall ? 'giden görüntülü arama' : 'giden sesli arama');
+
+  return (
+    <div className={`call-session-shell ${isWaitingVideoCall ? 'waiting-video' : ''}`}>
+      {(!isVideoCall || !hasRemoteParticipant) && <RoomAudioRenderer />}
+
+      {isVideoCall && hasRemoteParticipant ? (
+        <div className="call-video-shell">
+          <div className="call-video-stage">
+            <VideoConference />
+          </div>
+
+          <div className="call-video-overlay">
+            <div className="call-video-header">
+              <div className="call-video-partner">
+                <div className="call-avatar tiny">{avatarLetter}</div>
+                <div className="call-video-copy">
+                  <h2>{title}</h2>
+                  <p>{statusLabel}</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="call-actions single">
+              <div className="call-action">
+                <button className="call-action-button decline" onClick={onClose} title="Aramayı kapat">
+                  <svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor" aria-hidden="true">
+                    <path d="M6.62 10.79a15.05 15.05 0 0 0 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1C10.61 21 3 13.39 3 4c0-.55.45-1 1-1h3.49c.55 0 1 .45 1 1 0 1.24.2 2.45.57 3.57.11.35.03.74-.25 1.02z" />
+                  </svg>
+                </button>
+                <span>Aramayı Kapat</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="call-prompt-card">
+          <div className="call-top-icons">
+            <span>{isVideoCall ? '◖' : '◐'}</span>
+            <span>{isVideoCall ? '◗' : '◑'}</span>
+          </div>
+
+          <div className="call-avatar">{avatarLetter}</div>
+
+          <div className="call-copy">
+            <h2>{title}</h2>
+            <p>{statusLabel}</p>
+          </div>
+
+          <div className="call-actions single">
+            <div className="call-action">
+              <button className="call-action-button decline" onClick={onClose} title="Aramayı kapat">
+                <svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor" aria-hidden="true">
+                  <path d="M6.62 10.79a15.05 15.05 0 0 0 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1C10.61 21 3 13.39 3 4c0-.55.45-1 1-1h3.49c.55 0 1 .45 1 1 0 1.24.2 2.45.57 3.57.11.35.03.74-.25 1.02z" />
+                </svg>
+              </button>
+              <span>Aramayı Kapat</span>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function CallModal({ call, title, onClose }: CallModalProps) {
   const isVideoCall = call.callType === 'video';
 
   return (
     <div className="call-overlay">
-      <div className="call-shell">
-        <div className="call-topbar">
-          <div>
-            <div className="call-kicker">{isVideoCall ? 'Görüntülü görüşme' : 'Sesli görüşme'}</div>
-            <h2>{title}</h2>
-          </div>
-          <button className="call-close-button" onClick={onClose} title="Görüşmeden çık">
-            <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true">
-              <path d="M18.3 5.71 12 12l6.3 6.29-1.41 1.41L10.59 13.41 4.29 19.7 2.88 18.29 9.17 12 2.88 5.71 4.29 4.3l6.3 6.29 6.3-6.29z" />
-            </svg>
-          </button>
-        </div>
-
-        <LiveKitRoom
-          serverUrl={call.serverUrl}
-          token={call.token}
-          connect
-          audio
-          video={isVideoCall}
-          onDisconnected={onClose}
-          onError={(error) => {
-            console.error('LiveKit bağlantı hatası:', error);
-          }}
-          className="call-room"
-        >
-          {isVideoCall ? <VideoConference /> : <AudioConference />}
-        </LiveKitRoom>
-      </div>
+      <LiveKitRoom
+        serverUrl={call.serverUrl}
+        token={call.token}
+        connect
+        audio
+        video={isVideoCall}
+        onDisconnected={onClose}
+        onError={(error) => {
+          console.error('LiveKit bağlantı hatası:', error);
+        }}
+        className={`call-room ${isVideoCall ? 'video-mode' : 'audio-mode'}`}
+      >
+        <CallSessionContent title={title} isVideoCall={isVideoCall} onClose={onClose} />
+      </LiveKitRoom>
     </div>
   );
 }

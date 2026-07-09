@@ -2,6 +2,7 @@ import { useState } from 'react';
 import './Modals.css';
 import type { User, Conversation } from '../../types/chat';
 import Button from '../UI/Button';
+import { api } from '../../api/httpClient';
 
 interface GroupSettingsModalProps {
   setIsGroupSettingsOpen: (isOpen: boolean) => void;
@@ -10,6 +11,7 @@ interface GroupSettingsModalProps {
   editGroupName: string;
   setEditGroupName: (name: string) => void;
   handleUpdateGroupName: () => void;
+  handleUpdateGroupAvatar: (file: File) => Promise<void>;
   groupMembers: User[];
   handleRemoveMember: (userId: string) => void;
   handleDeleteGroup: () => void;
@@ -20,12 +22,17 @@ interface GroupSettingsModalProps {
 
 export default function GroupSettingsModal({
   setIsGroupSettingsOpen, activeConversation, currentUser, editGroupName,
-  setEditGroupName, handleUpdateGroupName, groupMembers, handleRemoveMember, handleDeleteGroup,
+  setEditGroupName, handleUpdateGroupName, handleUpdateGroupAvatar, groupMembers, handleRemoveMember, handleDeleteGroup,
   usersList, handleAddMembersToGroup, handleTransferAdmin
 }: GroupSettingsModalProps) {
 
   const [showAddMember, setShowAddMember] = useState(false);
   const [selectedNewMembers, setSelectedNewMembers] = useState<string[]>([]);
+  const [isAvatarUploading, setIsAvatarUploading] = useState(false);
+  const [isAvatarModalOpen, setIsAvatarModalOpen] = useState(false);
+  const [selectedMemberProfile, setSelectedMemberProfile] = useState<User | null>(null);
+  const [blockedOverrides, setBlockedOverrides] = useState<Record<string, boolean>>({});
+  const [isBlockBusy, setIsBlockBusy] = useState(false);
 
   const isAdmin = activeConversation.adminId === currentUser?.id;
   const availableUsersToAdd = usersList.filter(u => !groupMembers.some(gm => gm.id === u.id));
@@ -34,6 +41,27 @@ export default function GroupSettingsModal({
     handleAddMembersToGroup(selectedNewMembers);
     setShowAddMember(false);
     setSelectedNewMembers([]);
+  };
+
+  const isMemberBlocked = (member: User) => blockedOverrides[member.id] ?? member.isBlocked ?? false;
+
+  const toggleMemberBlock = async (member: User) => {
+    const nextBlockedState = !isMemberBlocked(member);
+    setIsBlockBusy(true);
+    try {
+      if (nextBlockedState) {
+        await api.post(`/users/${member.id}/block`);
+      } else {
+        await api.delete(`/users/${member.id}/block`);
+      }
+
+      setBlockedOverrides((previous) => ({ ...previous, [member.id]: nextBlockedState }));
+      setSelectedMemberProfile((previous) => previous?.id === member.id ? { ...previous, isBlocked: nextBlockedState } : previous);
+    } catch {
+      alert(nextBlockedState ? 'Kullanıcı engellenemedi.' : 'Engel kaldırılamadı.');
+    } finally {
+      setIsBlockBusy(false);
+    }
   };
 
   return (
@@ -46,6 +74,28 @@ export default function GroupSettingsModal({
         </div>
 
         <div className="settings-body">
+
+          <div className="settings-section" style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+            <div style={{ width: '68px', height: '68px', borderRadius: '50%', background: '#00a884', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '26px', fontWeight: 800, overflow: 'hidden', flexShrink: 0 }}>
+              {activeConversation.avatarUrl ? <img src={activeConversation.avatarUrl} alt="Grup" onClick={() => setIsAvatarModalOpen(true)} style={{ width: '100%', height: '100%', objectFit: 'cover', cursor: 'pointer' }} /> : activeConversation.name?.[0]?.toUpperCase()}
+            </div>
+            <div>
+              <h4 style={{ margin: '0 0 6px' }}>Grup Resmi</h4>
+              <p style={{ margin: '0 0 10px', fontSize: '13px', color: '#8696a0' }}>Sohbet başlığında ve listede görünen grup fotoğrafı.</p>
+              {isAdmin && (
+                <label className="modern-primary-btn" style={{ display: 'inline-block', cursor: isAvatarUploading ? 'wait' : 'pointer' }}>
+                  {isAvatarUploading ? 'Yükleniyor...' : 'Fotoğraf Seç'}
+                  <input type="file" accept="image/*" hidden disabled={isAvatarUploading} onChange={async (event) => {
+                    const file = event.target.files?.[0];
+                    if (!file) return;
+                    setIsAvatarUploading(true);
+                    try { await handleUpdateGroupAvatar(file); }
+                    finally { setIsAvatarUploading(false); event.target.value = ''; }
+                  }} />
+                </label>
+              )}
+            </div>
+          </div>
 
           {/* GRUP ADI DEĞİŞTİRME */}
           {isAdmin && (
@@ -102,12 +152,23 @@ export default function GroupSettingsModal({
 
                 return (
                   <div key={member.id} className="member-list-item">
-                    <div className="member-info">
+                    <button
+                      className="member-info"
+                      onClick={() => setSelectedMemberProfile({ ...member, isBlocked: isMemberBlocked(member) })}
+                      style={{ border: 'none', background: 'transparent', padding: 0, cursor: 'pointer', textAlign: 'left' }}
+                      title="Profili görüntüle"
+                    >
                       <span className="member-name">{isMe ? "Sen" : member.username}</span>
                       {isMemberAdmin && <span className="member-role">Yönetici</span>}
-                    </div>
+                    </button>
 
                     <div className="member-actions">
+                      {!isMe && (
+                        <button onClick={() => void toggleMemberBlock(member)} className="action-btn-outline" disabled={isBlockBusy}>
+                          {isMemberBlocked(member) ? 'Engeli Kaldır' : 'Engelle'}
+                        </button>
+                      )}
+
                       {isAdmin && !isMe && (
                         <button onClick={() => handleTransferAdmin(member.id)} className="action-btn-outline">
                           Yönetici Yap
@@ -127,7 +188,7 @@ export default function GroupSettingsModal({
           </div>
 
           {/* KOMPLE SİLME BUTONU (ŞIK SVG TASARIMI) */}
-         {isAdmin && (
+        {isAdmin && (
             <div className="settings-section" style={{marginTop: '25px', borderTop: '1px solid var(--border-color)', paddingTop: '20px'}}>
               <button className="danger-action-btn" onClick={handleDeleteGroup}>
                 <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round">
@@ -141,6 +202,108 @@ export default function GroupSettingsModal({
 
         </div>
       </div>
+
+      {/* --- TAM EKRAN GRUP RESMİ GÖRÜNTÜLEYİCİ BURAYA GELDİ --- */}
+      {isAvatarModalOpen && activeConversation.avatarUrl && (
+        <div 
+          className="settings-overlay" 
+          onClick={() => setIsAvatarModalOpen(false)}
+          style={{ 
+            position: 'fixed', 
+            inset: 0, 
+            zIndex: 100000, 
+            background: 'rgba(0,0,0,0.85)', 
+            display: 'flex', 
+            alignItems: 'center', 
+            justifyContent: 'center',
+            backdropFilter: 'blur(5px)'
+          }}
+        >
+          <button 
+            onClick={() => setIsAvatarModalOpen(false)}
+            style={{ 
+              position: 'absolute', top: '20px', right: '30px', 
+              background: 'none', border: 'none', color: 'white', 
+              fontSize: '32px', cursor: 'pointer', zIndex: 100001 
+            }}
+          >
+            ✕
+          </button>
+          <img 
+            src={activeConversation.avatarUrl} 
+            alt="Büyük Grup Resmi" 
+            onClick={(e) => e.stopPropagation()} 
+            style={{ 
+              maxWidth: '90vw', 
+              maxHeight: '90vh', 
+              borderRadius: '12px', 
+              objectFit: 'contain',
+              boxShadow: '0 10px 40px rgba(0,0,0,0.5)'
+            }} 
+          />
+        </div>
+      )}
+
+      {selectedMemberProfile && (
+        <div
+          className="settings-overlay"
+          onClick={() => setSelectedMemberProfile(null)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 100000,
+            background: 'rgba(0,0,0,0.55)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '20px'
+          }}
+        >
+          <div
+            onClick={(event) => event.stopPropagation()}
+            style={{
+              width: '360px',
+              maxWidth: '100%',
+              background: 'var(--panel-bg, #ffffff)',
+              color: 'inherit',
+              borderRadius: '16px',
+              padding: '22px',
+              boxShadow: '0 18px 55px rgba(0,0,0,0.35)'
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginBottom: '18px' }}>
+              <div style={{ width: '64px', height: '64px', borderRadius: '50%', background: '#00a884', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '26px', fontWeight: 800, overflow: 'hidden', flexShrink: 0 }}>
+                {selectedMemberProfile.avatarUrl
+                  ? <img src={selectedMemberProfile.avatarUrl} alt={selectedMemberProfile.username} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  : selectedMemberProfile.username[0]?.toUpperCase()}
+              </div>
+              <div style={{ minWidth: 0 }}>
+                <h3 style={{ margin: '0 0 4px', fontSize: '20px' }}>{selectedMemberProfile.username}</h3>
+                <p style={{ margin: 0, color: '#8696a0', fontSize: '13px' }}>
+                  {selectedMemberProfile.email || 'E-posta bilgisi yok'}
+                </p>
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gap: '8px', marginBottom: '18px', fontSize: '13px', color: '#8696a0' }}>
+              <span>Durum: {selectedMemberProfile.isOnline ? 'Çevrimiçi' : 'Çevrimdışı'}</span>
+              {selectedMemberProfile.lastSeenAt && (
+                <span>Son görülme: {new Date(selectedMemberProfile.lastSeenAt).toLocaleString('tr-TR', { dateStyle: 'short', timeStyle: 'short' })}</span>
+              )}
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+              <button className="action-btn-outline" onClick={() => setSelectedMemberProfile(null)}>Kapat</button>
+              {selectedMemberProfile.id !== currentUser?.id && (
+                <button className={isMemberBlocked(selectedMemberProfile) ? 'action-btn-outline' : 'action-btn-danger'} onClick={() => void toggleMemberBlock(selectedMemberProfile)} disabled={isBlockBusy}>
+                  {isMemberBlocked(selectedMemberProfile) ? 'Engeli Kaldır' : 'Engelle'}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }

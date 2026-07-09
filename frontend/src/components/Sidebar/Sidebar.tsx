@@ -4,6 +4,16 @@ import './Sidebar.css';
 import type { User, Conversation, Message } from '../../types/chat';
 import Button from '../UI/Button';
 
+interface CallHistoryItem {
+  callId: string;
+  conversationId: string;
+  title: string;
+  callType: 'audio' | 'video';
+  direction: 'incoming' | 'outgoing';
+  status: 'started' | 'accepted' | 'declined' | 'missed' | 'ended';
+  createdAt: string;
+}
+
 interface SidebarProps {
   currentUser: User;
   conversationList: Conversation[];
@@ -20,31 +30,26 @@ interface SidebarProps {
   socketConnectionStatus: 'connected' | 'inactive' | 'reconnecting' | 'disconnected';
   onReconnectRealtime: () => void;
   typingByConversation: Record<string, string>;
+  callHistory: CallHistoryItem[];
 }
 
 export default function Sidebar({
   currentUser, conversationList, usersList, activeConversation, selectedUser,
   unreadCounts, isDarkMode, setIsDarkMode, startGroupChat, startChat, setIsGroupModalOpen, setIsSettingsOpen,
-  socketConnectionStatus, onReconnectRealtime, typingByConversation
+  socketConnectionStatus, onReconnectRealtime, typingByConversation, callHistory
 }: SidebarProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [messageResults, setMessageResults] = useState<Message[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [isArchiveView, setIsArchiveView] = useState(false);
+  const [isContactsListView, setIsContactsListView] = useState(false);
+  const [isCallsView, setIsCallsView] = useState(false);
   const [isSidebarMenuOpen, setIsSidebarMenuOpen] = useState(false);
   const [isContactsPanelOpen, setIsContactsPanelOpen] = useState(false);
   const [contactsSearchTerm, setContactsSearchTerm] = useState('');
-  const [isSearchHistoryOpen, setIsSearchHistoryOpen] = useState(false);
   const [isStarredPanelOpen, setIsStarredPanelOpen] = useState(false);
   const [starredMessages, setStarredMessages] = useState<Message[]>([]);
   const [isLoadingStarred, setIsLoadingStarred] = useState(false);
-  const [searchHistory, setSearchHistory] = useState<string[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem('chatSearchHistory') || '[]');
-    } catch {
-      return [];
-    }
-  });
 
   const panelBg = isDarkMode ? '#202c33' : '#f0f2f5';
   const textColor = isDarkMode ? '#e9edef' : '#111b21';
@@ -117,21 +122,18 @@ export default function Sidebar({
   const rememberSearchTerm = (term: string) => {
     const cleanTerm = term.trim();
     if (cleanTerm.length < 2) return;
-
-    setSearchHistory((previous) => {
+    try {
+      const previous = JSON.parse(localStorage.getItem('chatSearchHistory') || '[]') as string[];
       const next = [cleanTerm, ...previous.filter((item) => item.toLowerCase() !== cleanTerm.toLowerCase())].slice(0, 12);
       localStorage.setItem('chatSearchHistory', JSON.stringify(next));
-      return next;
-    });
-  };
-
-  const clearSearchHistory = () => {
-    localStorage.removeItem('chatSearchHistory');
-    setSearchHistory([]);
+    } catch {
+      localStorage.setItem('chatSearchHistory', JSON.stringify([cleanTerm]));
+    }
   };
 
   const openStarredMessages = async () => {
     setIsSidebarMenuOpen(false);
+    setIsContactsPanelOpen(false);
     setIsStarredPanelOpen(true);
     setIsLoadingStarred(true);
     try {
@@ -145,20 +147,27 @@ export default function Sidebar({
   };
 
   const openContactsPanel = () => {
-    setIsContactsPanelOpen(true);
+    setIsContactsListView(true);
+    setIsArchiveView(false);
+    setIsCallsView(false);
+    setIsContactsPanelOpen(false);
     setIsSidebarMenuOpen(false);
+    setIsStarredPanelOpen(false);
   };
 
   const openGroupCreator = () => {
     setIsGroupModalOpen(true);
     setIsSidebarMenuOpen(false);
     setIsContactsPanelOpen(false);
+    setIsContactsListView(false);
+    setIsCallsView(false);
+    setIsArchiveView(false);
+    setIsStarredPanelOpen(false);
   };
 
   const startContactChat = (user: User) => {
     startChat(user);
     setIsContactsPanelOpen(false);
-    setIsSearchHistoryOpen(false);
     setIsStarredPanelOpen(false);
     setContactsSearchTerm('');
   };
@@ -178,7 +187,9 @@ export default function Sidebar({
         style={{ color: textColor, opacity: conversation.isArchived ? 0.85 : 1 }}
       >
         <div className="avatar-small" style={{ background: conversation.isArchived ? '#607d8b' : '#00a884', color: 'white', position: 'relative', overflow: 'visible' }}>
-          {otherUser?.avatarUrl
+          {conversation.isGroup && conversation.avatarUrl
+            ? <img src={conversation.avatarUrl} alt="" style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }} />
+            : otherUser?.avatarUrl
             ? <img src={otherUser.avatarUrl} alt="" style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }} />
             : conversation.isGroup ? '👥' : otherUser?.username?.[0]?.toUpperCase()}
           {!conversation.isGroup && otherUser?.isOnline && (
@@ -205,22 +216,21 @@ export default function Sidebar({
   return (
     <div className="sidebar" style={{ position: 'relative', display: 'flex', flexDirection: 'row', height: '100%', background: isDarkMode ? '#111b21' : '#ffffff' }}>
       <div style={{ width: '58px', flexShrink: 0, background: panelBg, borderRight: `1px solid ${borderColor}`, display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '12px 8px', boxSizing: 'border-box', gap: '10px' }}>
-        <button
+        <div
           title={`${currentUser.username} • Profil`}
-          onClick={() => setIsSettingsOpen(true)}
-          style={{ width: '40px', height: '40px', borderRadius: '50%', border: 'none', background: '#00a884', color: 'white', fontWeight: 800, fontSize: '17px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', boxShadow: '0 2px 8px rgba(0,0,0,0.18)' }}
+          style={{ width: '40px', height: '40px', borderRadius: '50%', border: 'none', background: '#00a884', color: 'white', fontWeight: 800, fontSize: '17px', cursor: 'default', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', boxShadow: '0 2px 8px rgba(0,0,0,0.18)' }}
         >
           {currentUser.avatarUrl ? <img src={currentUser.avatarUrl} alt={currentUser.username} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : currentUser.username?.[0]?.toUpperCase()}
-        </button>
+        </div>
 
         <div style={{ flex: 1 }} />
 
         <button
-          title="Arama geçmişi"
-          onClick={() => { setIsSearchHistoryOpen((previous) => !previous); setIsStarredPanelOpen(false); }}
-          style={{ width: '38px', height: '38px', borderRadius: '12px', border: 'none', background: isSearchHistoryOpen ? '#00a884' : 'transparent', color: isSearchHistoryOpen ? 'white' : iconColor, cursor: 'pointer', fontSize: '19px' }}
+          title="Aramalar"
+          onClick={() => { setIsCallsView(true); setIsArchiveView(false); setIsContactsListView(false); setIsStarredPanelOpen(false); setIsSidebarMenuOpen(false); }}
+          style={{ width: '38px', height: '38px', borderRadius: '12px', border: 'none', background: isCallsView ? '#00a884' : 'transparent', color: isCallsView ? 'white' : iconColor, cursor: 'pointer', fontSize: '18px' }}
         >
-          ⌕
+          ☎
         </button>
 
         <button
@@ -235,12 +245,12 @@ export default function Sidebar({
       <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
       <div className="sidebar-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '15px 20px', background: panelBg, borderBottom: `1px solid ${borderColor}` }}>
         <h2 style={{ margin: 0, fontSize: '22px', color: textColor, fontWeight: 'bold' }}>
-          {isArchiveView ? 'Arşiv' : 'Sohbetler'}
+          {isContactsListView ? 'Kayıtlı Kullanıcılar' : isCallsView ? 'Aramalar' : isArchiveView ? 'Arşiv' : 'Sohbetler'}
         </h2>
 
         <div style={{ display: 'flex', gap: '4px' }}>
-          {isArchiveView && (
-            <Button variant="icon" onClick={() => setIsArchiveView(false)} title="Sohbetlere dön" style={{ color: iconColor }} icon={<span style={{ fontSize: '20px' }}>←</span>} />
+          {(isArchiveView || isContactsListView || isCallsView) && (
+            <Button variant="icon" onClick={() => { setIsArchiveView(false); setIsContactsListView(false); setIsCallsView(false); }} title="Sohbetlere dön" style={{ color: iconColor }} icon={<span style={{ fontSize: '20px' }}>←</span>} />
           )}
           <Button
             variant="icon"
@@ -267,6 +277,7 @@ export default function Sidebar({
                 <div style={{ position: 'absolute', right: 0, top: '42px', width: '220px', background: isDarkMode ? '#202c33' : '#ffffff', border: `1px solid ${borderColor}`, borderRadius: '14px', boxShadow: '0 14px 40px rgba(0,0,0,0.26)', zIndex: 100, overflow: 'hidden', color: textColor }}>
                   <button className="msg-dropdown-btn" onClick={openContactsPanel}>👤 Kayıtlı kullanıcılar</button>
                   <button className="msg-dropdown-btn" onClick={openGroupCreator}>👥 Yeni grup kur</button>
+                  <button className="msg-dropdown-btn" onClick={openStarredMessages}>⭐ Yıldızlı mesajlar</button>
                 </div>
               </>
             )}
@@ -339,7 +350,94 @@ export default function Sidebar({
         </div>
       )}
 
+      {isStarredPanelOpen && (
+        <div style={{ position: 'absolute', top: '76px', left: '12px', right: '12px', maxHeight: '72vh', zIndex: 120, background: isDarkMode ? '#202c33' : '#ffffff', border: `1px solid ${borderColor}`, borderRadius: '16px', boxShadow: '0 18px 55px rgba(0,0,0,0.32)', overflow: 'hidden', color: textColor }}>
+          <div style={{ padding: '14px', borderBottom: `1px solid ${borderColor}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
+            <div>
+              <div style={{ color: '#00a884', fontSize: '12px', fontWeight: 800 }}>Yıldızlı mesajlar</div>
+              <h3 style={{ margin: '2px 0 0', fontSize: '17px' }}>Kaydedilenler</h3>
+            </div>
+            <button onClick={() => setIsStarredPanelOpen(false)} style={{ border: 'none', background: panelBg, color: iconColor, width: '32px', height: '32px', borderRadius: '50%', cursor: 'pointer' }}>x</button>
+          </div>
+
+          <div style={{ maxHeight: 'calc(72vh - 58px)', overflowY: 'auto' }}>
+            {isLoadingStarred ? (
+              <div style={{ padding: '18px', textAlign: 'center', color: iconColor, fontSize: '13px' }}>Yıldızlı mesajlar yükleniyor...</div>
+            ) : starredMessages.length > 0 ? (
+              starredMessages.map((msg) => (
+                <div key={msg.id} onClick={() => { handleMessageClick(msg); setIsStarredPanelOpen(false); }} className="user-item" style={{ flexDirection: 'column', alignItems: 'flex-start', padding: '12px 15px', borderBottom: `1px solid ${borderColor}`, cursor: 'pointer', color: textColor }}>
+                  <div style={{ fontSize: '12px', color: iconColor, marginBottom: '5px', width: '100%', display: 'flex', justifyContent: 'space-between', gap: '10px' }}>
+                    <strong style={{ color: textColor, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{msg.sender?.username || 'Kullanıcı'}</strong>
+                    <span>{msg.createdAt ? new Date(msg.createdAt).toLocaleDateString('tr-TR') : ''}</span>
+                  </div>
+                  <div style={{ fontSize: '14px', color: textColor, opacity: 0.92, wordBreak: 'break-word' }}>
+                    {msg.content || (msg.fileType === 'image' ? 'Görsel' : msg.fileName || 'Dosya')}
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div style={{ padding: '18px', textAlign: 'center', color: iconColor, fontSize: '13px' }}>Henüz yıldızlanan mesaj yok.</div>
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="users-list" style={{ flex: 1, overflowY: 'auto', position: 'relative' }}>
+        {isContactsListView && (
+          <div style={{ position: 'absolute', inset: 0, zIndex: 45, background: isDarkMode ? '#111b21' : '#ffffff', color: textColor, overflowY: 'auto' }}>
+            <div style={{ padding: '12px', display: 'flex', gap: '8px', borderBottom: `1px solid ${borderColor}` }}>
+              <button onClick={openGroupCreator} style={{ border: 'none', background: '#00a884', color: 'white', borderRadius: '10px', padding: '9px 11px', cursor: 'pointer', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                Yeni grup
+              </button>
+              <input
+                value={contactsSearchTerm}
+                onChange={(event) => setContactsSearchTerm(event.target.value)}
+                placeholder="Kullanıcı ara..."
+                autoFocus
+                style={{ flex: 1, minWidth: 0, padding: '9px 11px', borderRadius: '10px', border: `1px solid ${borderColor}`, background: panelBg, color: textColor, outline: 'none' }}
+              />
+            </div>
+            {filteredContactUsers.length > 0 ? filteredContactUsers.map((user) => (
+              <div key={user.id} className={`user-item ${selectedUser?.id === user.id ? 'active' : ''}`} onClick={() => startContactChat(user)} style={{ color: textColor, cursor: 'pointer' }}>
+                <div className="avatar-small" style={{ position: 'relative', overflow: 'visible' }}>
+                  {user.avatarUrl ? <img src={user.avatarUrl} alt="" style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }} /> : user.username.charAt(0).toUpperCase()}
+                  {user.isOnline && <span style={{ position: 'absolute', right: '-1px', bottom: '1px', width: '11px', height: '11px', borderRadius: '50%', background: '#25d366', border: `2px solid ${panelBg}` }} />}
+                </div>
+                <div className="user-info">
+                  <span className="user-name">{user.username}</span>
+                  <div style={{ fontSize: '12px', color: iconColor, marginTop: '3px' }}>{user.isOnline ? 'Çevrimiçi' : 'Sohbet başlat'}</div>
+                </div>
+              </div>
+            )) : (
+              <div style={{ padding: '18px', textAlign: 'center', color: iconColor, fontSize: '13px' }}>Kullanıcı bulunamadı.</div>
+            )}
+          </div>
+        )}
+
+        {isCallsView && (
+          <div style={{ position: 'absolute', inset: 0, zIndex: 45, background: isDarkMode ? '#111b21' : '#ffffff', color: textColor, overflowY: 'auto' }}>
+            {callHistory.length > 0 ? callHistory.map((call) => {
+              const statusText = call.status === 'missed' ? 'Cevapsız' : call.status === 'declined' ? 'Reddedildi' : call.status === 'ended' ? 'Bitti' : call.status === 'accepted' ? 'Kabul edildi' : 'Başlatıldı';
+              const directionIcon = call.direction === 'incoming' ? '↙' : '↗';
+              return (
+                <div key={call.callId} className="user-item" style={{ color: textColor, cursor: 'default' }}>
+                  <div className="avatar-small" style={{ background: call.status === 'missed' ? '#e53935' : '#00a884', color: 'white' }}>
+                    {call.callType === 'video' ? '▣' : '☎'}
+                  </div>
+                  <div className="user-info">
+                    <span className="user-name">{call.title}</span>
+                    <div style={{ fontSize: '12px', color: call.status === 'missed' ? '#e53935' : iconColor, marginTop: '3px' }}>
+                      {directionIcon} {statusText} · {new Date(call.createdAt).toLocaleString('tr-TR', { dateStyle: 'short', timeStyle: 'short' })}
+                    </div>
+                  </div>
+                </div>
+              );
+            }) : (
+              <div style={{ padding: '18px', textAlign: 'center', color: iconColor, fontSize: '13px' }}>Henüz arama kaydı yok.</div>
+            )}
+          </div>
+        )}
+
         {isGlobalSearchActive && (
           <>
           {/* Arama sonuçları normal sohbet listesinin içinde değil, üstte ayrı bir panel olarak gösterilir.
@@ -396,8 +494,18 @@ export default function Sidebar({
           </div>
           </>
         )}
-        {!isArchiveView && archivedConversations.length > 0 && searchTerm.trim() === '' && (
-          <div onClick={() => setIsArchiveView(true)} className="user-item" style={{ color: textColor, borderBottom: `1px solid ${borderColor}`, cursor: 'pointer' }}>
+        {!isArchiveView && !isContactsListView && !isCallsView && callHistory.length > 0 && searchTerm.trim() === '' && (
+          <div onClick={() => { setIsCallsView(true); setIsArchiveView(false); setIsContactsListView(false); }} className="user-item" style={{ color: textColor, borderBottom: `1px solid ${borderColor}`, cursor: 'pointer' }}>
+            <div className="avatar-small" style={{ background: '#00a884', color: 'white' }}>☎</div>
+            <div className="user-info">
+              <span className="user-name">Son aramalar</span>
+              <div style={{ fontSize: '12px', color: iconColor, marginTop: '3px' }}>{callHistory.length} kayıt</div>
+            </div>
+          </div>
+        )}
+
+        {!isArchiveView && !isContactsListView && !isCallsView && archivedConversations.length > 0 && searchTerm.trim() === '' && (
+          <div onClick={() => { setIsArchiveView(true); setIsCallsView(false); setIsContactsListView(false); }} className="user-item" style={{ color: textColor, borderBottom: `1px solid ${borderColor}`, cursor: 'pointer' }}>
             <div className="avatar-small" style={{ background: '#607d8b', color: 'white' }}>🗄️</div>
             <div className="user-info">
               <span className="user-name">Arşivlenen sohbetler</span>
@@ -483,21 +591,6 @@ export default function Sidebar({
         )}
       </div>
 
-      <div style={{ marginTop: 'auto', padding: '15px 20px', background: panelBg, borderTop: `1px solid ${borderColor}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <div style={{ width: '40px', height: '40px', borderRadius: '50%', background: '#00a884', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', fontSize: '16px', boxShadow: '0 2px 5px rgba(0,0,0,0.2)', overflow: 'hidden' }}>
-            {currentUser.avatarUrl ? <img src={currentUser.avatarUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : currentUser?.username?.[0]?.toUpperCase()}
-          </div>
-          <span style={{ fontWeight: '600', color: textColor, fontSize: '16px' }}>{currentUser?.username}</span>
-        </div>
-
-        <Button
-          variant="icon"
-          onClick={() => setIsSettingsOpen(true)}
-          title="Ayarlar"
-          style={{ color: iconColor }}
-          icon={<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M19.14,12.94c.04-.3.06-.61.06-.94s-.02-.64-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24,0-.43.17-.47.41l-.36,2.54c-.59.24-1.13.56-1.62.94l-2.39-.96c-.22-.08-.47,0-.59.22L2.73,8.87c-.11.21-.07.47.13.61l2.03,1.58c-.05.3-.09.63-.09.94s.02.64.06.94l-2.03,1.58c-.18.14-.23.41-.12.61l1.92,3.32c.12.22.37.29.59.22l2.39-.96c.5.38,1.03.7,1.62.94l.36,2.54c.05.24.24.41.48.41h3.84c.24,0,.43-.17.47-.41l.36-2.54c.59-.24,1.13-.56,1.62-.94l2.39.96c.22.08.47,0,.59-.22l1.92-3.32c.12-.22.07-.49-.12-.61l-2.03-1.58zM12,15.6c-1.98,0-3.6-1.62-3.6-3.6s1.62-3.6,3.6-3.6,3.6,1.62,3.6,3.6-1.62,3.6-3.6,3.6z" /></svg>}
-        />
       </div>
       <style>{`
         .msg-dropdown-btn {

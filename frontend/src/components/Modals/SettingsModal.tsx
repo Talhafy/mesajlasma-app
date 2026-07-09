@@ -9,6 +9,9 @@ interface SettingsModalProps {
   newUsernameSettings: string;
   setNewUsernameSettings: (val: string) => void;
   handleUpdateUsername: () => void;
+  newEmailSettings: string;
+  setNewEmailSettings: (val: string) => void;
+  handleUpdateEmail: () => void;
   currentUser: User | null;
   handleToggleReadReceipts: (val: boolean) => void;
   oldPasswordSettings: string;
@@ -80,7 +83,6 @@ export default function SettingsModal(props: SettingsModalProps) {
                 </div>
                 <div>
                   <h3 className="settings-username">{props.currentUser?.username}</h3>
-                  <span className="settings-status-badge">Çevrimiçi</span>
                   <label className="modern-primary-btn" style={{ display: 'inline-block', marginTop: '8px', cursor: isAvatarUploading ? 'wait' : 'pointer' }}>
                     {isAvatarUploading ? 'Yükleniyor...' : 'Fotoğrafı Değiştir'}
                     <input type="file" accept="image/*" hidden disabled={isAvatarUploading} onChange={async (event) => {
@@ -106,6 +108,21 @@ export default function SettingsModal(props: SettingsModalProps) {
                       className="settings-modern-input"
                     />
                     <button onClick={props.handleUpdateUsername} className="modern-primary-btn">Kaydet</button>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <label className="settings-label">E-posta Hesabı</label>
+                  <div style={{ fontSize: '13px', color: '#8696a0' }}>{props.currentUser?.email}</div>
+                  <div style={{ display: 'flex', gap: '10px' }}>
+                    <input
+                      type="email"
+                      placeholder="Yeni e-posta"
+                      value={props.newEmailSettings}
+                      onChange={(e) => props.setNewEmailSettings(e.target.value)}
+                      className="settings-modern-input"
+                    />
+                    <button onClick={props.handleUpdateEmail} className="modern-primary-btn">Kaydet</button>
                   </div>
                 </div>
 

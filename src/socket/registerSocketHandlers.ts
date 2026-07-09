@@ -175,6 +175,32 @@ export const registerSocketHandlers = (io: Server) => {
       }
     });
 
+    // "Yazıyor..." göstergesiyle aynı prensip: sadece ses kaydı açıp kapatma bilgisini taşır,
+    // dosyanın kendisiyle ilgisi yok. Frontend MediaRecorder start/stop anında bunu emit eder.
+    socket.on('voice_recording_changed', async (payload: unknown) => {
+      resetInactivityTimer();
+      if (!payload || typeof payload !== 'object') return;
+      const { conversationId, isRecording } = payload as { conversationId?: unknown; isRecording?: unknown };
+      if (typeof conversationId !== 'string' || typeof isRecording !== 'boolean') return;
+
+      try {
+        const membership = await prisma.participant.findUnique({
+          where: { userId_conversationId: { userId: currentUser.userId, conversationId } },
+          select: { id: true }
+        });
+        if (!membership) return;
+
+        socket.to(conversationId).emit('voice_recording_changed', {
+          conversationId,
+          userId: currentUser.userId,
+          username: currentUser.username,
+          isRecording
+        });
+      } catch (error) {
+        logger.error({ event: 'socket.voice_recording_failed', err: error, userId: currentUser.userId, roomId: conversationId }, 'Voice recording state delivery failed');
+      }
+    });
+
     const emitCallSignal = async (
       payload: unknown,
       status: CallSignalStatus,
