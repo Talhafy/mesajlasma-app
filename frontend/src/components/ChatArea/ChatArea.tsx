@@ -93,6 +93,12 @@ export default function ChatArea({
   const [editingScheduled, setEditingScheduled] = useState<any>(null);
   const [editScheduledText, setEditScheduledText] = useState('');
 
+  const [isBlockedLocally, setIsBlockedLocally] = useState(false);
+  useEffect(() => {
+    const partner = selectedUser || activeConversation?.otherUser;
+    setIsBlockedLocally(!!partner?.isBlocked);
+  }, [selectedUser, activeConversation]);
+
   // DOSYA YÜKLEME DURUMLARI
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -403,6 +409,22 @@ export default function ChatArea({
     openConversationInfoPanel('media');
   };
 
+  const handleBlockToggle = async () => {
+    const partner = selectedUser || activeConversation?.otherUser;
+    if (!partner) return;
+    try {
+      if (isBlockedLocally) {
+        await api.delete(`/users/${partner.id}/block`);
+        setIsBlockedLocally(false);
+      } else {
+        await api.post(`/users/${partner.id}/block`);
+        setIsBlockedLocally(true);
+      }
+    } catch {
+      alert(isBlockedLocally ? 'Engel kaldırılamadı.' : 'Kullanıcı engellenemedi.');
+    }
+  };
+
   const uploadVoiceMessage = async (audioBlob: Blob) => {
     if (!activeConversation?.id || audioBlob.size === 0) return;
     setIsUploading(true);
@@ -583,6 +605,7 @@ export default function ChatArea({
 
   const scrollToMessage = (messageId?: string) => {
     if (!messageId || !messagesListRef.current) return;
+    setIsConversationInfoOpen(false);
     const target = messagesListRef.current.querySelector(`[data-message-id="${messageId}"]`);
     if (!target) return;
     target.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -669,7 +692,7 @@ export default function ChatArea({
               <h2 style={{ margin: 0, fontSize: '16px', color: textColor, fontWeight: '600', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {activeConversation?.isGroup ? activeConversation?.name : chatPartner?.username}
               </h2>
-              {!activeConversation?.isGroup && partnerStatus && (
+              {!activeConversation?.isGroup && partnerStatus && !(chatPartner?.isBlocked || chatPartner?.blockedByOther) && (
                 <div style={{ marginTop: '2px', fontSize: '11px', color: typingUsername || chatPartner?.isOnline ? '#00a884' : iconColor, display: 'flex', alignItems: 'center', gap: '6px' }}>
                   {typingUsername && <span className="typing-dots" aria-hidden="true"><i /><i /><i /></span>}
                   <span>{partnerStatus}</span>
@@ -694,6 +717,11 @@ export default function ChatArea({
                     <button className="msg-dropdown-btn" onClick={() => { onToggleConversationPin(activeConversation.id); setIsChatMenuOpen(false); }}>{activeConversation.isPinned ? '📌 Sabitlemeyi kaldır' : '📌 Sohbeti sabitle'}</button>
                     <button className="msg-dropdown-btn" onClick={() => { onToggleConversationArchive(activeConversation.id); setIsChatMenuOpen(false); }}>{activeConversation.isArchived ? '🗄️ Arşivden çıkar' : '🗄️ Arşivle'}</button>
                     <button className="msg-dropdown-btn" onClick={handleDisappearingMode}>⏳ Kaybolan mesaj modu</button>
+                    {!activeConversation.isGroup && (
+                      <button className="msg-dropdown-btn danger-text" onClick={() => { handleBlockToggle(); setIsChatMenuOpen(false); }}>
+                        {isBlockedLocally ? '✅ Engeli Kaldır' : '🚫 Kişiyi Engelle'}
+                      </button>
+                    )}
                   </div>
                 </>
               )}
@@ -900,7 +928,7 @@ export default function ChatArea({
             }
 
             const timeString = msg.createdAt ? new Date(msg.createdAt).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
-            const isNearBottom = index >= timelineItemsWithDateSeparators.length - 2 && timelineItemsWithDateSeparators.length > 5;
+            const isNearBottom = index >= timelineItemsWithDateSeparators.length - 5 && timelineItemsWithDateSeparators.length > 5;
 
             const isDeletedForEveryone = msg.content === "🚫 Bu mesaj silindi";
 
@@ -1020,6 +1048,24 @@ export default function ChatArea({
               </div>
             );
           })}
+          {isBlockedLocally && (
+            <div style={{ display: 'flex', justifyContent: 'center', margin: '15px 0', width: '100%' }}>
+              <div style={{
+                background: isDarkMode ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)',
+                color: iconColor,
+                padding: '8px 16px',
+                borderRadius: '12px',
+                fontSize: '13px',
+                fontStyle: 'italic',
+                textAlign: 'center',
+                maxWidth: '85%',
+                boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
+                opacity: 0.85
+              }}>
+                Bu kullanıcıyı engellediniz.
+              </div>
+            </div>
+          )}
           <div ref={messagesEndRef} />
         </div>
 
@@ -1134,7 +1180,26 @@ export default function ChatArea({
         {/* ========================================================= */}
         {/* ALT KISIM: YAZMA VE ARAÇLAR ALANI */}
         {/* ========================================================= */}
-        <div className="input-area" style={{ display: 'flex', alignItems: 'center', width: '100%', gap: '12px', padding: '12px 20px', background: panelBg, borderTop: `1px solid ${borderColor}`, position: 'relative' }}>
+        {isBlockedLocally ? (
+          <div className="input-area" style={{ display: 'flex', alignItems: 'center', width: '100%', gap: '12px', padding: '12px 20px', background: panelBg, borderTop: `1px solid ${borderColor}`, position: 'relative', justifyContent: 'center' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', padding: '10px 15px', background: isDarkMode ? '#2c1a1a' : '#ffebee', borderRadius: '12px', border: `1px solid ${isDarkMode ? '#5c2222' : '#ffcdd2'}`, color: isDarkMode ? '#ff8a80' : '#c62828', fontSize: '14px', fontWeight: 600 }}>
+              <span>🚫 Bu kullanıcıyı engellediniz.</span>
+              <button 
+                onClick={handleBlockToggle} 
+                style={{ background: '#e53935', color: 'white', border: 'none', borderRadius: '8px', padding: '6px 14px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px', flexShrink: 0 }}
+              >
+                Engeli Kaldır
+              </button>
+            </div>
+          </div>
+        ) : chatPartner?.blockedByOther ? (
+          <div className="input-area" style={{ display: 'flex', alignItems: 'center', width: '100%', gap: '12px', padding: '12px 20px', background: panelBg, borderTop: `1px solid ${borderColor}`, position: 'relative', justifyContent: 'center' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', padding: '10px 15px', background: isDarkMode ? '#222' : '#f5f5f5', borderRadius: '12px', border: `1px solid ${borderColor}`, color: iconColor, fontSize: '14px', fontWeight: 600 }}>
+              <span>🚫 Bu kullanıcıya mesaj gönderemezsiniz.</span>
+            </div>
+          </div>
+        ) : (
+          <div className="input-area" style={{ display: 'flex', alignItems: 'center', width: '100%', gap: '12px', padding: '12px 20px', background: panelBg, borderTop: `1px solid ${borderColor}`, position: 'relative' }}>
           {isUploading && (
             <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '3px', background: borderColor }}>
               <div style={{ width: `${uploadProgress}%`, height: '100%', background: '#00a884', transition: 'width 0.15s ease' }} />
@@ -1265,7 +1330,8 @@ export default function ChatArea({
             <button onClick={() => setIsScheduling(!isScheduling)} style={{ background: '#009071', color: 'white', border: 'none', borderLeft: '1px solid rgba(255,255,255,0.2)', padding: '10px 12px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>▼</button>
           </div>
 
-        </div>
+          </div>
+        )}
 
         <style>{`
           .msg-dropdown-btn { width: 100%; text-align: left; padding: 12px 15px; border: none; background: transparent; color: ${textColor}; font-size: 14px; cursor: pointer; transition: background 0.2s; }
@@ -1331,6 +1397,16 @@ export default function ChatArea({
               {activeConversation?.isGroup && (
                 <button onClick={openGroupSettings} style={{ marginTop: '15px', padding: '8px 16px', borderRadius: '8px', border: `1px solid ${borderColor}`, background: panelBg, color: textColor, cursor: 'pointer', fontWeight: 600 }}>
                   ⚙️ Grup Ayarları
+                </button>
+              )}
+
+              {/* BİREYSEL SOHBETLER İÇİN ENGELLE BUTONU */}
+              {!activeConversation?.isGroup && (selectedUser || activeConversation?.otherUser) && (
+                <button 
+                  onClick={handleBlockToggle} 
+                  style={{ marginTop: '15px', padding: '8px 16px', borderRadius: '8px', border: `1px solid ${isBlockedLocally ? '#00a884' : '#e53935'}`, background: panelBg, color: isBlockedLocally ? '#00a884' : '#e53935', cursor: 'pointer', fontWeight: 600 }}
+                >
+                  {isBlockedLocally ? '✅ Engeli Kaldır' : '🚫 Kişiyi Engelle'}
                 </button>
               )}
             </div>

@@ -50,6 +50,31 @@ export default function Sidebar({
   const [isStarredPanelOpen, setIsStarredPanelOpen] = useState(false);
   const [starredMessages, setStarredMessages] = useState<Message[]>([]);
   const [isLoadingStarred, setIsLoadingStarred] = useState(false);
+  
+  const [isBlockedUsersView, setIsBlockedUsersView] = useState(false);
+  const [blockedUsers, setBlockedUsers] = useState<any[]>([]);
+  const [isBlockedUsersLoading, setIsBlockedUsersLoading] = useState(false);
+
+  const fetchBlockedUsers = async () => {
+    setIsBlockedUsersLoading(true);
+    try {
+      const res = await api.get('/users/blocked/list');
+      setBlockedUsers(res.data);
+    } catch {
+      console.error("Engellenen kullanıcılar getirilemedi.");
+    } finally {
+      setIsBlockedUsersLoading(false);
+    }
+  };
+
+  const handleUnblock = async (id: string) => {
+    try {
+      await api.delete(`/users/${id}/block`);
+      setBlockedUsers(prev => prev.filter(u => u.id !== id));
+    } catch {
+      alert("Engel kaldırılamadı.");
+    }
+  };
 
   const panelBg = isDarkMode ? '#202c33' : '#f0f2f5';
   const textColor = isDarkMode ? '#e9edef' : '#111b21';
@@ -163,6 +188,7 @@ export default function Sidebar({
     setIsCallsView(false);
     setIsArchiveView(false);
     setIsStarredPanelOpen(false);
+    setIsBlockedUsersView(false);
   };
 
   const startContactChat = (user: User) => {
@@ -227,10 +253,18 @@ export default function Sidebar({
 
         <button
           title="Aramalar"
-          onClick={() => { setIsCallsView(true); setIsArchiveView(false); setIsContactsListView(false); setIsStarredPanelOpen(false); setIsSidebarMenuOpen(false); }}
+          onClick={() => { setIsCallsView(true); setIsArchiveView(false); setIsContactsListView(false); setIsStarredPanelOpen(false); setIsSidebarMenuOpen(false); setIsBlockedUsersView(false); }}
           style={{ width: '38px', height: '38px', borderRadius: '12px', border: 'none', background: isCallsView ? '#00a884' : 'transparent', color: isCallsView ? 'white' : iconColor, cursor: 'pointer', fontSize: '18px' }}
         >
           ☎
+        </button>
+
+        <button
+          title="Engellenen Kullanıcılar"
+          onClick={() => { setIsBlockedUsersView(true); setIsCallsView(false); setIsArchiveView(false); setIsContactsListView(false); setIsStarredPanelOpen(false); setIsSidebarMenuOpen(false); fetchBlockedUsers(); }}
+          style={{ width: '38px', height: '38px', borderRadius: '12px', border: 'none', background: isBlockedUsersView ? '#00a884' : 'transparent', color: isBlockedUsersView ? 'white' : iconColor, cursor: 'pointer', fontSize: '20px' }}
+        >
+          🚫
         </button>
 
         <button
@@ -245,12 +279,12 @@ export default function Sidebar({
       <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
       <div className="sidebar-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '15px 20px', background: panelBg, borderBottom: `1px solid ${borderColor}` }}>
         <h2 style={{ margin: 0, fontSize: '22px', color: textColor, fontWeight: 'bold' }}>
-          {isContactsListView ? 'Kayıtlı Kullanıcılar' : isCallsView ? 'Aramalar' : isArchiveView ? 'Arşiv' : 'Sohbetler'}
+          {isBlockedUsersView ? 'Engellenenler' : isContactsListView ? 'Kayıtlı Kullanıcılar' : isCallsView ? 'Aramalar' : isArchiveView ? 'Arşiv' : 'Sohbetler'}
         </h2>
 
         <div style={{ display: 'flex', gap: '4px' }}>
-          {(isArchiveView || isContactsListView || isCallsView) && (
-            <Button variant="icon" onClick={() => { setIsArchiveView(false); setIsContactsListView(false); setIsCallsView(false); }} title="Sohbetlere dön" style={{ color: iconColor }} icon={<span style={{ fontSize: '20px' }}>←</span>} />
+          {(isArchiveView || isContactsListView || isCallsView || isBlockedUsersView) && (
+            <Button variant="icon" onClick={() => { setIsArchiveView(false); setIsContactsListView(false); setIsCallsView(false); setIsBlockedUsersView(false); }} title="Sohbetlere dön" style={{ color: iconColor }} icon={<span style={{ fontSize: '20px' }}>←</span>} />
           )}
           <Button
             variant="icon"
@@ -438,6 +472,36 @@ export default function Sidebar({
           </div>
         )}
 
+        {isBlockedUsersView && (
+          <div style={{ position: 'absolute', inset: 0, zIndex: 45, background: isDarkMode ? '#111b21' : '#ffffff', color: textColor, overflowY: 'auto' }}>
+            <div style={{ padding: '15px 20px', borderBottom: `1px solid ${borderColor}` }}>
+               <h3 style={{ margin: 0, fontSize: '15px', color: '#00a884', fontWeight: 'bold' }}>Engellenen Kullanıcılar</h3>
+               <p style={{ margin: '5px 0 0', fontSize: '12px', color: iconColor }}>Engellediğiniz kullanıcıların engelini buradan kaldırabilirsiniz.</p>
+            </div>
+            {isBlockedUsersLoading ? (
+              <div style={{ padding: '18px', textAlign: 'center', color: iconColor, fontSize: '13px' }}>Yükleniyor...</div>
+            ) : blockedUsers.length > 0 ? (
+              blockedUsers.map(user => (
+                <div key={user.id} className="user-item" style={{ color: textColor, cursor: 'default', justifyContent: 'space-between', alignItems: 'center', paddingRight: '15px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <div className="avatar-small" style={{ background: '#00a884', color: 'white', position: 'relative', overflow: 'hidden' }}>
+                      {user.avatarUrl ? <img src={user.avatarUrl} alt="" style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }} /> : user.username.charAt(0).toUpperCase()}
+                    </div>
+                    <div className="user-info">
+                      <span className="user-name">{user.username}</span>
+                    </div>
+                  </div>
+                  <button onClick={() => handleUnblock(user.id)} style={{ border: `1px solid ${borderColor}`, background: panelBg, color: textColor, borderRadius: '8px', padding: '6px 12px', fontSize: '12px', fontWeight: 600, cursor: 'pointer' }}>
+                    Engeli Kaldır
+                  </button>
+                </div>
+              ))
+            ) : (
+              <div style={{ padding: '18px', textAlign: 'center', color: iconColor, fontSize: '13px' }}>Engellenen kullanıcı yok.</div>
+            )}
+          </div>
+        )}
+
         {isGlobalSearchActive && (
           <>
           {/* Arama sonuçları normal sohbet listesinin içinde değil, üstte ayrı bir panel olarak gösterilir.
@@ -494,7 +558,7 @@ export default function Sidebar({
           </div>
           </>
         )}
-        {!isArchiveView && !isContactsListView && !isCallsView && callHistory.length > 0 && searchTerm.trim() === '' && (
+        {!isArchiveView && !isContactsListView && !isCallsView && !isBlockedUsersView && callHistory.length > 0 && searchTerm.trim() === '' && (
           <div onClick={() => { setIsCallsView(true); setIsArchiveView(false); setIsContactsListView(false); }} className="user-item" style={{ color: textColor, borderBottom: `1px solid ${borderColor}`, cursor: 'pointer' }}>
             <div className="avatar-small" style={{ background: '#00a884', color: 'white' }}>☎</div>
             <div className="user-info">
@@ -504,7 +568,7 @@ export default function Sidebar({
           </div>
         )}
 
-        {!isArchiveView && !isContactsListView && !isCallsView && archivedConversations.length > 0 && searchTerm.trim() === '' && (
+        {!isArchiveView && !isContactsListView && !isCallsView && !isBlockedUsersView && archivedConversations.length > 0 && searchTerm.trim() === '' && (
           <div onClick={() => { setIsArchiveView(true); setIsCallsView(false); setIsContactsListView(false); }} className="user-item" style={{ color: textColor, borderBottom: `1px solid ${borderColor}`, cursor: 'pointer' }}>
             <div className="avatar-small" style={{ background: '#607d8b', color: 'white' }}>🗄️</div>
             <div className="user-info">

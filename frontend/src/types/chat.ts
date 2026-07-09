@@ -33,6 +33,7 @@ export interface User {
   lastSeenAt?: string;
   isOnline?: boolean;
   isBlocked?: boolean;
+  blockedByOther?: boolean;
 }
 
 export interface Conversation {

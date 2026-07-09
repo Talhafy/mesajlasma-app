@@ -2,7 +2,6 @@ import { useState } from 'react';
 import './Modals.css';
 import type { User, Conversation } from '../../types/chat';
 import Button from '../UI/Button';
-import { api } from '../../api/httpClient';
 
 interface GroupSettingsModalProps {
   setIsGroupSettingsOpen: (isOpen: boolean) => void;
@@ -18,12 +17,13 @@ interface GroupSettingsModalProps {
   usersList: User[];
   handleAddMembersToGroup: (userIds: string[]) => void;
   handleTransferAdmin: (newAdminId: string) => void;
+  startChat: (user: User) => void;
 }
 
 export default function GroupSettingsModal({
   setIsGroupSettingsOpen, activeConversation, currentUser, editGroupName,
   setEditGroupName, handleUpdateGroupName, handleUpdateGroupAvatar, groupMembers, handleRemoveMember, handleDeleteGroup,
-  usersList, handleAddMembersToGroup, handleTransferAdmin
+  usersList, handleAddMembersToGroup, handleTransferAdmin, startChat
 }: GroupSettingsModalProps) {
 
   const [showAddMember, setShowAddMember] = useState(false);
@@ -31,8 +31,6 @@ export default function GroupSettingsModal({
   const [isAvatarUploading, setIsAvatarUploading] = useState(false);
   const [isAvatarModalOpen, setIsAvatarModalOpen] = useState(false);
   const [selectedMemberProfile, setSelectedMemberProfile] = useState<User | null>(null);
-  const [blockedOverrides, setBlockedOverrides] = useState<Record<string, boolean>>({});
-  const [isBlockBusy, setIsBlockBusy] = useState(false);
 
   const isAdmin = activeConversation.adminId === currentUser?.id;
   const availableUsersToAdd = usersList.filter(u => !groupMembers.some(gm => gm.id === u.id));
@@ -41,27 +39,6 @@ export default function GroupSettingsModal({
     handleAddMembersToGroup(selectedNewMembers);
     setShowAddMember(false);
     setSelectedNewMembers([]);
-  };
-
-  const isMemberBlocked = (member: User) => blockedOverrides[member.id] ?? member.isBlocked ?? false;
-
-  const toggleMemberBlock = async (member: User) => {
-    const nextBlockedState = !isMemberBlocked(member);
-    setIsBlockBusy(true);
-    try {
-      if (nextBlockedState) {
-        await api.post(`/users/${member.id}/block`);
-      } else {
-        await api.delete(`/users/${member.id}/block`);
-      }
-
-      setBlockedOverrides((previous) => ({ ...previous, [member.id]: nextBlockedState }));
-      setSelectedMemberProfile((previous) => previous?.id === member.id ? { ...previous, isBlocked: nextBlockedState } : previous);
-    } catch {
-      alert(nextBlockedState ? 'Kullanıcı engellenemedi.' : 'Engel kaldırılamadı.');
-    } finally {
-      setIsBlockBusy(false);
-    }
   };
 
   return (
@@ -154,7 +131,7 @@ export default function GroupSettingsModal({
                   <div key={member.id} className="member-list-item">
                     <button
                       className="member-info"
-                      onClick={() => setSelectedMemberProfile({ ...member, isBlocked: isMemberBlocked(member) })}
+                      onClick={() => setSelectedMemberProfile(member)}
                       style={{ border: 'none', background: 'transparent', padding: 0, cursor: 'pointer', textAlign: 'left' }}
                       title="Profili görüntüle"
                     >
@@ -163,11 +140,6 @@ export default function GroupSettingsModal({
                     </button>
 
                     <div className="member-actions">
-                      {!isMe && (
-                        <button onClick={() => void toggleMemberBlock(member)} className="action-btn-outline" disabled={isBlockBusy}>
-                          {isMemberBlocked(member) ? 'Engeli Kaldır' : 'Engelle'}
-                        </button>
-                      )}
 
                       {isAdmin && !isMe && (
                         <button onClick={() => handleTransferAdmin(member.id)} className="action-btn-outline">
@@ -295,8 +267,16 @@ export default function GroupSettingsModal({
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
               <button className="action-btn-outline" onClick={() => setSelectedMemberProfile(null)}>Kapat</button>
               {selectedMemberProfile.id !== currentUser?.id && (
-                <button className={isMemberBlocked(selectedMemberProfile) ? 'action-btn-outline' : 'action-btn-danger'} onClick={() => void toggleMemberBlock(selectedMemberProfile)} disabled={isBlockBusy}>
-                  {isMemberBlocked(selectedMemberProfile) ? 'Engeli Kaldır' : 'Engelle'}
+                <button
+                  className="modern-primary-btn"
+                  onClick={() => {
+                    startChat(selectedMemberProfile);
+                    setSelectedMemberProfile(null);
+                    setIsGroupSettingsOpen(false);
+                  }}
+                  style={{ padding: '6px 12px', fontSize: '13px' }}
+                >
+                  💬 Sohbet Başlat
                 </button>
               )}
             </div>

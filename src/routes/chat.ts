@@ -64,10 +64,16 @@ router.get('/users', async (req: CustomRequest, res: Response): Promise<any> => 
       where: { NOT: { id: currentUserId } },
       select: { id: true, username: true, email: true, avatarFileKey: true, lastSeenAt: true }
     });
-    const responseUsers = await Promise.all(users.map(async (user) => ({
-      ...user,
-      avatarUrl: user.avatarFileKey ? await createSignedFileUrl(user.avatarFileKey) : null
-    })));
+    const responseUsers = await Promise.all(users.map(async (user) => {
+      const blockedRow = await prisma.blockedUser.findUnique({
+        where: { userId_blockedId: { userId: currentUserId, blockedId: user.id } }
+      });
+      return {
+        ...user,
+        avatarUrl: user.avatarFileKey ? await createSignedFileUrl(user.avatarFileKey) : null,
+        isBlocked: !!blockedRow
+      };
+    }));
     return res.status(200).json(responseUsers);
   } catch (error) {
     return res.status(500).json({ error: "Kullanıcılar getirilemedi." });
@@ -139,6 +145,12 @@ router.post('/users/:id/block', validateRequest({ params: chatSchemas.idParams }
       update: {}
     });
 
+    const io = req.app.get('io');
+    if (io) {
+      io.to(targetId).emit('user_blocked_you', { blockerId: currentUserId });
+      io.to(currentUserId).emit('user_blocked_target', { targetId });
+    }
+
     return res.status(200).json({ isBlocked: true });
   } catch (error) {
     return res.status(500).json({ error: "Engelleme başarısız." });
@@ -154,6 +166,12 @@ router.delete('/users/:id/block', validateRequest({ params: chatSchemas.idParams
     await prisma.blockedUser.deleteMany({
       where: { userId: currentUserId, blockedId: targetId }
     });
+
+    const io = req.app.get('io');
+    if (io) {
+      io.to(targetId).emit('user_unblocked_you', { blockerId: currentUserId });
+      io.to(currentUserId).emit('user_unblocked_target', { targetId });
+    }
 
     return res.status(200).json({ isBlocked: false });
   } catch (error) {
@@ -192,12 +210,25 @@ router.get('/conversations', async (req: CustomRequest, res: Response): Promise<
       const otherParticipant = conversation.isGroup
         ? null
         : conversation.participants.find((participant) => participant.userId !== userId);
+      let isBlocked = false;
+      if (otherParticipant?.user) {
+        const blockedRow = await prisma.blockedUser.findUnique({
+          where: {
+            userId_blockedId: {
+              userId,
+              blockedId: otherParticipant.user.id
+            }
+          }
+        });
+        isBlocked = !!blockedRow;
+      }
       const otherUser = otherParticipant?.user
         ? {
             ...otherParticipant.user,
             avatarUrl: otherParticipant.user.avatarFileKey
               ? await createSignedFileUrl(otherParticipant.user.avatarFileKey)
-              : null
+              : null,
+            isBlocked
           }
         : null;
       const lastMessage = conversation.messages[0]
@@ -366,7 +397,16 @@ router.post('/conversations/direct', validateRequest({ body: chatSchemas.directC
       });
     }
 
-    return res.status(200).json(conversation);
+    const isPinned = conversation.pinnedByIds.includes(currentUserId);
+    const isArchived = conversation.archivedByIds.includes(currentUserId);
+    const isMuted = conversation.mutedByIds.includes(currentUserId);
+
+    return res.status(200).json({
+      ...conversation,
+      isPinned,
+      isArchived,
+      isMuted
+    });
   } catch (error) {
     logger.error({ event: 'chat.direct_conversation_failed', err: error, userId: req.user?.userId, ip: req.ip }, 'Direct conversation creation failed');
     return res.status(500).json({ error: 'Sohbet odası oluşturulamadı.' });
@@ -383,10 +423,37 @@ router.post('/messages', validateRequest({ body: chatSchemas.message }), async (
       where: { id: conversationId }, include: { participants: true }
     });
     if (!conversation) return res.status(404).json({ error: "Sohbet bulunamadı." });
-    // Mesaj gönderme yetkisi frontend'den gelen senderId'ye göre değil,
-    // JWT'den çıkan senderId'nin gerçekten bu konuşmanın katılımcısı olmasına göre verilir.
     if (!conversation.participants.some((participant) => participant.userId === senderId)) {
       return res.status(403).json({ error: "Bu sohbete mesaj gönderme yetkiniz yok." });
+    }
+
+    if (!conversation.isGroup) {
+      const otherParticipant = conversation.participants.find((p) => p.userId !== senderId);
+      if (otherParticipant) {
+        const blockedByOther = await prisma.blockedUser.findUnique({
+          where: {
+            userId_blockedId: {
+              userId: otherParticipant.userId,
+              blockedId: senderId
+            }
+          }
+        });
+        if (blockedByOther) {
+          return res.status(403).json({ error: "Bu kullanıcıya mesaj gönderemezsiniz çünkü engellendiniz." });
+        }
+
+        const blockedByMe = await prisma.blockedUser.findUnique({
+          where: {
+            userId_blockedId: {
+              userId: senderId,
+              blockedId: otherParticipant.userId
+            }
+          }
+        });
+        if (blockedByMe) {
+          return res.status(403).json({ error: "Bu kullanıcıyı engellediniz. Mesaj göndermek için engeli kaldırın." });
+        }
+      }
     }
 
     if (replyToId) {
