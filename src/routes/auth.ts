@@ -98,18 +98,49 @@ router.post('/login', requireTrustedOrigin, validateRequest({ body: authSchemas.
       where: { OR: [{ email: identifier }, { username: identifier }] }
     });
 
-    if (!user || !(await bcrypt.compare(password, user.password_hash))) {
+    if (!user) {
+      // Zamanlama analizini (timing attack) zorlaştırmak için sabit/rastgele gecikme ekliyoruz.
+      const fakeDelay = 200 + Math.floor(Math.random() * 300);
+      await new Promise((resolve) => setTimeout(resolve, fakeDelay));
+      
       logger.warn(authLogContext(req, {
         event: 'auth.login_failed',
-        reason: 'invalid_credentials'
+        reason: 'user_not_found'
       }), 'Login failed');
+      return res.status(401).json({ error: 'Giriş bilgileri veya şifre hatalı.' });
+    }
+
+    // Hatalı giriş denemesi varsa progresif gecikme (exponential backoff) uygula (1s, 2s, 4s, 8s, maks 10s).
+    // Bu sayede saldırganın hesabı kilitleyerek DoS yapması engellenirken kaba kuvvet hız limiti sağlanır.
+    if (user.failedLoginAttempts > 0) {
+      const delayMs = Math.min(1000 * Math.pow(2, user.failedLoginAttempts - 1), 10000);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+
+    const isMatch = await bcrypt.compare(password, user.password_hash);
+    if (!isMatch) {
+      const nextAttempts = user.failedLoginAttempts + 1;
+
+      await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          failedLoginAttempts: nextAttempts
+        }
+      });
+
+      logger.warn(authLogContext(req, {
+        event: 'auth.login_failed',
+        userId: user.id,
+        reason: 'invalid_credentials',
+        failedAttempts: nextAttempts
+      }), 'Login failed');
+
       return res.status(401).json({ error: 'Giriş bilgileri veya şifre hatalı.' });
     }
 
     const refreshToken = createRefreshToken();
     const refreshExpiresAt = getRefreshExpiry();
-    // Login sırasında yeni refresh session kaydı açılır.
-    // Eski süresi dolmuş kayıtları aynı transaction içinde temizliyoruz; adapter-pg uyarılarını azaltmak için sorgular sıralı.
+    
     await prisma.$transaction(async (tx) => {
       await tx.refreshSession.deleteMany({
         where: { expiresAt: { lt: new Date() } }
@@ -119,6 +150,12 @@ router.post('/login', requireTrustedOrigin, validateRequest({ body: authSchemas.
           userId: user.id,
           tokenHash: hashRefreshToken(refreshToken),
           expiresAt: refreshExpiresAt
+        }
+      });
+      await tx.user.update({
+        where: { id: user.id },
+        data: {
+          failedLoginAttempts: 0
         }
       });
     });

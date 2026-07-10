@@ -44,7 +44,7 @@
 
 @keyframes pinned-message-flash {
   0%, 100% { box-shadow: 0 1px 1px rgba(0,0,0,0.1); }
-  30% { box-shadow: 0 0 0 4px rgba(0, 168, 132, 0.22), 0 8px 24px rgba(0,0,0,0.18); }
+  30% { box-shadow: 0 0 0 4px rgba(249, 115, 22, 0.22), 0 8px 24px rgba(0,0,0,0.18); }
 }
 
 .message-bubble { 
@@ -56,7 +56,7 @@
   word-break: break-word; 
   white-space: pre-wrap;  
 }
-.me .message-bubble { background: #dcf8c6; border-top-right-radius: 0; }
+.me .message-bubble { background: #ffe3c2; border-top-right-radius: 0; }
 .them .message-bubble { background: #fff; border-top-left-radius: 0; }
 
 .input-area {
@@ -120,7 +120,7 @@ body.dark-theme .empty-chat-state p {
 .me .message-meta { color: #667781; }   
 
 .message-ticks { font-size: 13px; font-weight: bold; margin-left: 2px; }
-.message-ticks.read { color: #53bdeb; }
+.message-ticks.read { color: #f97316; }
 
 /* =========================================
    🌙 KARANLIK MOD (DARK THEME) RENKLERİ
@@ -128,7 +128,7 @@ body.dark-theme .empty-chat-state p {
 
 body.dark-theme .me .message-meta { color: rgba(255, 255, 255, 0.7); }
 body.dark-theme .them .message-meta { color: #8696a0; }
-body.dark-theme .message-ticks.read { color: #34b7f1; }
+body.dark-theme .message-ticks.read { color: #f97316; }
 
 /* =========================================
    GÜNCEL SOHBET ALANI VE AÇILIR MENÜ (MODAL) RENKLERİ
@@ -149,3 +149,183 @@ body.dark-theme .chat-input::placeholder { color: #8696a0; }
 body.dark-theme .theme-modal { background-color: #233138; border: 1px solid #2a3942; }
 body.dark-theme .theme-modal-item { background-color: #111b21; }
 body.dark-theme .theme-text-main { color: #e9edef !important; }
+
+/* =========================================
+   ⚡ SKELETON LOADING EFFECTS
+========================================= */
+.skeleton-row {
+  display: flex;
+  width: 100%;
+  margin-bottom: 16px;
+}
+.skeleton-row.me { justify-content: flex-end; }
+.skeleton-row.them { justify-content: flex-start; }
+
+.skeleton-bubble {
+  min-width: 140px;
+  height: 60px;
+  border-radius: 12px;
+  background: linear-gradient(90deg, #e4e6eb 25%, #f2f3f5 50%, #e4e6eb 75%);
+  background-size: 200% 100%;
+  animation: shimmer-anim 1.5s infinite linear;
+}
+body.dark-theme .skeleton-bubble {
+  background: linear-gradient(90deg, #202c33 25%, #2a3942 50%, #202c33 75%);
+  background-size: 200% 100%;
+}
+.skeleton-row.me .skeleton-bubble {
+  width: 45%;
+  height: 48px;
+  border-top-right-radius: 0;
+}
+.skeleton-row.them .skeleton-bubble {
+  width: 55%;
+  height: 64px;
+  border-top-left-radius: 0;
+}
+
+@keyframes shimmer-anim {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* =========================================
+   🖼️ LIGHTBOX OVERLAY (IMAGE PREVIEW)
+========================================= */
+.lightbox-overlay {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(11, 20, 26, 0.88);
+  backdrop-filter: blur(12px);
+  z-index: 50000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  animation: fadeIn 0.22s ease-out;
+}
+.lightbox-img {
+  max-width: 90%;
+  max-height: 90vh;
+  border-radius: 16px;
+  object-fit: contain;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+  transform: scale(0.95);
+  animation: zoomIn 0.22s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+.lightbox-close-btn {
+  position: absolute;
+  top: 24px;
+  right: 24px;
+  background: rgba(255, 255, 255, 0.08);
+  border: none;
+  color: #ffffff;
+  font-size: 22px;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease-in-out;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+.lightbox-close-btn:hover {
+  background: rgba(255, 255, 255, 0.18);
+  transform: scale(1.05);
+}
+
+@keyframes zoomIn {
+  to { transform: scale(1); }
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* =========================================
+   📱 MOBILE TOUCH TWEAKS
+========================================= */
+.mobile-back-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: all 0.2s ease-in-out;
+  flex-shrink: 0;
+}
+.mobile-back-btn:hover {
+  background-color: rgba(134, 150, 160, 0.15);
+}
+
+/* =========================================
+   🌊 MESAJ GİRİŞ ANİMASYONLARI (MICRO-INTERACTIONS)
+========================================= */
+.message-row {
+  animation: bubble-entrance 0.28s cubic-bezier(0.175, 0.885, 0.32, 1.1) forwards;
+  transform-origin: bottom center;
+}
+
+@keyframes bubble-entrance {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* =========================================
+   📎 FILE UPLOAD PREVIEW & PROGRESS UX
+========================================= */
+.file-preview-banner {
+  position: absolute;
+  left: 20px;
+  background-color: var(--input-bg);
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  z-index: 10;
+  box-shadow: 0 -4px 15px rgba(0,0,0,0.08);
+  animation: slideUpFade 0.24s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes slideUpFade {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.upload-progress-line {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background-color: rgba(134, 150, 160, 0.12);
+  overflow: hidden;
+}
+
+.upload-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--primary-color) 0%, var(--primary-hover) 50%, var(--primary-color) 100%);
+  background-size: 200% 100%;
+  animation: shimmer-anim 1.5s infinite linear;
+  transition: width 0.18s ease-out;
+}

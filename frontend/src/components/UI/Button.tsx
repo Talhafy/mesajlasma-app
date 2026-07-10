@@ -12,6 +12,7 @@ interface ButtonProps {
   disabled?: boolean;
   title?: string;
   style?: React.CSSProperties; // YENİ: Dışarıdan renk vb. müdahaleler için
+  'aria-label'?: string; // YENİ: Erişilebilirlik desteği
 }
 
 export default function Button({
@@ -24,7 +25,8 @@ export default function Button({
   fullWidth = false,
   disabled = false,
   title,
-  style
+  style,
+  'aria-label': ariaLabel
 }: ButtonProps) {
 
   const btnClasses = `custom-btn ${variant} ${size === 'small' ? 'small' : ''} ${size === 'large' ? 'large' : ''} ${fullWidth ? 'full-width' : ''}`;
@@ -37,6 +39,7 @@ export default function Button({
       disabled={disabled}
       title={title}
       style={style}
+      aria-label={ariaLabel}
     >
       {/* Eğer sol tarafa bir ikon verildiyse önce onu çiz */}
       {icon && <span className="btn-icon-wrapper">{icon}</span>}

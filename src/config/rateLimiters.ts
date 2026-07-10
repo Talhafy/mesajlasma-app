@@ -90,3 +90,17 @@ export const uploadLimiter = rateLimit({
     'Çok kısa sürede çok fazla dosya yüklediniz. Lütfen birkaç dakika bekleyin.'
   )
 });
+
+// Genel API endpoint'leri için hız sınırlayıcı (DDOS ve abuse koruması)
+export const globalApiLimiter = rateLimit({
+  ...commonOptions,
+  windowMs: 15 * 60 * 1000, // 15 dakika
+  limit: 500, // IP başına max 500 istek
+  message: { error: 'Çok fazla API isteği gönderdiniz. Lütfen daha sonra tekrar deneyin.' },
+  handler: (req, res) => sendRateLimitResponse(
+    req,
+    res,
+    'global_api',
+    'Çok fazla API isteği gönderdiniz. Lütfen daha sonra tekrar deneyin.'
+  )
+});

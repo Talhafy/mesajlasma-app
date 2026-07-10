@@ -41,14 +41,14 @@
   width: 92px;
   height: 92px;
   border-radius: 50%;
-  background: #00a884;
+  background: #f97316;
   color: #ffffff;
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 38px;
   font-weight: 800;
-  box-shadow: 0 14px 30px rgba(0, 168, 132, 0.32);
+  box-shadow: 0 14px 30px rgba(249, 115, 22, 0.32);
 }
 
 .incoming-call-copy {

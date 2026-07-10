@@ -1,52 +1,58 @@
 import express, { Response } from 'express';
-import { Prisma } from '@prisma/client';
-import prisma from '../db';
 import { uploadSingleFile } from '../config/fileUpload';
 import { authenticateToken, CustomRequest } from '../middleware/authMiddleware';
 import { validateRequest } from '../middleware/validateRequest';
 import { chatSchemas } from '../validation/schemas';
 import {
-  createSignedFileUrl,
   uploadPrivateFile,
   withSignedFileUrl
 } from '../services/fileStorage';
 import { logger } from '../config/logger';
-import { deleteFileIfUnreferenced } from '../services/fileCleanup';
-import { isConversationMember } from '../services/conversationAccess';
 import { getAuthenticatedUserId as getUserId, getRouteParam as getParam } from '../utils/request';
+import { verifyFileSignature } from '../utils/fileValidation';
+import * as userService from '../services/userService';
+import * as conversationService from '../services/conversationService';
+import * as messageService from '../services/messageService';
 
 const router = express.Router();
-const visibleMessageWhere = () => ({
-  OR: [
-    { expiresAt: null },
-    { expiresAt: { gt: new Date() } }
-  ]
-});
-
-const withConversationAvatarUrl = async <T extends { avatarFileKey?: string | null }>(conversation: T) => ({
-  ...conversation,
-  avatarUrl: conversation.avatarFileKey ? await createSignedFileUrl(conversation.avatarFileKey) : null
-});
 
 // Bu router altındaki tüm mesaj, sohbet ve dosya endpoint'leri access token gerektirir.
 router.use(authenticateToken);
 
-// DOSYA YÜKLEME API'Sİ
+// ==========================================
+// 1. DOSYA YÜKLEME API'Sİ
+// ==========================================
 router.post('/upload', uploadSingleFile, async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     if (!req.file) return res.status(400).json({ error: "Dosya bulunamadı." });
 
+    // Multer/busboy Türkçe karakterleri latin1 olarak çözümler. 
+    // Karakter bozulmalarını (örneğin "Ekran görüntüsü" -> "Ekran gÃ¶rÃ¼ntÃ¼sÃ¼") önlemek için UTF-8'e dönüştürüyoruz.
+    const originalNameDecoded = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
+
+    // Dosya içeriğinin (magic bytes/signature) beyan edilen MIME tipi ile uyuşup uyuşmadığını doğrula.
+    // Bu sayede MIME ve uzantısı sahtelenmiş (spoofed) zararlı dosyaları kesinlikle engelleriz.
+    if (!verifyFileSignature(req.file.buffer, req.file.mimetype)) {
+      logger.warn({
+        event: 'security.file_signature_mismatch',
+        userId: req.user?.userId,
+        fileName: originalNameDecoded,
+        mimetype: req.file.mimetype
+      }, 'File signature mismatch detected');
+      return res.status(400).json({ error: 'Dosya içeriği beyan edilen dosya türü (MIME tipi) ile uyuşmuyor.' });
+    }
+
     const fileKey = await uploadPrivateFile(
       req.file.buffer,
       req.file.mimetype,
-      req.file.originalname
+      originalNameDecoded
     );
 
     const signedFile = await withSignedFileUrl({ fileKey });
     return res.status(200).json({
       fileKey,
       fileUrl: signedFile.fileUrl,
-      fileName: req.file.originalname,
+      fileName: originalNameDecoded,
       fileType: req.file.mimetype.startsWith('image/') ? 'image' :
                 req.file.mimetype.startsWith('audio/') || req.file.mimetype.startsWith('video/') ? 'audio' : 'document'
     });
@@ -56,209 +62,80 @@ router.post('/upload', uploadSingleFile, async (req: CustomRequest, res: Respons
   }
 });
 
-// KULLANICILARI LİSTELEME
+// ==========================================
+// 2. KULLANICI YÖNETİMİ API'LERİ (UserService)
+// ==========================================
+
 router.get('/users', async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const currentUserId = getUserId(req);
-    const users = await prisma.user.findMany({
-      where: { NOT: { id: currentUserId } },
-      select: { id: true, username: true, email: true, avatarFileKey: true, lastSeenAt: true }
-    });
-    const responseUsers = await Promise.all(users.map(async (user) => {
-      const blockedRow = await prisma.blockedUser.findUnique({
-        where: { userId_blockedId: { userId: currentUserId, blockedId: user.id } }
-      });
-      return {
-        ...user,
-        avatarUrl: user.avatarFileKey ? await createSignedFileUrl(user.avatarFileKey) : null,
-        isBlocked: !!blockedRow
-      };
-    }));
-    return res.status(200).json(responseUsers);
+    const users = await userService.listUsers(currentUserId);
+    return res.status(200).json(users);
   } catch (error) {
+    logger.error({ event: 'chat.list_users_failed', err: error, userId: req.user?.userId, ip: req.ip }, 'List users failed');
     return res.status(500).json({ error: "Kullanıcılar getirilemedi." });
   }
 });
 
-// TEK KULLANICI PROFİLİ (Kişiler sekmesinden "profile git" için)
 router.get('/users/:id', validateRequest({ params: chatSchemas.idParams }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const targetId = getParam(req, 'id');
     const currentUserId = getUserId(req);
-
-    const user = await prisma.user.findUnique({
-      where: { id: targetId },
-      select: { id: true, username: true, email: true, avatarFileKey: true, lastSeenAt: true, createdAt: true }
-    });
-    if (!user) return res.status(404).json({ error: "Kullanıcı bulunamadı." });
-
-    const blockedRow = await prisma.blockedUser.findUnique({
-      where: { userId_blockedId: { userId: currentUserId, blockedId: targetId } }
-    });
-
-    return res.status(200).json({
-      ...user,
-      avatarUrl: user.avatarFileKey ? await createSignedFileUrl(user.avatarFileKey) : null,
-      isBlocked: Boolean(blockedRow)
-    });
+    const profile = await userService.getUserProfile(targetId, currentUserId);
+    if (!profile) return res.status(404).json({ error: "Kullanıcı bulunamadı." });
+    return res.status(200).json(profile);
   } catch (error) {
+    logger.error({ event: 'chat.get_profile_failed', err: error, userId: req.user?.userId, targetId: req.params.id, ip: req.ip }, 'Get profile failed');
     return res.status(500).json({ error: "Kullanıcı profili alınamadı." });
   }
 });
 
-// ENGELLENEN KULLANICILARI LİSTELEME
 router.get('/users/blocked/list', async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const currentUserId = getUserId(req);
-    const rows = await prisma.blockedUser.findMany({
-      where: { userId: currentUserId },
-      include: { blocked: { select: { id: true, username: true, avatarFileKey: true } } }
-    });
-    const responseRows = await Promise.all(rows.map(async (row) => ({
-      id: row.blocked.id,
-      username: row.blocked.username,
-      avatarUrl: row.blocked.avatarFileKey ? await createSignedFileUrl(row.blocked.avatarFileKey) : null,
-      blockedAt: row.createdAt
-    })));
-    return res.status(200).json(responseRows);
+    const blockedList = await userService.getBlockedUsers(currentUserId);
+    return res.status(200).json(blockedList);
   } catch (error) {
+    logger.error({ event: 'chat.get_blocked_list_failed', err: error, userId: req.user?.userId, ip: req.ip }, 'Get blocked list failed');
     return res.status(500).json({ error: "Engellenen kullanıcılar getirilemedi." });
   }
 });
 
-// KULLANICIYI ENGELLE
 router.post('/users/:id/block', validateRequest({ params: chatSchemas.idParams }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const currentUserId = getUserId(req);
     const targetId = getParam(req, 'id');
-
-    if (currentUserId === targetId) {
-      return res.status(400).json({ error: "Kendinizi engelleyemezsiniz." });
-    }
-
-    const targetUser = await prisma.user.findUnique({ where: { id: targetId }, select: { id: true } });
-    if (!targetUser) return res.status(404).json({ error: "Kullanıcı bulunamadı." });
-
-    await prisma.blockedUser.upsert({
-      where: { userId_blockedId: { userId: currentUserId, blockedId: targetId } },
-      create: { userId: currentUserId, blockedId: targetId },
-      update: {}
-    });
-
     const io = req.app.get('io');
-    if (io) {
-      io.to(targetId).emit('user_blocked_you', { blockerId: currentUserId });
-      io.to(currentUserId).emit('user_blocked_target', { targetId });
-    }
-
-    return res.status(200).json({ isBlocked: true });
-  } catch (error) {
-    return res.status(500).json({ error: "Engelleme başarısız." });
+    const result = await userService.blockUser(currentUserId, targetId, io);
+    if (!result) return res.status(404).json({ error: "Kullanıcı bulunamadı." });
+    return res.status(200).json(result);
+  } catch (error: any) {
+    logger.error({ event: 'chat.block_user_failed', err: error, userId: req.user?.userId, targetId: req.params.id, ip: req.ip }, 'Block user failed');
+    return res.status(error.message === "Kendinizi engelleyemezsiniz." ? 400 : 500).json({ error: error.message || "Engelleme başarısız." });
   }
 });
 
-// ENGELİ KALDIR
 router.delete('/users/:id/block', validateRequest({ params: chatSchemas.idParams }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const currentUserId = getUserId(req);
     const targetId = getParam(req, 'id');
-
-    await prisma.blockedUser.deleteMany({
-      where: { userId: currentUserId, blockedId: targetId }
-    });
-
     const io = req.app.get('io');
-    if (io) {
-      io.to(targetId).emit('user_unblocked_you', { blockerId: currentUserId });
-      io.to(currentUserId).emit('user_unblocked_target', { targetId });
-    }
-
-    return res.status(200).json({ isBlocked: false });
+    const result = await userService.unblockUser(currentUserId, targetId, io);
+    return res.status(200).json(result);
   } catch (error) {
+    logger.error({ event: 'chat.unblock_user_failed', err: error, userId: req.user?.userId, targetId: req.params.id, ip: req.ip }, 'Unblock user failed');
     return res.status(500).json({ error: "Engel kaldırma başarısız." });
   }
 });
 
-// SON MESAJINA GÖRE SIRALANMIŞ GERÇEK SOHBET LİSTESİ
+// ==========================================
+// 3. SOHBET VE GRUP YÖNETİMİ API'LERİ (ConversationService)
+// ==========================================
+
 router.get('/conversations', async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const userId = getUserId(req);
-    const memberships = await prisma.participant.findMany({
-      where: { userId },
-      include: {
-        conversation: {
-          include: {
-            participants: {
-              include: {
-                user: {
-                  select: { id: true, username: true, email: true, avatarFileKey: true, lastSeenAt: true }
-                }
-              }
-            },
-            messages: {
-              where: { NOT: { deletedForIds: { has: userId } }, ...visibleMessageWhere() },
-              orderBy: { createdAt: 'desc' },
-              take: 1,
-              include: { sender: { select: { username: true } } }
-            }
-          }
-        }
-      }
-    });
-
-    const conversations = await Promise.all(memberships.map(async ({ conversation }) => {
-      const otherParticipant = conversation.isGroup
-        ? null
-        : conversation.participants.find((participant) => participant.userId !== userId);
-      let isBlocked = false;
-      if (otherParticipant?.user) {
-        const blockedRow = await prisma.blockedUser.findUnique({
-          where: {
-            userId_blockedId: {
-              userId,
-              blockedId: otherParticipant.user.id
-            }
-          }
-        });
-        isBlocked = !!blockedRow;
-      }
-      const otherUser = otherParticipant?.user
-        ? {
-            ...otherParticipant.user,
-            avatarUrl: otherParticipant.user.avatarFileKey
-              ? await createSignedFileUrl(otherParticipant.user.avatarFileKey)
-              : null,
-            isBlocked
-          }
-        : null;
-      const lastMessage = conversation.messages[0]
-        ? await withSignedFileUrl(conversation.messages[0])
-        : null;
-
-      return {
-        id: conversation.id,
-        isGroup: conversation.isGroup,
-        name: conversation.name,
-        adminId: conversation.adminId,
-        avatarFileKey: conversation.avatarFileKey,
-        avatarUrl: conversation.avatarFileKey ? await createSignedFileUrl(conversation.avatarFileKey) : null,
-        createdAt: conversation.createdAt,
-        isPinned: conversation.pinnedByIds.includes(userId),
-        isArchived: conversation.archivedByIds.includes(userId),
-        isMuted: conversation.mutedByIds.includes(userId),
-        disappearingDurationSeconds: conversation.disappearingDurationSeconds,
-        otherUser,
-        lastMessage
-      };
-    }));
-
-    conversations.sort((a, b) => {
-      if (a.isPinned !== b.isPinned) return a.isPinned ? -1 : 1;
-      const aTime = new Date(a.lastMessage?.createdAt || a.createdAt).getTime();
-      const bTime = new Date(b.lastMessage?.createdAt || b.createdAt).getTime();
-      return bTime - aTime;
-    });
-
+    const conversations = await conversationService.listConversations(userId);
     return res.status(200).json(conversations);
   } catch (error) {
     logger.error({ event: 'chat.conversations_fetch_failed', err: error, userId: req.user?.userId, ip: req.ip }, 'Conversations fetch failed');
@@ -270,21 +147,12 @@ router.put('/conversations/:id/pin', validateRequest({ params: chatSchemas.conve
   try {
     const conversationId = getParam(req, 'id');
     const userId = getUserId(req);
-    if (!(await isConversationMember(conversationId, userId))) return res.status(403).json({ error: 'Bu sohbeti sabitleme yetkiniz yok.' });
-
-    const conversation = await prisma.conversation.findUnique({ where: { id: conversationId } });
-    if (!conversation) return res.status(404).json({ error: 'Sohbet bulunamadı.' });
-    const nextPinnedByIds = conversation.pinnedByIds.includes(userId)
-      ? conversation.pinnedByIds.filter((id) => id !== userId)
-      : [...conversation.pinnedByIds, userId];
-
-    const updated = await prisma.conversation.update({
-      where: { id: conversationId },
-      data: { pinnedByIds: nextPinnedByIds }
-    });
-    return res.status(200).json({ conversationId, isPinned: updated.pinnedByIds.includes(userId) });
-  } catch {
-    return res.status(500).json({ error: 'Sohbet sabitleme durumu güncellenemedi.' });
+    const result = await conversationService.pinConversation(conversationId, userId);
+    return res.status(200).json(result);
+  } catch (error: any) {
+    logger.error({ event: 'chat.conversation_pin_failed', err: error, userId: req.user?.userId, conversationId: req.params.id, ip: req.ip }, 'Conversation pin status update failed');
+    const status = error.message.includes('yetkiniz yok') ? 403 : error.message.includes('bulunamadı') ? 404 : 500;
+    return res.status(status).json({ error: error.message || 'Sohbet sabitleme durumu güncellenemedi.' });
   }
 });
 
@@ -292,21 +160,12 @@ router.put('/conversations/:id/archive', validateRequest({ params: chatSchemas.c
   try {
     const conversationId = getParam(req, 'id');
     const userId = getUserId(req);
-    if (!(await isConversationMember(conversationId, userId))) return res.status(403).json({ error: 'Bu sohbeti arşivleme yetkiniz yok.' });
-
-    const conversation = await prisma.conversation.findUnique({ where: { id: conversationId } });
-    if (!conversation) return res.status(404).json({ error: 'Sohbet bulunamadı.' });
-    const nextArchivedByIds = conversation.archivedByIds.includes(userId)
-      ? conversation.archivedByIds.filter((id) => id !== userId)
-      : [...conversation.archivedByIds, userId];
-
-    const updated = await prisma.conversation.update({
-      where: { id: conversationId },
-      data: { archivedByIds: nextArchivedByIds }
-    });
-    return res.status(200).json({ conversationId, isArchived: updated.archivedByIds.includes(userId) });
-  } catch {
-    return res.status(500).json({ error: 'Sohbet arşiv durumu güncellenemedi.' });
+    const result = await conversationService.archiveConversation(conversationId, userId);
+    return res.status(200).json(result);
+  } catch (error: any) {
+    logger.error({ event: 'chat.conversation_archive_failed', err: error, userId: req.user?.userId, conversationId: req.params.id, ip: req.ip }, 'Conversation archive status update failed');
+    const status = error.message.includes('yetkiniz yok') ? 403 : error.message.includes('bulunamadı') ? 404 : 500;
+    return res.status(status).json({ error: error.message || 'Sohbet arşiv durumu güncellenemedi.' });
   }
 });
 
@@ -314,21 +173,12 @@ router.put('/conversations/:id/mute', validateRequest({ params: chatSchemas.conv
   try {
     const conversationId = getParam(req, 'id');
     const userId = getUserId(req);
-    if (!(await isConversationMember(conversationId, userId))) return res.status(403).json({ error: 'Bu sohbeti sessize alma yetkiniz yok.' });
-
-    const conversation = await prisma.conversation.findUnique({ where: { id: conversationId } });
-    if (!conversation) return res.status(404).json({ error: 'Sohbet bulunamadÄ±.' });
-    const nextMutedByIds = conversation.mutedByIds.includes(userId)
-      ? conversation.mutedByIds.filter((id) => id !== userId)
-      : [...conversation.mutedByIds, userId];
-
-    const updated = await prisma.conversation.update({
-      where: { id: conversationId },
-      data: { mutedByIds: nextMutedByIds }
-    });
-    return res.status(200).json({ conversationId, isMuted: updated.mutedByIds.includes(userId) });
-  } catch {
-    return res.status(500).json({ error: 'Sohbet sessize alma durumu gÃ¼ncellenemedi.' });
+    const result = await conversationService.muteConversation(conversationId, userId);
+    return res.status(200).json(result);
+  } catch (error: any) {
+    logger.error({ event: 'chat.conversation_mute_failed', err: error, userId: req.user?.userId, conversationId: req.params.id, ip: req.ip }, 'Conversation mute status update failed');
+    const status = error.message.includes('yetkiniz yok') ? 403 : error.message.includes('bulunamadı') ? 404 : 500;
+    return res.status(status).json({ error: error.message || 'Sohbet sessize alma durumu güncellenemedi.' });
   }
 });
 
@@ -340,337 +190,67 @@ router.put('/conversations/:id/disappearing', validateRequest({
     const conversationId = getParam(req, 'id');
     const userId = getUserId(req);
     const { durationSeconds } = req.body;
-    if (!(await isConversationMember(conversationId, userId))) return res.status(403).json({ error: 'Bu sohbetin kaybolan mesaj modunu değiştirme yetkiniz yok.' });
-
-    const updated = await prisma.conversation.update({
-      where: { id: conversationId },
-      data: { disappearingDurationSeconds: durationSeconds && durationSeconds > 0 ? durationSeconds : null }
-    });
-    req.app.get('io').to(conversationId).emit('sohbet_ayarlari_guncellendi', {
-      conversationId,
-      disappearingDurationSeconds: updated.disappearingDurationSeconds
-    });
-    return res.status(200).json({ conversationId, disappearingDurationSeconds: updated.disappearingDurationSeconds });
-  } catch {
-    return res.status(500).json({ error: 'Kaybolan mesaj modu güncellenemedi.' });
+    const io = req.app.get('io');
+    const result = await conversationService.updateDisappearingMode(conversationId, userId, durationSeconds, io);
+    return res.status(200).json(result);
+  } catch (error: any) {
+    logger.error({ event: 'chat.conversation_disappearing_failed', err: error, userId: req.user?.userId, conversationId: req.params.id, ip: req.ip }, 'Conversation disappearing mode update failed');
+    const status = error.message.includes('yetkiniz yok') ? 403 : 500;
+    return res.status(status).json({ error: error.message || 'Kaybolan mesaj modu güncellenemedi.' });
   }
 });
 
-// ODA BULMA / OLUŞTURMA (Birebir Sohbet Başlatma)
 router.post('/conversations/direct', validateRequest({ body: chatSchemas.directConversation }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const { targetUserId } = req.body;
     const currentUserId = getUserId(req);
-
-    if (typeof targetUserId !== 'string' || !targetUserId || targetUserId === currentUserId) {
-      return res.status(400).json({ error: "Geçerli bir hedef kullanıcı seçin." });
-    }
-
-    const targetUser = await prisma.user.findUnique({ where: { id: targetUserId }, select: { id: true } });
-    if (!targetUser) return res.status(404).json({ error: "Hedef kullanıcı bulunamadı." });
-
-    let conversation = await prisma.conversation.findFirst({
-      where: {
-        isGroup: false,
-        AND: [
-          { participants: { some: { userId: currentUserId } } },
-          { participants: { some: { userId: targetUserId } } }
-        ]
-      }
-    });
-
-    if (!conversation) {
-      // İlk kez birebir sohbet açılıyorsa önce Conversation, sonra Participant kayıtlarını oluşturuyoruz.
-      // Nested create yerine açık transaction kullanmamızın sebebi Prisma 7 adapter-pg deprecation warning'lerini azaltmak.
-      conversation = await prisma.$transaction(async (tx) => {
-        const createdConversation = await tx.conversation.create({
-          data: { isGroup: false }
-        });
-        await tx.participant.createMany({
-          data: [
-            { userId: currentUserId, conversationId: createdConversation.id },
-            { userId: targetUserId, conversationId: createdConversation.id }
-          ],
-          skipDuplicates: true
-        });
-        return createdConversation;
-      });
-    }
-
-    const isPinned = conversation.pinnedByIds.includes(currentUserId);
-    const isArchived = conversation.archivedByIds.includes(currentUserId);
-    const isMuted = conversation.mutedByIds.includes(currentUserId);
-
-    return res.status(200).json({
-      ...conversation,
-      isPinned,
-      isArchived,
-      isMuted
-    });
-  } catch (error) {
-    logger.error({ event: 'chat.direct_conversation_failed', err: error, userId: req.user?.userId, ip: req.ip }, 'Direct conversation creation failed');
-    return res.status(500).json({ error: 'Sohbet odası oluşturulamadı.' });
+    const result = await conversationService.createDirectConversation(currentUserId, targetUserId);
+    return res.status(200).json(result);
+  } catch (error: any) {
+    logger.error({ event: 'chat.direct_conversation_failed', err: error, userId: req.user?.userId, targetUserId: req.body.targetUserId, ip: req.ip }, 'Direct conversation creation failed');
+    const status = error.message.includes('Kendinizle') ? 400 : error.message.includes('bulunamadı') ? 404 : 500;
+    return res.status(status).json({ error: error.message || 'Sohbet odası oluşturulamadı.' });
   }
 });
 
-// MESAJ GÖNDERME
-router.post('/messages', validateRequest({ body: chatSchemas.message }), async (req: CustomRequest, res: Response): Promise<any> => {
-  try {
-    const { conversationId, clientId, content, replyToId, isForwarded, fileKey, fileType, fileName } = req.body;
-    const senderId = getUserId(req);
-
-    const conversation = await prisma.conversation.findUnique({
-      where: { id: conversationId }, include: { participants: true }
-    });
-    if (!conversation) return res.status(404).json({ error: "Sohbet bulunamadı." });
-    if (!conversation.participants.some((participant) => participant.userId === senderId)) {
-      return res.status(403).json({ error: "Bu sohbete mesaj gönderme yetkiniz yok." });
-    }
-
-    if (!conversation.isGroup) {
-      const otherParticipant = conversation.participants.find((p) => p.userId !== senderId);
-      if (otherParticipant) {
-        const blockedByOther = await prisma.blockedUser.findUnique({
-          where: {
-            userId_blockedId: {
-              userId: otherParticipant.userId,
-              blockedId: senderId
-            }
-          }
-        });
-        if (blockedByOther) {
-          return res.status(403).json({ error: "Bu kullanıcıya mesaj gönderemezsiniz çünkü engellendiniz." });
-        }
-
-        const blockedByMe = await prisma.blockedUser.findUnique({
-          where: {
-            userId_blockedId: {
-              userId: senderId,
-              blockedId: otherParticipant.userId
-            }
-          }
-        });
-        if (blockedByMe) {
-          return res.status(403).json({ error: "Bu kullanıcıyı engellediniz. Mesaj göndermek için engeli kaldırın." });
-        }
-      }
-    }
-
-    if (replyToId) {
-      // Yanıtlanan mesajın aynı konuşmada olduğundan emin olmazsak kullanıcı başka odadaki mesajı referanslayabilir.
-      const repliedMessage = await prisma.message.findFirst({
-        where: { id: String(replyToId), conversationId },
-        select: { id: true }
-      });
-      if (!repliedMessage) return res.status(400).json({ error: "Yanıtlanan mesaj bu sohbette bulunamadı." });
-    }
-
-    let savedMessage;
-    try {
-      // Mesajı sade create ile yazıp ilişkili sender/reply/conversation bilgisini ayrı okuyoruz.
-      // create({ include }) Prisma adapter-pg tarafında iç transaction + paralel query warning'i üretebildiği için ayrıldı.
-      const createdMessage = await prisma.message.create({
-        data: {
-          clientId,
-          content: content.trim(),
-          senderId,
-          conversationId,
-          replyToId: replyToId || null,
-          isForwarded: isForwarded || false,
-          fileKey: fileKey || null,
-          fileType: fileType || null,
-          fileName: fileName || null,
-          expiresAt: conversation.disappearingDurationSeconds
-            ? new Date(Date.now() + conversation.disappearingDurationSeconds * 1000)
-            : null
-        }
-      });
-      savedMessage = await prisma.message.findUnique({
-        where: { id: createdMessage.id },
-        include: {
-          sender: { select: { username: true } },
-          replyTo: { select: { id: true, content: true, sender: { select: { username: true } } } },
-          conversation: { select: { isGroup: true } }
-        }
-      });
-      if (!savedMessage) throw new Error('Created message could not be loaded.');
-    } catch (error) {
-      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
-        // clientId idempotency anahtarıdır. Aynı mesaj retry ile tekrar gelirse ikinci kayıt açmadan mevcut mesajı döneriz.
-        const existingMessage = await prisma.message.findUnique({
-          where: { senderId_clientId: { senderId, clientId } },
-          include: {
-            sender: { select: { username: true } },
-            replyTo: { select: { id: true, content: true, sender: { select: { username: true } } } },
-            conversation: { select: { isGroup: true } }
-          }
-        });
-        if (!existingMessage) throw error;
-        return res.status(200).json(await withSignedFileUrl(existingMessage));
-      }
-      throw error;
-    }
-
-    const responseMessage = await withSignedFileUrl(savedMessage);
-
-    const io = req.app.get('io');
-    // Mesaj hem konuşma odasına hem de kullanıcı odalarına gönderilir.
-    // Böylece aktif sohbetteki kullanıcı mesajı görür, sidebar/conversation listesi de anlık güncellenebilir.
-    const targetRooms = conversation.participants.map(p => p.userId);
-    targetRooms.push(conversationId);
-
-    io.to(targetRooms).emit('yeni_mesaj_geldi', responseMessage);
-    return res.status(201).json(responseMessage);
-  } catch (error) {
-    logger.error({ event: 'chat.message_send_failed', err: error, userId: req.user?.userId, ip: req.ip }, 'Message send failed');
-    return res.status(500).json({ error: 'Mesaj gönderilemedi.' });
-  }
-});
-
-// GEÇMİŞ MESAJLARI ÇEKME
-router.get('/conversations/:conversationId/messages', validateRequest({
-  params: chatSchemas.conversationParams,
-  query: chatSchemas.conversationMessagesQuery
-}), async (req: CustomRequest, res: Response): Promise<any> => {
-  try {
-    const conversationId = getParam(req, 'conversationId');
-    const { cursor } = req.query;
-    const userId = getUserId(req);
-
-    if (!(await isConversationMember(conversationId, userId))) {
-      return res.status(403).json({ error: "Bu sohbetin mesajlarını görüntüleme yetkiniz yok." });
-    }
-
-    const messages = await prisma.message.findMany({
-      where: {
-        conversationId,
-        NOT: { deletedForIds: { has: userId } },
-        ...visibleMessageWhere()
-      },
-      take: 50,
-      skip: cursor ? 1 : 0,
-      ...(cursor ? { cursor: { id: String(cursor) } } : {}),
-      orderBy: { createdAt: 'desc' },
-      include: {
-        sender: { select: { username: true } },
-        replyTo: { select: { id: true, content: true, sender: { select: { username: true } } } }
-      }
-    });
-
-    const responseMessages = await Promise.all(messages.reverse().map(withSignedFileUrl));
-    return res.status(200).json(responseMessages);
-  } catch (error) {
-    logger.error({ event: 'chat.messages_fetch_failed', err: error, userId: req.user?.userId, ip: req.ip }, 'Messages fetch failed');
-    return res.status(500).json({ error: 'Mesajlar yüklenemedi.' });
-  }
-});
-
-// GRUP OLUŞTURMA
 router.post('/conversations/group', validateRequest({ body: chatSchemas.group }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const { name, participantIds } = req.body;
     const currentUserId = getUserId(req);
-
-    if (typeof name !== 'string' || !name.trim()) {
-      return res.status(400).json({ error: "Grup adı boş olamaz." });
-    }
-    if (name.trim().length > 100) {
-      return res.status(400).json({ error: "Grup adı en fazla 100 karakter olabilir." });
-    }
-    if (!Array.isArray(participantIds) || participantIds.length === 0 || !participantIds.every((id) => typeof id === 'string')) {
-      return res.status(400).json({ error: "En az bir geçerli grup üyesi seçin." });
-    }
-
-    const allMemberIds = [...new Set([...participantIds, currentUserId])];
-    const existingUserCount = await prisma.user.count({ where: { id: { in: allMemberIds } } });
-    if (existingUserCount !== allMemberIds.length) {
-      return res.status(400).json({ error: "Seçilen kullanıcılardan biri bulunamadı." });
-    }
-
-    const newGroup = await prisma.$transaction(async (tx) => {
-      // Grup ve katılımcılar tek transaction'da oluşturulur; yarım grup/eksik üyelik kalmaz.
-      // Participant kayıtlarını createMany ile açıkça eklemek nested write kaynaklı adapter uyarılarını da azaltır.
-      const createdGroup = await tx.conversation.create({
-        data: {
-          isGroup: true,
-          name: name.trim(),
-          adminId: currentUserId
-        }
-      });
-      await tx.participant.createMany({
-        data: allMemberIds.map((id: string) => ({ userId: id, conversationId: createdGroup.id })),
-        skipDuplicates: true
-      });
-      return createdGroup;
-    });
-
     const io = req.app.get('io');
-    allMemberIds.filter((id) => id !== currentUserId).forEach((userId: string) => {
-      io.to(userId).emit('grup_olusturuldu', newGroup);
-    });
-
-    return res.status(201).json(await withConversationAvatarUrl(newGroup));
-  } catch (error) { return res.status(500).json({ error: "Grup oluşturulamadı." }); }
+    const result = await conversationService.createGroupConversation(currentUserId, name, participantIds, io);
+    return res.status(201).json(result);
+  } catch (error: any) {
+    logger.error({ event: 'chat.group_creation_failed', err: error, userId: req.user?.userId, ip: req.ip }, 'Group creation failed');
+    const status = error.message.includes('bulunamadı') ? 400 : 500;
+    return res.status(status).json({ error: error.message || "Grup oluşturulamadı." });
+  }
 });
 
-// KULLANICININ GRUPLARINI GETİRME
 router.get('/conversations/groups', async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const currentUserId = getUserId(req);
-
-    const myGroups = await prisma.participant.findMany({
-      where: {
-        userId: currentUserId,
-        conversation: { isGroup: true }
-      },
-      include: { conversation: true }
-    });
-
-    const groups = await Promise.all(myGroups.map(p => withConversationAvatarUrl(p.conversation)));
+    const groups = await conversationService.listGroupConversations(currentUserId);
     return res.status(200).json(groups);
   } catch (error) {
+    logger.error({ event: 'chat.groups_fetch_failed', err: error, userId: req.user?.userId, ip: req.ip }, 'Groups fetch failed');
     return res.status(500).json({ error: "Gruplar getirilemedi." });
   }
 });
 
-// GRUBUN İÇİNDEKİ KİŞİLERİ ÇEKME
 router.get('/conversations/group/:id/participants', validateRequest({ params: chatSchemas.groupParams }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const groupId = getParam(req, 'id');
     const currentUserId = getUserId(req);
-    if (!(await isConversationMember(groupId, currentUserId))) {
-      return res.status(403).json({ error: "Bu grubun üyelerini görüntüleme yetkiniz yok." });
-    }
-
-    const participants = await prisma.participant.findMany({
-      where: { conversationId: groupId },
-      include: { user: { select: { id: true, username: true, email: true, avatarFileKey: true, lastSeenAt: true } } }
-    });
-
-    // Kişiler sekmesinde "Engelle/Engeli Kaldır" butonunun doğru durumda açılması için
-    // mevcut kullanıcının kimleri engellediğini tek sorguda çekip üye listesine ekliyoruz.
-    const blockedRows = await prisma.blockedUser.findMany({
-      where: { userId: currentUserId },
-      select: { blockedId: true }
-    });
-    const blockedIds = new Set(blockedRows.map((row: { blockedId: string }) => row.blockedId));
-
-    const responseMembers = await Promise.all(participants.map(async (p) => ({
-      id: p.user.id,
-      username: p.user.username,
-      email: p.user.email,
-      lastSeenAt: p.user.lastSeenAt,
-      avatarUrl: p.user.avatarFileKey ? await createSignedFileUrl(p.user.avatarFileKey) : null,
-      isBlocked: blockedIds.has(p.user.id)
-    })));
-
-    return res.status(200).json(responseMembers);
-  } catch (error) {
-    return res.status(500).json({ error: "Grup üyeleri alınamadı." });
+    const participants = await conversationService.listGroupParticipants(groupId, currentUserId);
+    return res.status(200).json(participants);
+  } catch (error: any) {
+    logger.error({ event: 'chat.group_participants_failed', err: error, userId: req.user?.userId, groupId: req.params.id, ip: req.ip }, 'Group participants fetch failed');
+    const status = error.message.includes('yetkiniz yok') ? 403 : 500;
+    return res.status(status).json({ error: error.message || "Grup üyeleri alınamadı." });
   }
 });
 
-// GRUP ADI GÜNCELLEME
 router.put('/conversations/group/:id/name', validateRequest({
   params: chatSchemas.groupParams,
   body: chatSchemas.groupName
@@ -678,31 +258,16 @@ router.put('/conversations/group/:id/name', validateRequest({
   try {
     const groupId = getParam(req, 'id');
     const currentUserId = getUserId(req);
-    const newName = req.body.newName;
-    if (typeof newName !== 'string' || !newName.trim()) {
-      return res.status(400).json({ error: "Grup adı boş olamaz." });
-    }
-    if (newName.trim().length > 100) {
-      return res.status(400).json({ error: "Grup adı en fazla 100 karakter olabilir." });
-    }
-
-    const group = await prisma.conversation.findUnique({ where: { id: groupId } });
-    if (!group) return res.status(404).json({ error: "Grup bulunamadı." });
-    if (!group.isGroup || group.adminId !== currentUserId) {
-      return res.status(403).json({ error: "Grup adını yalnızca yönetici değiştirebilir." });
-    }
-
-    const updatedGroup = await prisma.conversation.update({
-      where: { id: groupId },
-      data: { name: newName.trim() }
-    });
-    return res.status(200).json(updatedGroup);
-  } catch (error) {
-    return res.status(500).json({ error: "Grup adı güncellenemedi." });
+    const { newName } = req.body;
+    const result = await conversationService.updateGroupName(groupId, currentUserId, newName);
+    return res.status(200).json(result);
+  } catch (error: any) {
+    logger.error({ event: 'chat.group_name_failed', err: error, userId: req.user?.userId, groupId: req.params.id, ip: req.ip }, 'Group name update failed');
+    const status = error.message.includes('bulunamadı') ? 404 : error.message.includes('yönetici') ? 403 : 500;
+    return res.status(status).json({ error: error.message || "Grup adı güncellenemedi." });
   }
 });
 
-// GRUPTAN KİŞİ ÇIKARTMA VE OTOMATİK SİLME
 router.put('/conversations/group/:id/avatar', validateRequest({
   params: chatSchemas.groupParams,
   body: chatSchemas.groupAvatar
@@ -711,28 +276,13 @@ router.put('/conversations/group/:id/avatar', validateRequest({
     const groupId = getParam(req, 'id');
     const currentUserId = getUserId(req);
     const { fileKey } = req.body;
-
-    const group = await prisma.conversation.findUnique({ where: { id: groupId } });
-    if (!group) return res.status(404).json({ error: "Grup bulunamadı." });
-    if (!group.isGroup || group.adminId !== currentUserId) {
-      return res.status(403).json({ error: "Grup resmini yalnızca yönetici değiştirebilir." });
-    }
-
-    const updatedGroup = await prisma.conversation.update({
-      where: { id: groupId },
-      data: { avatarFileKey: fileKey }
-    });
-
-    if (group.avatarFileKey && group.avatarFileKey !== fileKey) {
-      await deleteFileIfUnreferenced(group.avatarFileKey);
-    }
-
-    const responseGroup = await withConversationAvatarUrl(updatedGroup);
-    req.app.get('io').to(groupId).emit('grup_guncellendi', responseGroup);
-    return res.status(200).json(responseGroup);
-  } catch (error) {
-    logger.error({ event: 'chat.group_avatar_failed', err: error, userId: req.user?.userId, ip: req.ip }, 'Group avatar update failed');
-    return res.status(500).json({ error: "Grup resmi güncellenemedi." });
+    const io = req.app.get('io');
+    const result = await conversationService.updateGroupAvatar(groupId, currentUserId, fileKey, io);
+    return res.status(200).json(result);
+  } catch (error: any) {
+    logger.error({ event: 'chat.group_avatar_failed', err: error, userId: req.user?.userId, groupId: req.params.id, ip: req.ip }, 'Group avatar update failed');
+    const status = error.message.includes('bulunamadı') ? 404 : error.message.includes('yönetici') ? 403 : 500;
+    return res.status(status).json({ error: error.message || "Grup resmi güncellenemedi." });
   }
 });
 
@@ -741,56 +291,16 @@ router.delete('/conversations/group/:id/participants/:userId', validateRequest({
     const groupId = getParam(req, 'id');
     const userId = getParam(req, 'userId');
     const adminId = getUserId(req);
-
-    const group = await prisma.conversation.findUnique({ where: { id: groupId } });
-    if (!group) return res.status(404).json({ error: "Grup bulunamadı." });
-
-    if (group.adminId !== adminId && userId !== adminId) {
-      return res.status(403).json({ error: "Sadece grup yöneticisi kişi çıkarabilir!" });
-    }
-
-    await prisma.$transaction(async (tx) => {
-      await tx.participant.deleteMany({
-        where: { conversationId: groupId, userId }
-      });
-      await tx.scheduledMessage.deleteMany({
-        where: { conversationId: groupId, senderId: userId }
-      });
-    });
-
     const io = req.app.get('io');
-    io.to(groupId).emit('gruptan_atildi', { groupId, removedUserId: userId, removedById: adminId });
-
-    const remainingParticipants = await prisma.participant.findMany({
-      where: { conversationId: groupId }
-    });
-
-    if (remainingParticipants.length === 0) {
-      const messageFiles = await prisma.message.findMany({ where: { conversationId: groupId, fileKey: { not: null } }, select: { fileKey: true } });
-      const scheduledFiles = await prisma.scheduledMessage.findMany({ where: { conversationId: groupId, fileKey: { not: null } }, select: { fileKey: true } });
-      await prisma.conversation.delete({ where: { id: groupId } });
-      const deletedFileKeys = [...messageFiles, ...scheduledFiles, { fileKey: group.avatarFileKey }]
-        .map((entry) => entry.fileKey)
-        .filter((key): key is string => Boolean(key));
-      for (const fileKey of [...new Set(deletedFileKeys)]) {
-        await deleteFileIfUnreferenced(fileKey);
-      }
-      io.to(groupId).emit('grup_silindi', { groupId });
-    }
-    else if (group.adminId === userId) {
-      const newAdminId = remainingParticipants[0].userId;
-      await prisma.conversation.update({
-        where: { id: groupId },
-        data: { adminId: newAdminId }
-      });
-      io.to(groupId).emit('grup_yonetici_degisti', { groupId, newAdminId });
-    }
-
-    return res.status(200).json({ message: "İşlem başarılı." });
-  } catch (error) { return res.status(500).json({ error: "Kişi çıkarılamadı." }); }
+    const result = await conversationService.removeGroupParticipant(groupId, userId, adminId, io);
+    return res.status(200).json(result);
+  } catch (error: any) {
+    logger.error({ event: 'chat.group_member_remove_failed', err: error, userId: req.user?.userId, groupId: req.params.id, targetUserId: req.params.userId, ip: req.ip }, 'Remove group member failed');
+    const status = error.message.includes('bulunamadı') ? 404 : error.message.includes('yöneticisi') ? 403 : 500;
+    return res.status(status).json({ error: error.message || "Kişi çıkarılamadı." });
+  }
 });
 
-// GRUBA YENİ KİŞİ EKLEME
 router.post('/conversations/group/:id/participants', validateRequest({
   params: chatSchemas.groupParams,
   body: chatSchemas.addGroupMembers
@@ -799,33 +309,16 @@ router.post('/conversations/group/:id/participants', validateRequest({
     const groupId = getParam(req, 'id');
     const { userIdsToAdd } = req.body;
     const adminId = getUserId(req);
-
-    if (!Array.isArray(userIdsToAdd) || userIdsToAdd.length === 0 || !userIdsToAdd.every((id) => typeof id === 'string')) {
-      return res.status(400).json({ error: "Eklenecek kullanıcı listesi geçersiz." });
-    }
-
-    const uniqueUserIds = [...new Set<string>(userIdsToAdd)];
-    const existingUserCount = await prisma.user.count({ where: { id: { in: uniqueUserIds } } });
-    if (existingUserCount !== uniqueUserIds.length) {
-      return res.status(400).json({ error: "Eklenecek kullanıcılardan biri bulunamadı." });
-    }
-
-    const group = await prisma.conversation.findUnique({ where: { id: groupId } });
-    if (group?.adminId !== adminId) return res.status(403).json({ error: "Sadece yönetici kişi ekleyebilir." });
-
-    const data = uniqueUserIds.map((userId) => ({ userId, conversationId: groupId }));
-    await prisma.participant.createMany({ data, skipDuplicates: true });
-
     const io = req.app.get('io');
-    uniqueUserIds.forEach((userId) => {
-      io.to(userId).emit('grup_olusturuldu', group);
-    });
-
-    return res.status(200).json({ message: "Kişiler eklendi." });
-  } catch (error) { return res.status(500).json({ error: "Ekleme başarısız." }); }
+    const result = await conversationService.addGroupParticipants(groupId, userIdsToAdd, adminId, io);
+    return res.status(200).json(result);
+  } catch (error: any) {
+    logger.error({ event: 'chat.group_member_add_failed', err: error, userId: req.user?.userId, groupId: req.params.id, ip: req.ip }, 'Add group members failed');
+    const status = error.message.includes('bulunamadı') ? 400 : error.message.includes('yönetici') ? 403 : 500;
+    return res.status(status).json({ error: error.message || "Ekleme başarısız." });
+  }
 });
 
-// YÖNETİCİLİĞİ BAŞKASINA DEVRETME
 router.put('/conversations/group/:id/admin', validateRequest({
   params: chatSchemas.groupParams,
   body: chatSchemas.transferAdmin
@@ -834,149 +327,88 @@ router.put('/conversations/group/:id/admin', validateRequest({
     const groupId = getParam(req, 'id');
     const { newAdminId } = req.body;
     const currentAdminId = getUserId(req);
-
-    if (typeof newAdminId !== 'string' || !newAdminId) {
-      return res.status(400).json({ error: "Yeni yönetici geçersiz." });
-    }
-
-    const group = await prisma.conversation.findUnique({ where: { id: groupId } });
-    if (group?.adminId !== currentAdminId) return res.status(403).json({ error: "Sadece kurucu yetki devredebilir." });
-    if (!(await isConversationMember(groupId, newAdminId))) {
-      return res.status(400).json({ error: "Yeni yönetici grubun üyesi olmalıdır." });
-    }
-
-    await prisma.conversation.update({
-      where: { id: groupId },
-      data: { adminId: newAdminId }
-    });
-
     const io = req.app.get('io');
-    io.to(groupId).emit('grup_yonetici_degisti', { groupId, newAdminId });
-
-    return res.status(200).json({ message: "Yönetici değiştirildi." });
-  } catch (error) { return res.status(500).json({ error: "İşlem başarısız." }); }
+    const result = await conversationService.transferGroupAdmin(groupId, newAdminId, currentAdminId, io);
+    return res.status(200).json(result);
+  } catch (error: any) {
+    logger.error({ event: 'chat.group_admin_transfer_failed', err: error, userId: req.user?.userId, groupId: req.params.id, newAdminId: req.body.newAdminId, ip: req.ip }, 'Transfer group admin failed');
+    const status = error.message.includes('kurucu') ? 403 : error.message.includes('üyesi') || error.message.includes('bulunamadı') ? 400 : 500;
+    return res.status(status).json({ error: error.message || "İşlem başarısız." });
+  }
 });
 
-// GRUBU KOMPLE SİLME
 router.delete('/conversations/group/:id', validateRequest({ params: chatSchemas.groupParams }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const groupId = getParam(req, 'id');
     const adminId = getUserId(req);
-    const deletedFileKeys = await prisma.$transaction(async (tx) => {
-      const group = await tx.conversation.findUnique({ where: { id: groupId } });
-      if (!group?.isGroup || group.adminId !== adminId) return null;
-
-      const messageFiles = await tx.message.findMany({ where: { conversationId: groupId, fileKey: { not: null } }, select: { fileKey: true } });
-      const scheduledFiles = await tx.scheduledMessage.findMany({ where: { conversationId: groupId, fileKey: { not: null } }, select: { fileKey: true } });
-
-      await tx.conversation.delete({ where: { id: groupId } });
-      return [...messageFiles, ...scheduledFiles, { fileKey: group.avatarFileKey }]
-        .map((entry) => entry.fileKey)
-        .filter((key): key is string => Boolean(key));
-    });
-
-    if (!deletedFileKeys) {
-      return res.status(403).json({ error: "Grubu yalnızca yönetici silebilir." });
-    }
-
-    for (const fileKey of [...new Set(deletedFileKeys)]) {
-      await deleteFileIfUnreferenced(fileKey);
-    }
-
     const io = req.app.get('io');
-    io.to(groupId).emit('grup_silindi', { groupId });
-
-    return res.status(200).json({ message: "Grup başarıyla silindi." });
-  } catch (error) { return res.status(500).json({ error: "Grup silinemedi." }); }
+    const result = await conversationService.deleteGroup(groupId, adminId, io);
+    return res.status(200).json(result);
+  } catch (error: any) {
+    logger.error({ event: 'chat.group_delete_failed', err: error, userId: req.user?.userId, groupId: req.params.id, ip: req.ip }, 'Delete group failed');
+    const status = error.message.includes('yönetici') ? 403 : 500;
+    return res.status(status).json({ error: error.message || "Grup silinemedi." });
+  }
 });
 
-// MESAJLARI OKUNDU OLARAK İŞARETLEME
+// ==========================================
+// 4. MESAJLAŞMA VE OKUNDU API'LERİ (MessageService)
+// ==========================================
+
+router.post('/messages', validateRequest({ body: chatSchemas.message }), async (req: CustomRequest, res: Response): Promise<any> => {
+  try {
+    const senderId = getUserId(req);
+    const io = req.app.get('io');
+    const result = await messageService.sendMessage(senderId, req.body, io);
+    return res.status(201).json(result);
+  } catch (error: any) {
+    logger.error({ event: 'chat.message_send_failed', err: error, userId: req.user?.userId, conversationId: req.body.conversationId, ip: req.ip }, 'Message send failed');
+    const status = error.message.includes('yetkiniz yok') || error.message.includes('engellendiniz') || error.message.includes('engellediniz') ? 403 :
+                   error.message.includes('bulunamadı') ? 404 :
+                   error.message.includes('Yanıtlanan') ? 400 : 500;
+    return res.status(status).json({ error: error.message || 'Mesaj gönderilemedi.' });
+  }
+});
+
+router.get('/conversations/:conversationId/messages', validateRequest({
+  params: chatSchemas.conversationParams,
+  query: chatSchemas.conversationMessagesQuery
+}), async (req: CustomRequest, res: Response): Promise<any> => {
+  try {
+    const conversationId = getParam(req, 'conversationId');
+    const { cursor } = req.query;
+    const userId = getUserId(req);
+    const messages = await messageService.fetchMessages(conversationId, userId, cursor as string);
+    return res.status(200).json(messages);
+  } catch (error: any) {
+    logger.error({ event: 'chat.messages_fetch_failed', err: error, userId: req.user?.userId, conversationId: req.params.conversationId, ip: req.ip }, 'Messages fetch failed');
+    const status = error.message.includes('yetkiniz yok') ? 403 : 500;
+    return res.status(status).json({ error: error.message || 'Mesajlar yüklenemedi.' });
+  }
+});
+
 router.post('/conversations/:id/read', validateRequest({
   params: chatSchemas.groupParams,
   body: chatSchemas.readConversation
 }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
-    const { emitReceipt } = req.body;
+    const { emitReceipt, lastReadMessageId } = req.body;
     const conversationId = getParam(req, 'id');
     const userId = getUserId(req);
-
-    if (!(await isConversationMember(conversationId, userId))) {
-      return res.status(403).json({ error: "Bu sohbeti okundu olarak işaretleme yetkiniz yok." });
-    }
-
-    const allMessages = await prisma.message.findMany({
-      where: {
-        conversationId: conversationId,
-        senderId: { not: userId },
-        ...visibleMessageWhere()
-      }
-    });
-
-    const unreadMessages = allMessages.filter(msg => {
-      const reads = msg.readByIds || [];
-      return !reads.includes(userId);
-    });
-
-    for (const msg of unreadMessages) {
-      const currentReads = msg.readByIds || [];
-      await prisma.message.update({
-        where: { id: msg.id },
-        data: { readByIds: [...currentReads, userId] }
-      });
-    }
-
-    if (emitReceipt !== false) {
-      const io = req.app.get('io');
-      io.to(conversationId).emit('mesajlar_okundu', { conversationId, readByUserId: userId });
-    }
-
-    return res.status(200).json({ success: true, updatedCount: unreadMessages.length });
-  } catch (error) {
-    logger.error({ event: 'chat.read_receipt_failed', err: error, userId: req.user?.userId, ip: req.ip }, 'Read receipt failed');
-    return res.status(500).json({ error: 'Görüldü atılamadı.' });
+    const io = req.app.get('io');
+    const result = await messageService.markAsRead(conversationId, userId, lastReadMessageId, emitReceipt, io);
+    return res.status(200).json(result);
+  } catch (error: any) {
+    logger.error({ event: 'chat.read_receipt_failed', err: error, userId: req.user?.userId, conversationId: req.params.id, ip: req.ip }, 'Read receipt failed');
+    const status = error.message.includes('yetkiniz yok') ? 403 : error.message.includes('son okunan') ? 400 : 500;
+    return res.status(status).json({ error: error.message || 'Görüldü atılamadı.' });
   }
 });
 
-// OKUNMAMIŞ MESAJ SAYILARINI GETİRME
 router.get('/unread-counts', async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const userId = getUserId(req);
-
-    const myParticipants = await prisma.participant.findMany({
-      where: { userId: userId },
-      select: { conversationId: true }
-    });
-    const validConversationIds = myParticipants.map(p => p.conversationId);
-
-    const allPossibleUnread = await prisma.message.findMany({
-      where: {
-        conversationId: { in: validConversationIds },
-        senderId: { not: userId },
-        ...visibleMessageWhere()
-      },
-      select: {
-        conversationId: true,
-        senderId: true,
-        readByIds: true,
-        conversation: { select: { isGroup: true } }
-      }
-    });
-
-    const unreadMessages = allPossibleUnread.filter(msg => {
-      const reads = msg.readByIds || [];
-      return !reads.includes(userId);
-    });
-
-    const counts: Record<string, number> = {};
-
-    unreadMessages.forEach(msg => {
-      if (msg.conversation.isGroup) {
-        counts[msg.conversationId] = (counts[msg.conversationId] || 0) + 1;
-      } else {
-        counts[msg.senderId] = (counts[msg.senderId] || 0) + 1;
-      }
-    });
-
+    const counts = await messageService.getUnreadCounts(userId);
     return res.status(200).json(counts);
   } catch (error) {
     logger.error({ event: 'chat.unread_counts_failed', err: error, userId: req.user?.userId, ip: req.ip }, 'Unread counts failed');
@@ -984,76 +416,23 @@ router.get('/unread-counts', async (req: CustomRequest, res: Response): Promise<
   }
 });
 
-// GLOBAL MESAJ ARAMA
 router.get('/messages/search', validateRequest({ query: chatSchemas.searchQuery }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const { q } = req.query;
     const userId = getUserId(req);
-
-    const searchTerm = Array.isArray(q) ? q[0] : q;
-    if (typeof searchTerm !== 'string' || searchTerm.trim().length < 2) {
-      return res.status(400).json({ error: "Arama metni en az 2 karakter olmalıdır." });
-    }
-
-    const messages = await prisma.message.findMany({
-      where: {
-        content: { contains: searchTerm.trim(), mode: 'insensitive' },
-        NOT: { deletedForIds: { has: userId } },
-        ...visibleMessageWhere(),
-        conversation: {
-          participants: { some: { userId: userId } }
-        }
-      },
-      include: {
-        sender: { select: { username: true } },
-        conversation: {
-          include: {
-            participants: { include: { user: { select: { id: true, username: true, email: true } } } }
-          }
-        }
-      },
-      orderBy: { createdAt: 'desc' },
-      take: 30
-    });
-
-    const responseMessages = await Promise.all(messages.map(withSignedFileUrl));
-    return res.status(200).json(responseMessages);
+    const messages = await messageService.searchMessages(userId, q as string);
+    return res.status(200).json(messages);
   } catch (error) {
     logger.error({ event: 'chat.search_failed', err: error, userId: req.user?.userId, ip: req.ip }, 'Search failed');
     return res.status(500).json({ error: 'Arama yapılamadı.' });
   }
 });
 
-// GÖNDERİLMİŞ MESAJI DÜZENLEME
-// YILDIZLI MESAJLAR
 router.get('/messages/starred', async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const userId = getUserId(req);
-
-    // Yıldızlama kişiseldir; starredByIds içinde mevcut kullanıcı varsa bu mesaj kullanıcının yıldızlı listesindedir.
-    // Konuşma membership kontrolü de eklenir ki kullanıcı ayrıldığı/silindiği sohbetin mesajını göremesin.
-    const messages = await prisma.message.findMany({
-      where: {
-        starredByIds: { has: userId },
-        NOT: { deletedForIds: { has: userId } },
-        ...visibleMessageWhere(),
-        conversation: {
-          participants: { some: { userId } }
-        }
-      },
-      include: {
-        sender: { select: { username: true } },
-        conversation: {
-          include: {
-            participants: { include: { user: { select: { id: true, username: true, email: true } } } }
-          }
-        }
-      },
-      orderBy: { createdAt: 'desc' },
-      take: 50
-    });
-
-    return res.status(200).json(await Promise.all(messages.map(withSignedFileUrl)));
+    const messages = await messageService.fetchStarredMessages(userId);
+    return res.status(200).json(messages);
   } catch (error) {
     logger.error({ event: 'chat.starred_messages_failed', err: error, userId: req.user?.userId, ip: req.ip }, 'Starred messages fetch failed');
     return res.status(500).json({ error: 'Yıldızlı mesajlar getirilemedi.' });
@@ -1067,34 +446,14 @@ router.put('/messages/:id', validateRequest({
   try {
     const id = getParam(req, 'id');
     const userId = getUserId(req);
-    const message = await prisma.message.findUnique({ where: { id } });
-    if (!message) return res.status(404).json({ error: "Mesaj bulunamadı." });
-    if (message.senderId !== userId) {
-      return res.status(403).json({ error: "Yalnızca kendi mesajınızı düzenleyebilirsiniz." });
-    }
-    if (!(await isConversationMember(message.conversationId, userId))) {
-      return res.status(403).json({ error: "Bu sohbetin üyesi değilsiniz." });
-    }
-
-    const updatedMessageRecord = await prisma.message.update({
-      where: { id },
-      data: { content: req.body.content.trim(), editedAt: new Date() }
-    });
-    const updatedMessage = await prisma.message.findUnique({
-      where: { id: updatedMessageRecord.id },
-      include: {
-        sender: { select: { username: true } },
-        replyTo: { select: { id: true, content: true, sender: { select: { username: true } } } },
-        conversation: { select: { isGroup: true } }
-      }
-    });
-    if (!updatedMessage) return res.status(404).json({ error: "Mesaj bulunamadÄ±." });
-
-    const responseMessage = await withSignedFileUrl(updatedMessage);
-    req.app.get('io').to(message.conversationId).emit('mesaj_guncellendi', responseMessage);
-    return res.status(200).json(responseMessage);
-  } catch (error) {
-    return res.status(500).json({ error: "Mesaj düzenlenemedi." });
+    const { content } = req.body;
+    const io = req.app.get('io');
+    const updated = await messageService.editMessage(id, userId, content, io);
+    return res.status(200).json(updated);
+  } catch (error: any) {
+    logger.error({ event: 'chat.message_edit_failed', err: error, userId: req.user?.userId, messageId: req.params.id, ip: req.ip }, 'Message edit failed');
+    const status = error.message.includes('bulunamadı') ? 404 : error.message.includes('kendi mesajınızı') || error.message.includes('üyesi değilsiniz') ? 403 : 500;
+    return res.status(status).json({ error: error.message || "Mesaj düzenlenemedi." });
   }
 });
 
@@ -1104,99 +463,43 @@ router.get('/conversations/:conversationId/media', validateRequest({
   try {
     const conversationId = getParam(req, 'conversationId');
     const userId = getUserId(req);
-    if (!(await isConversationMember(conversationId, userId))) {
-      return res.status(403).json({ error: 'Bu sohbetin medya bilgilerini görme yetkiniz yok.' });
-    }
-
-    const records = await prisma.message.findMany({
-      where: {
-        conversationId,
-        NOT: { deletedForIds: { has: userId } },
-        AND: [
-          visibleMessageWhere(),
-          {
-            OR: [
-              { fileKey: { not: null } },
-              { content: { contains: 'http', mode: 'insensitive' } }
-            ]
-          }
-        ]
-      },
-      orderBy: { createdAt: 'desc' },
-      include: { sender: { select: { username: true } } }
-    });
-
-    const signedRecords = await Promise.all(records.map(withSignedFileUrl));
-    const mediaMessages = signedRecords.filter((message) => Boolean(message.fileKey));
-    const linkItems = signedRecords.flatMap((message) => {
-      const urls = message.content?.match(/https?:\/\/[^\s]+/g) || [];
-      return urls.map((url) => ({ messageId: message.id, url, createdAt: message.createdAt }));
-    });
-
-    return res.status(200).json({ mediaMessages, linkItems });
-  } catch (error) {
-    return res.status(500).json({ error: 'Medya bilgileri getirilemedi.' });
+    const media = await messageService.fetchConversationMedia(conversationId, userId);
+    return res.status(200).json(media);
+  } catch (error: any) {
+    logger.error({ event: 'chat.media_fetch_failed', err: error, userId: req.user?.userId, conversationId: req.params.conversationId, ip: req.ip }, 'Media fetch failed');
+    const status = error.message.includes('yetkiniz yok') ? 403 : 500;
+    return res.status(status).json({ error: error.message || 'Medya bilgileri getirilemedi.' });
   }
 });
 
-// MESAJ SABİTLEME
 router.put('/messages/:id/pin', validateRequest({ params: chatSchemas.idParams }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const id = getParam(req, 'id');
     const userId = getUserId(req);
-    const message = await prisma.message.findUnique({ where: { id } });
-    if (!message) return res.status(404).json({ error: "Mesaj bulunamadı." });
-    if (!(await isConversationMember(message.conversationId, userId))) {
-      return res.status(403).json({ error: "Bu mesajı sabitleme yetkiniz yok." });
-    }
-
-    const updatedMessage = await prisma.message.update({
-      where: { id },
-      data: { isPinned: !message.isPinned }
-    });
-
     const io = req.app.get('io');
-    const responseMessage = await withSignedFileUrl(updatedMessage);
-    io.to(message.conversationId).emit('mesaj_guncellendi', responseMessage);
-    return res.status(200).json(responseMessage);
-  } catch (error) { return res.status(500).json({ error: "Sabitleme işlemi başarısız." }); }
+    const result = await messageService.pinMessage(id, userId, io);
+    return res.status(200).json(result);
+  } catch (error: any) {
+    logger.error({ event: 'chat.message_pin_failed', err: error, userId: req.user?.userId, messageId: req.params.id, ip: req.ip }, 'Message pin failed');
+    const status = error.message.includes('bulunamadı') ? 404 : error.message.includes('yetkiniz yok') ? 403 : 500;
+    return res.status(status).json({ error: error.message || "Sabitleme işlemi başarısız." });
+  }
 });
 
-// MESAJ YILDIZLAMA
 router.put('/messages/:id/star', validateRequest({ params: chatSchemas.idParams }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const id = getParam(req, 'id');
     const userId = getUserId(req);
-
-    const message = await prisma.message.findUnique({ where: { id } });
-    if (!message) return res.status(404).json({ error: "Mesaj bulunamadı." });
-    if (!(await isConversationMember(message.conversationId, userId))) {
-      return res.status(403).json({ error: "Bu mesajı yıldızlama yetkiniz yok." });
-    }
-
-    const currentStars = message.starredByIds || [];
-    const isStarred = currentStars.includes(userId);
-
-    const newStars = isStarred
-      ? currentStars.filter(uid => uid !== userId)
-      : [...currentStars, userId];
-
-    const updatedMessage = await prisma.message.update({
-      where: { id },
-      data: { starredByIds: newStars }
-    });
-
     const io = req.app.get('io');
-    const responseMessage = await withSignedFileUrl(updatedMessage);
-    // DÜZELTME: önceden sadece io.to(userId) yapılıyordu, bu yüzden yıldızlama
-    // grup içindeki diğer üyelere (veya DM'deki karşı tarafa) real-time yansımıyordu.
-    // Diğer route'larla (pin, edit) tutarlı olması için conversationId odasına emit ediyoruz.
-    io.to(message.conversationId).emit('mesaj_guncellendi', responseMessage);
-    return res.status(200).json(responseMessage);
-  } catch (error) { return res.status(500).json({ error: "Yıldızlama başarısız." }); }
+    const result = await messageService.starMessage(id, userId, io);
+    return res.status(200).json(result);
+  } catch (error: any) {
+    logger.error({ event: 'chat.message_star_failed', err: error, userId: req.user?.userId, messageId: req.params.id, ip: req.ip }, 'Message star failed');
+    const status = error.message.includes('bulunamadı') ? 404 : error.message.includes('yetkiniz yok') ? 403 : 500;
+    return res.status(status).json({ error: error.message || "Yıldızlama başarısız." });
+  }
 });
 
-// MESAJ SİLME (BENDEN / HERKESTEN SİL)
 router.delete('/messages/:id', validateRequest({
   params: chatSchemas.idParams,
   query: chatSchemas.deleteMessageQuery
@@ -1205,65 +508,14 @@ router.delete('/messages/:id', validateRequest({
     const id = getParam(req, 'id');
     const { forEveryone } = req.query;
     const userId = getUserId(req);
-
-    const message = await prisma.message.findUnique({ where: { id } });
-    if (!message) return res.status(404).json({ error: "Mesaj bulunamadı." });
-    if (!(await isConversationMember(message.conversationId, userId))) {
-      return res.status(403).json({ error: "Bu mesajı silme yetkiniz yok." });
-    }
-
     const io = req.app.get('io');
-
-    if (forEveryone === 'true') {
-      if (message.senderId !== userId) return res.status(403).json({ error: "Sadece kendi mesajınızı herkesten silebilirsiniz." });
-
-      // WhatsApp benzeri davranış: mesajı fiziksel olarak silmiyoruz, placeholder içeriğe çeviriyoruz.
-      // Böylece diğer client'larda mesaj balonu kaybolmak yerine "Bu mesaj silindi" olarak kalır.
-      const updatedMessageId = await prisma.$transaction(async (tx) => {
-        // Bu mesaja verilen yanıtların foreign key'i kırılmasın diye önce reply bağlantılarını koparıyoruz.
-        await tx.message.updateMany({ where: { replyToId: id }, data: { replyToId: null } });
-        const updatedMessageRecord = await tx.message.update({
-          where: { id },
-          data: {
-            content: '🚫 Bu mesaj silindi',
-            fileKey: null,
-            fileType: null,
-            fileName: null,
-            replyToId: null,
-            isForwarded: false
-          }
-        });
-        return updatedMessageRecord.id;
-      });
-      // Transaction'da sadece id döndürülür; socket'e gidecek ilişkili veri transaction dışında okunur.
-      // Bu da adapter-pg'nin aynı transaction client'ında paralel ilişki sorgusu çalıştırmasını engeller.
-      const updatedMessage = await prisma.message.findUnique({
-        where: { id: updatedMessageId },
-        include: {
-          sender: { select: { username: true } },
-          conversation: { select: { isGroup: true } }
-        }
-      });
-      if (!updatedMessage) return res.status(404).json({ error: "Mesaj bulunamadÄ±." });
-      // Mesajdaki dosya referansı kaldırıldı; başka mesaj/plan/avatar kullanmıyorsa R2 nesnesi temizlenir.
-      await deleteFileIfUnreferenced(message.fileKey);
-
-      io.to(message.conversationId).emit('mesaj_guncellendi', await withSignedFileUrl(updatedMessage));
-      return res.status(200).json({ message: "Mesaj herkesten silindi." });
-
-    } else {
-      const currentDeleted = message.deletedForIds || [];
-      if (!currentDeleted.includes(userId)) {
-        await prisma.message.update({
-          where: { id },
-          data: { deletedForIds: [...currentDeleted, userId] }
-        });
-      }
-
-      io.to(userId).emit('mesaj_silindi', { messageId: id, conversationId: message.conversationId });
-      return res.status(200).json({ message: "Mesaj sadece sizden silindi." });
-    }
-  } catch (error) { return res.status(500).json({ error: "Silme işlemi başarısız." }); }
+    const result = await messageService.deleteMessage(id, userId, forEveryone === 'true', io);
+    return res.status(200).json(result);
+  } catch (error: any) {
+    logger.error({ event: 'chat.message_delete_failed', err: error, userId: req.user?.userId, messageId: req.params.id, ip: req.ip }, 'Message delete failed');
+    const status = error.message.includes('bulunamadı') ? 404 : error.message.includes('silme yetkiniz') || error.message.includes('Sadece kendi') ? 403 : 500;
+    return res.status(status).json({ error: error.message || "Silme işlemi başarısız." });
+  }
 });
 
 export default router;

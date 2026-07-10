@@ -2,7 +2,8 @@ import { Server } from 'socket.io';
 import { logger } from '../config/logger';
 import prisma from '../db';
 import { deleteFileIfUnreferenced } from '../services/fileCleanup';
-import { withSignedFileUrl } from '../services/fileStorage';
+import { serializeMessage } from '../services/messageService';
+import { deletePrivateFile } from '../services/fileStorage';
 
 const WORKER_INTERVAL_MS = 30_000;
 
@@ -86,25 +87,55 @@ export const startScheduledMessageWorker = (io: Server) => {
           where: { id: delivery.savedMessageId },
           include: {
             sender: { select: { username: true } },
-            conversation: { select: { isGroup: true } }
+            conversation: { select: { isGroup: true } },
+            reads: { select: { userId: true } },
+            stars: { select: { userId: true } },
+            deletions: { select: { userId: true } }
           }
         });
         if (!savedMessage) continue;
         const rooms = [...new Set([delivery.conversationId, ...delivery.participantIds])];
-        io.to(rooms).emit('yeni_mesaj_geldi', await withSignedFileUrl(savedMessage));
+        io.to(rooms).emit('yeni_mesaj_geldi', await serializeMessage(savedMessage));
       }
       for (const fileKey of result.discardedFileKeys) {
         await deleteFileIfUnreferenced(fileKey);
       }
 
-      const expiredFiles = await prisma.message.findMany({
-        where: { expiresAt: { lte: new Date() }, fileKey: { not: null } },
-        select: { fileKey: true }
+      // 1. Dosyası olmayan süresi geçmiş mesajları topluca sil (R2 işlemi gerekmez)
+      await prisma.message.deleteMany({
+        where: { expiresAt: { lte: new Date() }, fileKey: null }
       });
-      // Kaybolan mesajların süresi dolduğunda DB kaydı silinir; dosyaları ise referans kontrolünden sonra temizlenir.
-      await prisma.message.deleteMany({ where: { expiresAt: { lte: new Date() } } });
-      for (const fileKey of [...new Set(expiredFiles.map((file) => file.fileKey).filter((key): key is string => Boolean(key)))]) {
-        await deleteFileIfUnreferenced(fileKey);
+
+      // 2. Dosyası olan süresi geçmiş mesajları bul
+      const expiredWithFiles = await prisma.message.findMany({
+        where: { expiresAt: { lte: new Date() }, fileKey: { not: null } }
+      });
+
+      // 3. Dosyalı mesajları tek tek transaction içinde işle ki R2 silme hatasında DB kaydı rollback olsun (retry mekanizması)
+      for (const msg of expiredWithFiles) {
+        try {
+          await prisma.$transaction(async (tx) => {
+            // Mesaj kaydını sil
+            await tx.message.delete({ where: { id: msg.id } });
+
+            // Kalan referansları kontrol et
+            const messageReferences = await tx.message.count({ where: { fileKey: msg.fileKey } });
+            const scheduledReferences = await tx.scheduledMessage.count({ where: { fileKey: msg.fileKey } });
+            const avatarReferences = await tx.user.count({ where: { avatarFileKey: msg.fileKey } });
+
+            if (messageReferences === 0 && scheduledReferences === 0 && avatarReferences === 0) {
+              // R2'den sil. Eğer hata fırlatırsa transaction rollback olur ve DB kaydı silinmez.
+              await deletePrivateFile(msg.fileKey!);
+            }
+          });
+        } catch (error) {
+          logger.error({
+            event: 'worker.expired_file_cleanup_failed',
+            err: error,
+            messageId: msg.id,
+            fileKey: msg.fileKey
+          }, 'Failed to clean up expired file, keeping database record for retry');
+        }
       }
     } catch (error) {
       logger.error({ event: 'worker.scheduled_message_failed', err: error }, 'Scheduled message worker failed');

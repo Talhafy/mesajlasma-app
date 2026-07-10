@@ -46,6 +46,30 @@ const parseCallPayload = (payload: unknown): { conversationId: string; callId: s
   return { conversationId, callId, callType };
 };
 
+// Her soket bağlantısı için event başına son istek zamanlarını takip ederiz.
+// Bu sayede spam botları veya manipüle edilmiş client'ların sunucuyu/odaları yormasını engelleriz.
+const socketEventTimestamps = new Map<string, Record<string, number[]>>();
+
+const checkSocketRateLimit = (socketId: string, eventName: string, maxPerSecond: number): boolean => {
+  const now = Date.now();
+  let userEvents = socketEventTimestamps.get(socketId);
+  if (!userEvents) {
+    userEvents = {};
+    socketEventTimestamps.set(socketId, userEvents);
+  }
+
+  const timestamps = userEvents[eventName] || [];
+  const validTimestamps = timestamps.filter((ts) => now - ts < 1000);
+
+  if (validTimestamps.length >= maxPerSecond) {
+    return false;
+  }
+
+  validTimestamps.push(now);
+  userEvents[eventName] = validTimestamps;
+  return true;
+};
+
 export const registerSocketHandlers = (io: Server) => {
   // Socket handshake HTTP route'lardan geçmez; bu yüzden JWT doğrulaması burada ayrıca yapılır.
   // Refresh token socket için kabul edilmez, sadece kısa ömürlü access token kullanılabilir.
@@ -111,6 +135,12 @@ export const registerSocketHandlers = (io: Server) => {
       acknowledge?: (result: { ok: boolean; error?: string }) => void
     ) => {
       resetInactivityTimer();
+      if (!checkSocketRateLimit(socket.id, 'odaya_katil', 5)) {
+        logger.warn({ event: 'security.socket_rate_limit', userId: currentUser.userId, eventName: 'odaya_katil' }, 'Socket event rate limit exceeded');
+        acknowledge?.({ ok: false, error: 'Çok fazla istek gönderdiniz. Lütfen bekleyin.' });
+        return;
+      }
+
       if (typeof conversationId !== 'string' || !conversationId.trim()) {
         acknowledge?.({ ok: false, error: 'Geçersiz sohbet kimliği.' });
         return;
@@ -149,6 +179,11 @@ export const registerSocketHandlers = (io: Server) => {
 
     socket.on('typing_changed', async (payload: unknown) => {
       resetInactivityTimer();
+      if (!checkSocketRateLimit(socket.id, 'typing_changed', 3)) {
+        logger.warn({ event: 'security.socket_rate_limit', userId: currentUser.userId, eventName: 'typing_changed' }, 'Socket event rate limit exceeded');
+        return;
+      }
+
       if (!payload || typeof payload !== 'object') return;
       const { conversationId, isTyping } = payload as { conversationId?: unknown; isTyping?: unknown };
       if (typeof conversationId !== 'string' || typeof isTyping !== 'boolean') return;
@@ -179,6 +214,11 @@ export const registerSocketHandlers = (io: Server) => {
     // dosyanın kendisiyle ilgisi yok. Frontend MediaRecorder start/stop anında bunu emit eder.
     socket.on('voice_recording_changed', async (payload: unknown) => {
       resetInactivityTimer();
+      if (!checkSocketRateLimit(socket.id, 'voice_recording_changed', 3)) {
+        logger.warn({ event: 'security.socket_rate_limit', userId: currentUser.userId, eventName: 'voice_recording_changed' }, 'Socket event rate limit exceeded');
+        return;
+      }
+
       if (!payload || typeof payload !== 'object') return;
       const { conversationId, isRecording } = payload as { conversationId?: unknown; isRecording?: unknown };
       if (typeof conversationId !== 'string' || typeof isRecording !== 'boolean') return;
@@ -349,6 +389,7 @@ export const registerSocketHandlers = (io: Server) => {
 
     socket.on('disconnect', async () => {
       logger.info({ event: 'socket.disconnected', userId: currentUser.userId, socketId: socket.id }, 'Socket disconnected');
+      socketEventTimestamps.delete(socket.id);
       if (inactivityTimer) clearTimeout(inactivityTimer);
       const sockets = onlineSockets.get(currentUser.userId);
       sockets?.delete(socket.id);

@@ -1,17 +1,29 @@
 import multer = require('multer');
+import path = require('path');
 
-const allowedMimeTypes = new Set([
-  'image/jpeg', 'image/png', 'image/gif', 'image/webp',
-  'audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/webm',
-  'video/mp4', 'video/webm',
-  'application/pdf', 'text/plain', 'application/zip',
-  'application/msword',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'application/vnd.ms-excel',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  'application/vnd.ms-powerpoint',
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation'
-]);
+const mimeToExtensions: Record<string, string[]> = {
+  'image/jpeg': ['.jpg', '.jpeg'],
+  'image/png': ['.png'],
+  'image/gif': ['.gif'],
+  'image/webp': ['.webp'],
+  'audio/mpeg': ['.mp3'],
+  'audio/wav': ['.wav'],
+  'audio/ogg': ['.ogg'],
+  'audio/webm': ['.webm'],
+  'video/mp4': ['.mp4'],
+  'video/webm': ['.webm'],
+  'application/pdf': ['.pdf'],
+  'text/plain': ['.txt'],
+  'application/zip': ['.zip'],
+  'application/msword': ['.doc'],
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
+  'application/vnd.ms-excel': ['.xls'],
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
+  'application/vnd.ms-powerpoint': ['.ppt'],
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': ['.pptx']
+};
+
+const allowedMimeTypes = new Set(Object.keys(mimeToExtensions));
 
 // Dosya doğrudan R2'ye gönderileceği için geçici olarak bellekte tutulur.
 export const uploadSingleFile = multer({
@@ -22,6 +34,14 @@ export const uploadSingleFile = multer({
       callback(new Error('Bu dosya türüne izin verilmiyor.'));
       return;
     }
+
+    const ext = path.extname(file.originalname).toLowerCase();
+    const allowedExtensions = mimeToExtensions[file.mimetype];
+    if (!allowedExtensions || !allowedExtensions.includes(ext)) {
+      callback(new Error('Dosya uzantısı ile dosya türü (MIME tipi) uyuşmuyor.'));
+      return;
+    }
+
     callback(null, true);
   }
 }).single('file');

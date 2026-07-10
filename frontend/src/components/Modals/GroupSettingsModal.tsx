@@ -53,7 +53,7 @@ export default function GroupSettingsModal({
         <div className="settings-body">
 
           <div className="settings-section" style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
-            <div style={{ width: '68px', height: '68px', borderRadius: '50%', background: '#00a884', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '26px', fontWeight: 800, overflow: 'hidden', flexShrink: 0 }}>
+            <div style={{ width: '68px', height: '68px', borderRadius: '50%', background: '#f97316', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '26px', fontWeight: 800, overflow: 'hidden', flexShrink: 0 }}>
               {activeConversation.avatarUrl ? <img src={activeConversation.avatarUrl} alt="Grup" onClick={() => setIsAvatarModalOpen(true)} style={{ width: '100%', height: '100%', objectFit: 'cover', cursor: 'pointer' }} /> : activeConversation.name?.[0]?.toUpperCase()}
             </div>
             <div>
@@ -244,7 +244,7 @@ export default function GroupSettingsModal({
             }}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginBottom: '18px' }}>
-              <div style={{ width: '64px', height: '64px', borderRadius: '50%', background: '#00a884', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '26px', fontWeight: 800, overflow: 'hidden', flexShrink: 0 }}>
+              <div style={{ width: '64px', height: '64px', borderRadius: '50%', background: '#f97316', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '26px', fontWeight: 800, overflow: 'hidden', flexShrink: 0 }}>
                 {selectedMemberProfile.avatarUrl
                   ? <img src={selectedMemberProfile.avatarUrl} alt={selectedMemberProfile.username} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                   : selectedMemberProfile.username[0]?.toUpperCase()}

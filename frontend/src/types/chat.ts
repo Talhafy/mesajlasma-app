@@ -21,6 +21,7 @@ export interface Message {
   fileName?: string;
   editedAt?: string;
   expiresAt?: string;
+  isOffline?: boolean; // YENİ: Çevrimdışı gönderilen mesajların takibi için
 }
 
 export interface User {

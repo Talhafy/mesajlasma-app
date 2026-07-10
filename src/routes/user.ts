@@ -8,15 +8,15 @@ import { deleteFileIfUnreferenced } from '../services/fileCleanup';
 import { createSignedFileUrl } from '../services/fileStorage';
 import { clearRefreshCookie } from '../services/authTokens';
 import { getAuthenticatedUserId as getUserId } from '../utils/request';
+import { logger } from '../config/logger';
 
 const router = express.Router();
 
-
 // Profil adı güncelleme
 router.put('/username', authenticateToken, validateRequest({ body: userSchemas.username }), async (req: CustomRequest, res: any) => {
+  const userId = getUserId(req);
   try {
     const { newUsername } = req.body;
-    const userId = getUserId(req);
 
     const existingUser = await prisma.user.findUnique({ where: { username: newUsername } });
     if (existingUser) return res.status(400).json({ error: "Bu kullanıcı adı zaten alınmış." });
@@ -28,16 +28,16 @@ router.put('/username', authenticateToken, validateRequest({ body: userSchemas.u
 
     res.status(200).json({ message: "Kullanıcı adı güncellendi", username: updatedUser.username });
   } catch (error) {
+    logger.error({ event: 'user.update_username_failed', err: error, userId }, 'Username update failed');
     res.status(500).json({ error: "İsim güncellenemedi." });
   }
 });
 
-// Şifre değişince çalınmış olabilecek bütün refresh oturumları da iptal edilir.
 // E-posta hesabın kimlik bilgisidir; güncelleme yalnızca JWT sahibi kullanıcı için yapılır.
 router.put('/email', authenticateToken, validateRequest({ body: userSchemas.email }), async (req: CustomRequest, res: any) => {
+  const userId = getUserId(req);
   try {
     const { newEmail } = req.body;
-    const userId = getUserId(req);
 
     const existingUser = await prisma.user.findUnique({ where: { email: newEmail } });
     if (existingUser && existingUser.id !== userId) return res.status(400).json({ error: "Bu e-posta zaten kullanılıyor." });
@@ -49,14 +49,15 @@ router.put('/email', authenticateToken, validateRequest({ body: userSchemas.emai
 
     res.status(200).json({ message: "E-posta güncellendi.", email: updatedUser.email });
   } catch (error) {
+    logger.error({ event: 'user.update_email_failed', err: error, userId }, 'Email update failed');
     res.status(500).json({ error: "E-posta güncellenemedi." });
   }
 });
 
 router.put('/password', authenticateToken, validateRequest({ body: userSchemas.password }), async (req: CustomRequest, res: any) => {
+  const userId = getUserId(req);
   try {
     const { oldPassword, newPassword } = req.body;
-    const userId = getUserId(req);
 
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) return res.status(404).json({ error: "Kullanıcı bulunamadı." });
@@ -79,18 +80,17 @@ router.put('/password', authenticateToken, validateRequest({ body: userSchemas.p
     clearRefreshCookie(res);
     res.status(200).json({ message: "Şifreniz değiştirildi. Güvenlik için yeniden giriş yapın." });
   } catch (error) {
+    logger.error({ event: 'user.update_password_failed', err: error, userId }, 'Password update failed');
     res.status(500).json({ error: "Şifre güncellenemedi." });
   }
 });
 
 // Hesap, ilişkili sohbetler ve dosya referansları tek transaction içinde ele alınır.
 router.delete('/account', authenticateToken, async (req: CustomRequest, res: any) => {
+  const userId = getUserId(req);
   try {
-    const userId = getUserId(req);
     const deleteResult = await prisma.$transaction(async (tx) => {
       const account = await tx.user.findUnique({ where: { id: userId }, select: { avatarFileKey: true } });
-      // Kullanıcının dahil olduğu bütün konuşmaları ve katılımcıları başta yüklüyoruz.
-      // Böylece silme/devir kararlarını tek transaction içinde tutarlı veriyle verebiliyoruz.
       const memberships = await tx.participant.findMany({
         where: { userId },
         include: {
@@ -110,27 +110,24 @@ router.delete('/account', authenticateToken, async (req: CustomRequest, res: any
           conversation.adminId === userId && conversation.participants.length === 1
         ))
         .map(({ conversation }) => conversation.id);
-      // Silme tamamlandıktan sonra bu kullanıcılara socket olayı gönderilecek.
-      // Böylece F5 atmadan sidebar/chat listesi güncellenebilir.
+      
       const affectedUserIds = [...new Set(memberships
         .flatMap(({ conversation }) => conversation.participants.map((participant) => participant.userId))
         .filter((participantUserId) => participantUserId !== userId))];
+      
       const deletedGroupIds = memberships
         .filter(({ conversation }) => conversation.isGroup && conversation.adminId === userId && conversation.participants.length === 1)
         .map(({ conversation }) => conversation.id);
+      
       const updatedGroups = memberships
         .filter(({ conversation }) => conversation.isGroup && !deletedGroupIds.includes(conversation.id))
         .map(({ conversation }) => {
-          // Grup admini hesabını siliyorsa grupta kalan ilk üyeye adminlik devredilir.
-          // Kalan kimse yoksa grup zaten deletedGroupIds üzerinden silinecektir.
           const successor = conversation.adminId === userId
             ? conversation.participants.find((participant) => participant.userId !== userId)
             : null;
           return { groupId: conversation.id, removedUserId: userId, newAdminId: successor?.userId || null };
         });
 
-      // Silinecek kullanıcı/sohbet dosyalarının key'lerini önceden topluyoruz.
-      // Transaction bitince dosya gerçekten sahipsizse R2 temizliği yapılır.
       const messageFiles = await tx.message.findMany({
           where: {
             fileKey: { not: null },
@@ -156,7 +153,6 @@ router.delete('/account', authenticateToken, async (req: CustomRequest, res: any
         const conversation = membership.conversation;
 
         if (!conversation.isGroup) {
-          // Birebir sohbetlerde kullanıcının silinmesi konuşmayı da kaldırır.
           await tx.conversation.delete({ where: { id: conversation.id } });
           continue;
         }
@@ -186,13 +182,10 @@ router.delete('/account', authenticateToken, async (req: CustomRequest, res: any
       };
     });
 
-    // DB transaction tamamlandıktan sonra dış sistem olan R2'ye dokunuyoruz.
-    // DB rollback olursa dosya silinmiş kalmasın diye R2 temizliği transaction dışındadır.
     for (const fileKey of [...new Set(deleteResult.deletedFileKeys)]) {
       await deleteFileIfUnreferenced(fileKey);
     }
     const io = req.app.get('io');
-    // Etkilenen kullanıcılara anlık bildirim gönderilir; silinen kullanıcı/sohbetler frontend state'inden düşürülebilir.
     deleteResult.affectedUserIds.forEach((affectedUserId) => {
       io.to(affectedUserId).emit('kullanici_silindi', {
         userId,
@@ -203,19 +196,19 @@ router.delete('/account', authenticateToken, async (req: CustomRequest, res: any
     });
     res.status(200).json({ message: "Hesabınız başarıyla silindi." });
   } catch (error) {
+    logger.error({ event: 'user.delete_account_failed', err: error, userId }, 'Account delete failed');
     res.status(500).json({ error: "Hesap silinirken bir hata oluştu." });
   }
 });
 
 // Sessiz oturum açılışından sonra güncel kullanıcı profilini döndürür.
 router.get('/me', authenticateToken, async (req: CustomRequest, res: any) => {
+  const userId = getUserId(req);
   try {
-    const userId = getUserId(req);
     const user = await prisma.user.findUnique({ where: { id: userId } });
 
     if (!user) return res.status(404).json({ error: "Kullanıcı bulunamadı." });
 
-    // İstemciye readReceiptsOn bilgisini de gönderiyoruz ki ayarlarda tiki gösterelim
     res.status(200).json({
         id: user.id,
         username: user.username,
@@ -226,15 +219,16 @@ router.get('/me', authenticateToken, async (req: CustomRequest, res: any) => {
         avatarUrl: user.avatarFileKey ? await createSignedFileUrl(user.avatarFileKey) : null
     });
   } catch (error) {
+    logger.error({ event: 'user.get_me_failed', err: error, userId }, 'Get me profile failed');
     res.status(500).json({ error: "Kullanıcı bilgileri alınamadı." });
   }
 });
 
 // Birebir sohbetlerde kullanılan okundu bilgisi tercihi
 router.put('/settings/read-receipts', authenticateToken, validateRequest({ body: userSchemas.readReceipts }), async (req: CustomRequest, res: any) => {
+  const userId = getUserId(req);
   try {
     const { isEnabled } = req.body;
-    const userId = getUserId(req);
 
     const updatedUser = await prisma.user.update({
       where: { id: userId },
@@ -243,16 +237,20 @@ router.put('/settings/read-receipts', authenticateToken, validateRequest({ body:
 
     res.status(200).json({ message: "Görüldü ayarı güncellendi.", readReceiptsOn: updatedUser.readReceiptsOn });
   } catch (error) {
+    logger.error({ event: 'user.update_read_receipts_failed', err: error, userId }, 'Read receipts settings update failed');
     res.status(500).json({ error: "Ayar güncellenemedi." });
   }
 });
 
 router.put('/avatar', authenticateToken, validateRequest({ body: userSchemas.avatar }), async (req: CustomRequest, res: any) => {
+  const userId = getUserId(req);
+  const { fileKey } = req.body;
   try {
-    const userId = getUserId(req);
-    const { fileKey } = req.body;
     const previous = await prisma.user.findUnique({ where: { id: userId }, select: { avatarFileKey: true } });
-    if (!previous) return res.status(404).json({ error: "Kullanıcı bulunamadı." });
+    if (!previous) {
+      if (fileKey) await deleteFileIfUnreferenced(fileKey);
+      return res.status(404).json({ error: "Kullanıcı bulunamadı." });
+    }
 
     const updated = await prisma.user.update({
       where: { id: userId },
@@ -268,6 +266,10 @@ router.put('/avatar', authenticateToken, validateRequest({ body: userSchemas.ava
       avatarUrl: updated.avatarFileKey ? await createSignedFileUrl(updated.avatarFileKey) : null
     });
   } catch (error) {
+    logger.error({ event: 'user.avatar_update_failed', err: error, userId }, 'User avatar update failed');
+    if (fileKey) {
+      await deleteFileIfUnreferenced(fileKey);
+    }
     return res.status(500).json({ error: "Profil fotoğrafı güncellenemedi." });
   }
 });

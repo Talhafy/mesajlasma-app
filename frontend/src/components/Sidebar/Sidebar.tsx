@@ -212,7 +212,7 @@ export default function Sidebar({
         onClick={() => conversation.isGroup ? startGroupChat(conversation) : otherUser && startChat(otherUser)}
         style={{ color: textColor, opacity: conversation.isArchived ? 0.85 : 1 }}
       >
-        <div className="avatar-small" style={{ background: conversation.isArchived ? '#607d8b' : '#00a884', color: 'white', position: 'relative', overflow: 'visible' }}>
+        <div className="avatar-small" style={{ background: conversation.isArchived ? '#607d8b' : '#f97316', color: 'white', position: 'relative', overflow: 'visible' }}>
           {conversation.isGroup && conversation.avatarUrl
             ? <img src={conversation.avatarUrl} alt="" style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }} />
             : otherUser?.avatarUrl
@@ -226,12 +226,12 @@ export default function Sidebar({
           <span className="user-name">
             {conversation.isPinned ? '📌 ' : ''}{conversation.isMuted ? '🔕 ' : ''}{getConversationTitle(conversation)}
           </span>
-          <div style={{ fontSize: '12px', color: typingUsername ? '#00a884' : iconColor, fontWeight: typingUsername ? 700 : 400, marginTop: '3px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '190px' }}>
+          <div style={{ fontSize: '12px', color: typingUsername ? '#f97316' : iconColor, fontWeight: typingUsername ? 700 : 400, marginTop: '3px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '190px' }}>
             {typingUsername ? `${typingUsername} yazıyor...` : preview}
           </div>
         </div>
         {unreadCounts[unreadKey] > 0 && (
-          <span style={{ background: '#00a884', color: 'white', padding: '2px 8px', borderRadius: '50%', fontSize: '12px', marginLeft: 'auto' }}>
+          <span style={{ background: '#f97316', color: 'white', padding: '2px 8px', borderRadius: '50%', fontSize: '12px', marginLeft: 'auto' }}>
             {unreadCounts[unreadKey]}
           </span>
         )}
@@ -244,7 +244,7 @@ export default function Sidebar({
       <div style={{ width: '58px', flexShrink: 0, background: panelBg, borderRight: `1px solid ${borderColor}`, display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '12px 8px', boxSizing: 'border-box', gap: '10px' }}>
         <div
           title={`${currentUser.username} • Profil`}
-          style={{ width: '40px', height: '40px', borderRadius: '50%', border: 'none', background: '#00a884', color: 'white', fontWeight: 800, fontSize: '17px', cursor: 'default', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', boxShadow: '0 2px 8px rgba(0,0,0,0.18)' }}
+          style={{ width: '40px', height: '40px', borderRadius: '50%', border: 'none', background: '#f97316', color: 'white', fontWeight: 800, fontSize: '17px', cursor: 'default', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', boxShadow: '0 2px 8px rgba(0,0,0,0.18)' }}
         >
           {currentUser.avatarUrl ? <img src={currentUser.avatarUrl} alt={currentUser.username} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : currentUser.username?.[0]?.toUpperCase()}
         </div>
@@ -254,7 +254,7 @@ export default function Sidebar({
         <button
           title="Aramalar"
           onClick={() => { setIsCallsView(true); setIsArchiveView(false); setIsContactsListView(false); setIsStarredPanelOpen(false); setIsSidebarMenuOpen(false); setIsBlockedUsersView(false); }}
-          style={{ width: '38px', height: '38px', borderRadius: '12px', border: 'none', background: isCallsView ? '#00a884' : 'transparent', color: isCallsView ? 'white' : iconColor, cursor: 'pointer', fontSize: '18px' }}
+          style={{ width: '38px', height: '38px', borderRadius: '12px', border: 'none', background: isCallsView ? '#f97316' : 'transparent', color: isCallsView ? 'white' : iconColor, cursor: 'pointer', fontSize: '18px' }}
         >
           ☎
         </button>
@@ -262,15 +262,17 @@ export default function Sidebar({
         <button
           title="Engellenen Kullanıcılar"
           onClick={() => { setIsBlockedUsersView(true); setIsCallsView(false); setIsArchiveView(false); setIsContactsListView(false); setIsStarredPanelOpen(false); setIsSidebarMenuOpen(false); fetchBlockedUsers(); }}
-          style={{ width: '38px', height: '38px', borderRadius: '12px', border: 'none', background: isBlockedUsersView ? '#00a884' : 'transparent', color: isBlockedUsersView ? 'white' : iconColor, cursor: 'pointer', fontSize: '20px' }}
+          style={{ width: '38px', height: '38px', borderRadius: '12px', border: 'none', background: isBlockedUsersView ? '#f97316' : 'transparent', color: isBlockedUsersView ? 'white' : iconColor, cursor: 'pointer', fontSize: '20px' }}
         >
           🚫
         </button>
 
         <button
+          className="icon-btn"
           title="Ayarlar"
+          aria-label="Ayarlar"
           onClick={() => setIsSettingsOpen(true)}
-          style={{ width: '38px', height: '38px', borderRadius: '12px', border: 'none', background: 'transparent', color: iconColor, cursor: 'pointer', fontSize: '20px' }}
+          style={{ fontSize: '20px' }}
         >
           ⚙
         </button>
@@ -284,12 +286,13 @@ export default function Sidebar({
 
         <div style={{ display: 'flex', gap: '4px' }}>
           {(isArchiveView || isContactsListView || isCallsView || isBlockedUsersView) && (
-            <Button variant="icon" onClick={() => { setIsArchiveView(false); setIsContactsListView(false); setIsCallsView(false); setIsBlockedUsersView(false); }} title="Sohbetlere dön" style={{ color: iconColor }} icon={<span style={{ fontSize: '20px' }}>←</span>} />
+            <Button variant="icon" onClick={() => { setIsArchiveView(false); setIsContactsListView(false); setIsCallsView(false); setIsBlockedUsersView(false); }} title="Sohbetlere dön" aria-label="Sohbetlere dön" style={{ color: iconColor }} icon={<span style={{ fontSize: '20px' }}>←</span>} />
           )}
           <Button
             variant="icon"
             onClick={() => setIsDarkMode(!isDarkMode)}
             title={isDarkMode ? 'Aydınlık Mod' : 'Karanlık Mod'}
+            aria-label={isDarkMode ? 'Aydınlık Mod' : 'Karanlık Mod'}
             style={{ color: iconColor }}
             icon={isDarkMode ? (
               <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M12 7c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5zM2 13h2c.55 0 1-.45 1-1s-.45-1-1-1H2c-.55 0-1 .45-1 1s.45 1 1 1zm18 0h2c.55 0 1-.45 1-1s-.45-1-1-1h-2c-.55 0-1 .45-1 1s.45 1 1 1zM11 2v2c0 .55.45 1 1 1s1-.45 1-1V2c0-.55-1-1-1-1s-1 .45-1 1zm0 18v2c0 .55.45 1 1 1s1-.45 1-1v-2c0-.55-1-1-1-1s-1 .45-1 1zM5.99 4.58c-.39-.39-1.03-.39-1.41 0-.39.39-.39 1.03 0 1.41l1.06 1.06c.39.39 1.03.39 1.41 0 .39-.39.39-1.03 0-1.41L5.99 4.58zm12.37 12.37c-.39-.39-1.03-.39-1.41 0-.39.39-.39 1.03 0 1.41l1.06 1.06c.39.39 1.03.39 1.41 0 .39-.39.39-1.03 0-1.41l-1.06-1.06zm1.06-10.96c.39-.39.39-1.03 0-1.41-.39-.39-1.03-.39-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41.39.39 1.03.39 1.41 0l1.06-1.06zM7.05 18.36c.39-.39.39-1.03 0-1.41-.39-.39-1.03-.39-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41.39.39 1.03.39 1.41 0l1.06-1.06z" /></svg>
@@ -302,13 +305,14 @@ export default function Sidebar({
               variant="icon"
               onClick={() => setIsSidebarMenuOpen((previous) => !previous)}
               title="Sidebar seçenekleri"
+              aria-label="Sidebar seçenekleri"
               style={{ color: iconColor }}
               icon={<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M12 8a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm0 2a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm0 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"></path></svg>}
             />
             {isSidebarMenuOpen && (
               <>
                 <div style={{ position: 'fixed', inset: 0, zIndex: 90 }} onClick={() => setIsSidebarMenuOpen(false)} />
-                <div style={{ position: 'absolute', right: 0, top: '42px', width: '220px', background: isDarkMode ? '#202c33' : '#ffffff', border: `1px solid ${borderColor}`, borderRadius: '14px', boxShadow: '0 14px 40px rgba(0,0,0,0.26)', zIndex: 100, overflow: 'hidden', color: textColor }}>
+                <div className="dropdown-menu" style={{ right: 0, top: '42px', width: '220px', color: textColor }}>
                   <button className="msg-dropdown-btn" onClick={openContactsPanel}>👤 Kayıtlı kullanıcılar</button>
                   <button className="msg-dropdown-btn" onClick={openGroupCreator}>👥 Yeni grup kur</button>
                   <button className="msg-dropdown-btn" onClick={openStarredMessages}>⭐ Yıldızlı mesajlar</button>
@@ -322,35 +326,49 @@ export default function Sidebar({
       {socketConnectionStatus !== 'connected' && (
         <div style={{ margin: '10px', padding: '10px 12px', borderRadius: '10px', background: isDarkMode ? '#3b2f12' : '#fff4d6', border: `1px solid ${isDarkMode ? '#7a5b14' : '#ffd36a'}`, color: textColor, fontSize: '12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' }}>
           <span>{isReconnecting ? 'Yenileniyor... Anlık bağlantı yeniden kuruluyor.' : socketConnectionStatus === 'inactive' ? 'Uzun süre işlem yapılmadı. Anlık bağlantı kapandı.' : 'Bağlantı koptu. Anlık bildirimler durdu.'}</span>
-          <button onClick={onReconnectRealtime} disabled={isReconnecting} style={{ border: 'none', borderRadius: '999px', padding: '6px 10px', background: '#00a884', color: 'white', cursor: isReconnecting ? 'default' : 'pointer', fontWeight: 700, whiteSpace: 'nowrap', opacity: isReconnecting ? 0.65 : 1 }}>
+          <button onClick={onReconnectRealtime} disabled={isReconnecting} style={{ border: 'none', borderRadius: '999px', padding: '6px 10px', background: '#f97316', color: 'white', cursor: isReconnecting ? 'default' : 'pointer', fontWeight: 700, whiteSpace: 'nowrap', opacity: isReconnecting ? 0.65 : 1 }}>
             Bağlan
           </button>
         </div>
       )}
 
-      <div className="sidebar-search" style={{ padding: '10px', borderBottom: `1px solid ${borderColor}`, background: isDarkMode ? '#111b21' : '#ffffff' }}>
-        <input
-          type="text"
-          className="global-search-input"
-          placeholder="Sohbet veya mesaj ara..."
-          value={searchTerm}
-          onChange={handleSearchChange}
-          style={{ width: '100%', padding: '8px 12px', borderRadius: '8px', border: `1px solid ${borderColor}`, background: panelBg, color: textColor, outline: 'none' }}
-        />
+      <div className="sidebar-search" style={{ padding: '12px 16px', borderBottom: `1px solid ${borderColor}`, background: isDarkMode ? '#111b21' : '#ffffff' }}>
+        <div style={{ position: 'relative', display: 'flex', alignItems: 'center', width: '100%' }}>
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ position: 'absolute', left: '12px', color: iconColor, opacity: 0.6, pointerEvents: 'none' }}>
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+          <input
+            type="text"
+            className="global-search-input"
+            placeholder="Sohbet veya mesaj ara..."
+            value={searchTerm}
+            onChange={handleSearchChange}
+          />
+          {searchTerm && (
+            <button
+              onClick={() => { setSearchTerm(''); handleSearchChange({ target: { value: '' } } as any); }}
+              style={{ position: 'absolute', right: '12px', background: 'none', border: 'none', cursor: 'pointer', color: iconColor, opacity: 0.7, fontSize: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '4px' }}
+              title="Aramayı temizle"
+            >
+              ✕
+            </button>
+          )}
+        </div>
       </div>
 
       {isContactsPanelOpen && (
         <div style={{ position: 'absolute', top: '76px', left: '12px', right: '12px', maxHeight: '70vh', zIndex: 120, background: isDarkMode ? '#202c33' : '#ffffff', border: `1px solid ${borderColor}`, borderRadius: '16px', boxShadow: '0 18px 55px rgba(0,0,0,0.32)', overflow: 'hidden', color: textColor }}>
           <div style={{ padding: '14px', borderBottom: `1px solid ${borderColor}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
             <div>
-              <div style={{ color: '#00a884', fontSize: '12px', fontWeight: 800 }}>Kişi rehberi</div>
+              <div style={{ color: '#f97316', fontSize: '12px', fontWeight: 800 }}>Kişi rehberi</div>
               <h3 style={{ margin: '2px 0 0', fontSize: '17px' }}>Kayıtlı kullanıcılar</h3>
             </div>
             <button onClick={() => setIsContactsPanelOpen(false)} style={{ border: 'none', background: panelBg, color: iconColor, width: '32px', height: '32px', borderRadius: '50%', cursor: 'pointer' }}>×</button>
           </div>
 
           <div style={{ padding: '12px', display: 'flex', gap: '8px', borderBottom: `1px solid ${borderColor}` }}>
-            <button onClick={openGroupCreator} style={{ border: 'none', background: '#00a884', color: 'white', borderRadius: '10px', padding: '9px 11px', cursor: 'pointer', fontWeight: 700, whiteSpace: 'nowrap' }}>
+            <button onClick={openGroupCreator} style={{ border: 'none', background: '#f97316', color: 'white', borderRadius: '10px', padding: '9px 11px', cursor: 'pointer', fontWeight: 700, whiteSpace: 'nowrap' }}>
               Yeni grup
             </button>
             <input
@@ -373,7 +391,7 @@ export default function Sidebar({
                   <span className="user-name">{user.username}</span>
                   <div style={{ fontSize: '12px', color: iconColor, marginTop: '3px' }}>{user.isOnline ? 'Çevrimiçi' : 'Sohbet başlat'}</div>
                 </div>
-                <button onClick={(event) => { event.stopPropagation(); startContactChat(user); }} style={{ border: 'none', background: '#00a884', color: 'white', borderRadius: '999px', padding: '6px 10px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', marginLeft: 'auto' }}>
+                <button onClick={(event) => { event.stopPropagation(); startContactChat(user); }} style={{ border: 'none', background: '#f97316', color: 'white', borderRadius: '999px', padding: '6px 10px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', marginLeft: 'auto' }}>
                   Sohbet başlat
                 </button>
               </div>
@@ -388,7 +406,7 @@ export default function Sidebar({
         <div style={{ position: 'absolute', top: '76px', left: '12px', right: '12px', maxHeight: '72vh', zIndex: 120, background: isDarkMode ? '#202c33' : '#ffffff', border: `1px solid ${borderColor}`, borderRadius: '16px', boxShadow: '0 18px 55px rgba(0,0,0,0.32)', overflow: 'hidden', color: textColor }}>
           <div style={{ padding: '14px', borderBottom: `1px solid ${borderColor}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
             <div>
-              <div style={{ color: '#00a884', fontSize: '12px', fontWeight: 800 }}>Yıldızlı mesajlar</div>
+              <div style={{ color: '#f97316', fontSize: '12px', fontWeight: 800 }}>Yıldızlı mesajlar</div>
               <h3 style={{ margin: '2px 0 0', fontSize: '17px' }}>Kaydedilenler</h3>
             </div>
             <button onClick={() => setIsStarredPanelOpen(false)} style={{ border: 'none', background: panelBg, color: iconColor, width: '32px', height: '32px', borderRadius: '50%', cursor: 'pointer' }}>x</button>
@@ -420,7 +438,7 @@ export default function Sidebar({
         {isContactsListView && (
           <div style={{ position: 'absolute', inset: 0, zIndex: 45, background: isDarkMode ? '#111b21' : '#ffffff', color: textColor, overflowY: 'auto' }}>
             <div style={{ padding: '12px', display: 'flex', gap: '8px', borderBottom: `1px solid ${borderColor}` }}>
-              <button onClick={openGroupCreator} style={{ border: 'none', background: '#00a884', color: 'white', borderRadius: '10px', padding: '9px 11px', cursor: 'pointer', fontWeight: 700, whiteSpace: 'nowrap' }}>
+              <button onClick={openGroupCreator} style={{ border: 'none', background: '#f97316', color: 'white', borderRadius: '10px', padding: '9px 11px', cursor: 'pointer', fontWeight: 700, whiteSpace: 'nowrap' }}>
                 Yeni grup
               </button>
               <input
@@ -455,7 +473,7 @@ export default function Sidebar({
               const directionIcon = call.direction === 'incoming' ? '↙' : '↗';
               return (
                 <div key={call.callId} className="user-item" style={{ color: textColor, cursor: 'default' }}>
-                  <div className="avatar-small" style={{ background: call.status === 'missed' ? '#e53935' : '#00a884', color: 'white' }}>
+                  <div className="avatar-small" style={{ background: call.status === 'missed' ? '#e53935' : '#f97316', color: 'white' }}>
                     {call.callType === 'video' ? '▣' : '☎'}
                   </div>
                   <div className="user-info">
@@ -475,7 +493,7 @@ export default function Sidebar({
         {isBlockedUsersView && (
           <div style={{ position: 'absolute', inset: 0, zIndex: 45, background: isDarkMode ? '#111b21' : '#ffffff', color: textColor, overflowY: 'auto' }}>
             <div style={{ padding: '15px 20px', borderBottom: `1px solid ${borderColor}` }}>
-               <h3 style={{ margin: 0, fontSize: '15px', color: '#00a884', fontWeight: 'bold' }}>Engellenen Kullanıcılar</h3>
+               <h3 style={{ margin: 0, fontSize: '15px', color: '#f97316', fontWeight: 'bold' }}>Engellenen Kullanıcılar</h3>
                <p style={{ margin: '5px 0 0', fontSize: '12px', color: iconColor }}>Engellediğiniz kullanıcıların engelini buradan kaldırabilirsiniz.</p>
             </div>
             {isBlockedUsersLoading ? (
@@ -484,7 +502,7 @@ export default function Sidebar({
               blockedUsers.map(user => (
                 <div key={user.id} className="user-item" style={{ color: textColor, cursor: 'default', justifyContent: 'space-between', alignItems: 'center', paddingRight: '15px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                    <div className="avatar-small" style={{ background: '#00a884', color: 'white', position: 'relative', overflow: 'hidden' }}>
+                    <div className="avatar-small" style={{ background: '#f97316', color: 'white', position: 'relative', overflow: 'hidden' }}>
                       {user.avatarUrl ? <img src={user.avatarUrl} alt="" style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }} /> : user.username.charAt(0).toUpperCase()}
                     </div>
                     <div className="user-info">
@@ -509,7 +527,7 @@ export default function Sidebar({
           <div style={{ position: 'absolute', top: '10px', left: '10px', right: '10px', bottom: '10px', zIndex: 25, background: isDarkMode ? 'rgba(32,44,51,0.97)' : 'rgba(255,255,255,0.97)', border: `1px solid ${borderColor}`, borderRadius: '16px', boxShadow: '0 18px 48px rgba(0,0,0,0.28)', overflow: 'hidden', color: textColor, display: 'flex', flexDirection: 'column', backdropFilter: 'blur(5px)' }}>
             <div style={{ padding: '14px 15px', borderBottom: `1px solid ${borderColor}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
               <div>
-                <div style={{ color: '#00a884', fontSize: '12px', fontWeight: 800, textTransform: 'uppercase' }}>Arama Sonuçları</div>
+                <div style={{ color: '#f97316', fontSize: '12px', fontWeight: 800, textTransform: 'uppercase' }}>Arama Sonuçları</div>
                 <div style={{ fontSize: '13px', color: iconColor, marginTop: '3px' }}>"{searchTerm}" için kişiler ve mesajlar</div>
               </div>
               <button onClick={() => { setSearchTerm(''); setMessageResults([]); }} style={{ border: 'none', background: panelBg, color: iconColor, width: '32px', height: '32px', borderRadius: '50%', cursor: 'pointer', fontSize: '18px' }}>×</button>
@@ -518,7 +536,7 @@ export default function Sidebar({
             <div style={{ flex: 1, overflowY: 'auto', paddingBottom: '10px' }}>
               {searchUserResults.length > 0 && (
                 <>
-                  <h3 className="list-title" style={{ padding: '15px 15px 5px 15px', margin: 0, fontSize: '13px', color: '#00a884', textTransform: 'uppercase' }}>Kullanıcılar</h3>
+                  <h3 className="list-title" style={{ padding: '15px 15px 5px 15px', margin: 0, fontSize: '13px', color: '#f97316', textTransform: 'uppercase' }}>Kullanıcılar</h3>
                   {searchUserResults.map((user) => (
                     <div key={user.id} className={`user-item ${selectedUser?.id === user.id ? 'active' : ''}`} onClick={() => startContactChat(user)} style={{ color: textColor, cursor: 'pointer' }}>
                       <div className="avatar-small" style={{ position: 'relative', overflow: 'visible' }}>
@@ -529,7 +547,7 @@ export default function Sidebar({
                         <span className="user-name">{user.username}</span>
                         <div style={{ fontSize: '12px', color: iconColor, marginTop: '3px' }}>Sohbet başlat</div>
                       </div>
-                      <button onClick={(event) => { event.stopPropagation(); startContactChat(user); }} style={{ border: 'none', background: '#00a884', color: 'white', borderRadius: '999px', padding: '6px 10px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', marginLeft: 'auto' }}>
+                      <button onClick={(event) => { event.stopPropagation(); startContactChat(user); }} style={{ border: 'none', background: '#f97316', color: 'white', borderRadius: '999px', padding: '6px 10px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', marginLeft: 'auto' }}>
                         Başlat
                       </button>
                     </div>
@@ -537,7 +555,7 @@ export default function Sidebar({
                 </>
               )}
 
-              <h3 className="list-title" style={{ padding: '15px 15px 5px 15px', margin: 0, fontSize: '13px', color: '#00a884', textTransform: 'uppercase' }}>Mesajlarda Bulunanlar</h3>
+              <h3 className="list-title" style={{ padding: '15px 15px 5px 15px', margin: 0, fontSize: '13px', color: '#f97316', textTransform: 'uppercase' }}>Mesajlarda Bulunanlar</h3>
               {isSearching ? (
                 <div style={{ padding: '14px 15px', fontSize: '13px', color: iconColor }}>Aranıyor...</div>
               ) : messageResults.length > 0 ? (
@@ -558,15 +576,7 @@ export default function Sidebar({
           </div>
           </>
         )}
-        {!isArchiveView && !isContactsListView && !isCallsView && !isBlockedUsersView && callHistory.length > 0 && searchTerm.trim() === '' && (
-          <div onClick={() => { setIsCallsView(true); setIsArchiveView(false); setIsContactsListView(false); }} className="user-item" style={{ color: textColor, borderBottom: `1px solid ${borderColor}`, cursor: 'pointer' }}>
-            <div className="avatar-small" style={{ background: '#00a884', color: 'white' }}>☎</div>
-            <div className="user-info">
-              <span className="user-name">Son aramalar</span>
-              <div style={{ fontSize: '12px', color: iconColor, marginTop: '3px' }}>{callHistory.length} kayıt</div>
-            </div>
-          </div>
-        )}
+
 
         {!isArchiveView && !isContactsListView && !isCallsView && !isBlockedUsersView && archivedConversations.length > 0 && searchTerm.trim() === '' && (
           <div onClick={() => { setIsArchiveView(true); setIsCallsView(false); setIsContactsListView(false); }} className="user-item" style={{ color: textColor, borderBottom: `1px solid ${borderColor}`, cursor: 'pointer' }}>
@@ -576,7 +586,7 @@ export default function Sidebar({
               <div style={{ fontSize: '12px', color: iconColor, marginTop: '3px' }}>Ayrı arşiv görünümüne git</div>
             </div>
             {archivedUnreadCount > 0 && (
-              <span style={{ background: '#00a884', color: 'white', padding: '2px 8px', borderRadius: '999px', fontSize: '12px', marginLeft: 'auto' }}>
+              <span style={{ background: '#f97316', color: 'white', padding: '2px 8px', borderRadius: '999px', fontSize: '12px', marginLeft: 'auto' }}>
                 {archivedUnreadCount}
               </span>
             )}
@@ -603,7 +613,7 @@ export default function Sidebar({
                   <span className="user-name">{user.username}</span>
                 </div>
                 {unreadCounts[user.id] > 0 && (
-                  <span style={{ background: '#00a884', color: 'white', padding: '2px 8px', borderRadius: '50%', fontSize: '12px', marginLeft: 'auto' }}>
+                  <span style={{ background: '#f97316', color: 'white', padding: '2px 8px', borderRadius: '50%', fontSize: '12px', marginLeft: 'auto' }}>
                     {unreadCounts[user.id]}
                   </span>
                 )}
@@ -616,7 +626,7 @@ export default function Sidebar({
           <>
             {searchUserResults.length > 0 && (
               <>
-                <h3 className="list-title" style={{ padding: '15px 15px 5px 15px', margin: 0, fontSize: '13px', color: '#00a884', textTransform: 'uppercase' }}>Kullanıcılar</h3>
+                <h3 className="list-title" style={{ padding: '15px 15px 5px 15px', margin: 0, fontSize: '13px', color: '#f97316', textTransform: 'uppercase' }}>Kullanıcılar</h3>
                 {searchUserResults.map((user) => (
                   <div key={user.id} className={`user-item ${selectedUser?.id === user.id ? 'active' : ''}`} onClick={() => startContactChat(user)} style={{ color: textColor, cursor: 'pointer' }}>
                     <div className="avatar-small" style={{ position: 'relative', overflow: 'visible' }}>
@@ -627,14 +637,14 @@ export default function Sidebar({
                       <span className="user-name">{user.username}</span>
                       <div style={{ fontSize: '12px', color: iconColor, marginTop: '3px' }}>Sohbet başlat</div>
                     </div>
-                    <button onClick={(event) => { event.stopPropagation(); startContactChat(user); }} style={{ border: 'none', background: '#00a884', color: 'white', borderRadius: '999px', padding: '6px 10px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', marginLeft: 'auto' }}>
+                    <button onClick={(event) => { event.stopPropagation(); startContactChat(user); }} style={{ border: 'none', background: '#f97316', color: 'white', borderRadius: '999px', padding: '6px 10px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', marginLeft: 'auto' }}>
                       Başlat
                     </button>
                   </div>
                 ))}
               </>
             )}
-            <h3 className="list-title" style={{ padding: '15px 15px 5px 15px', margin: 0, fontSize: '13px', color: '#00a884', textTransform: 'uppercase' }}>Mesajlarda Bulunanlar</h3>
+            <h3 className="list-title" style={{ padding: '15px 15px 5px 15px', margin: 0, fontSize: '13px', color: '#f97316', textTransform: 'uppercase' }}>Mesajlarda Bulunanlar</h3>
             {isSearching ? (
               <div style={{ padding: '10px 15px', fontSize: '13px', color: iconColor }}>Aranıyor...</div>
             ) : messageResults.length > 0 ? (

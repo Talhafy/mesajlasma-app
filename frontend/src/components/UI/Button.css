@@ -30,13 +30,13 @@
 /* --- VARYASYONLAR --- */
 
 .custom-btn.primary {
-  background-color: #00a884;
+  background-color: #f97316;
   color: white;
-  box-shadow: 0 2px 4px rgba(0, 168, 132, 0.2);
+  box-shadow: 0 2px 4px rgba(249, 115, 22, 0.2);
 }
 .custom-btn.primary:hover:not(:disabled) {
-  background-color: #008f6f;
-  box-shadow: 0 4px 8px rgba(0, 168, 132, 0.3);
+  background-color: #ea580c;
+  box-shadow: 0 4px 8px rgba(249, 115, 22, 0.3);
 }
 
 .custom-btn.danger {

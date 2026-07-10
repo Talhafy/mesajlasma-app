@@ -14,12 +14,20 @@ const fileFields = {
   fileName: z.string().max(255).optional().nullable()
 };
 
+const strongPassword = z.string()
+  .min(8, 'Şifre en az 8 karakter uzunluğunda olmalıdır.')
+  .max(128)
+  .regex(
+    /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&.])[A-Za-z\d@$!%*?&.]{8,}$/,
+    'Şifre en az bir küçük harf, bir büyük harf, bir rakam ve bir özel karakter (@$!%*?&.) içermelidir.'
+  );
+
 export const authSchemas = {
   // .strict() body içinde beklenmeyen alanları reddeder; örn. frontend adminId/userId enjekte edemez.
   register: z.object({
     username: z.string().trim().min(3).max(30).regex(/^[\p{L}\p{N}_.-]+$/u),
     email: z.string().trim().email().max(254),
-    password: z.string().min(8).max(128)
+    password: strongPassword
   }).strict(),
   login: z.object({
     identifier: z.string().trim().min(1).max(254),
@@ -32,7 +40,7 @@ export const userSchemas = {
   email: z.object({ newEmail: z.string().trim().email().max(254) }).strict(),
   password: z.object({
     oldPassword: z.string().min(1).max(128),
-    newPassword: z.string().min(8).max(128)
+    newPassword: strongPassword
   }).strict(),
   readReceipts: z.object({ isEnabled: z.boolean() }).strict(),
   avatar: z.object({ fileKey: z.string().min(1).max(300).nullable() }).strict()
@@ -90,7 +98,10 @@ export const chatSchemas = {
   groupAvatar: z.object({ fileKey: z.string().min(1).max(300).nullable() }).strict(),
   addGroupMembers: z.object({ userIdsToAdd: z.array(uuid).min(1).max(100) }).strict(),
   transferAdmin: z.object({ newAdminId: uuid }).strict(),
-  readConversation: z.object({ emitReceipt: z.boolean().optional() }).strict(),
+  readConversation: z.object({
+    emitReceipt: z.boolean().optional(),
+    lastReadMessageId: uuid.optional()
+  }).strict(),
   callToken: z.object({
     conversationId: uuid,
     callId: uuid,

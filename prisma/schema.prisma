@@ -15,6 +15,7 @@ model User {
   lastSeenAt                DateTime           @default(now())
   readReceiptsOn            Boolean            @default(true)
   avatarFileKey             String?
+  failedLoginAttempts       Int                @default(0)
   messages                  Message[]
   scheduledMessages         ScheduledMessage[]
   participants              Participant[]
@@ -22,18 +23,19 @@ model User {
   administeredConversations Conversation[]     @relation("ConversationAdmin")
   blockedUsers              BlockedUser[]      @relation("BlockedBy")
   blockedByUsers            BlockedUser[]      @relation("Blocks")
+  messageReads              MessageRead[]
+  messageStars              MessageStar[]
+  messageDeletions          MessageDeletion[]
 }
 
 model BlockedUser {
-  id        String   @id @default(uuid())
   userId    String
   blockedId String
   createdAt DateTime @default(now())
   user      User     @relation("BlockedBy", fields: [userId], references: [id], onDelete: Cascade)
   blocked   User     @relation("Blocks", fields: [blockedId], references: [id], onDelete: Cascade)
 
-  @@unique([userId, blockedId])
-  @@index([userId])
+  @@id([userId, blockedId])
   @@index([blockedId])
 }
 
@@ -58,9 +60,6 @@ model Conversation {
   adminId           String?
   avatarFileKey     String?
   createdAt         DateTime           @default(now())
-  pinnedByIds       String[]           @default([])
-  archivedByIds     String[]           @default([])
-  mutedByIds        String[]           @default([])
   disappearingDurationSeconds Int?
   admin             User?              @relation("ConversationAdmin", fields: [adminId], references: [id], onDelete: SetNull)
   messages          Message[]
@@ -75,6 +74,9 @@ model Participant {
   userId         String
   conversationId String
   joinedAt       DateTime     @default(now())
+  isPinned       Boolean      @default(false)
+  isArchived     Boolean      @default(false)
+  isMuted        Boolean      @default(false)
   user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
@@ -89,13 +91,13 @@ model Message {
   conversationId String
   clientId       String?
   createdAt      DateTime     @default(now())
-  expiresAt       DateTime?
+  expiresAt      DateTime?
   editedAt       DateTime?
-  readByIds      String[]     @default([])
+  reads          MessageRead[]
+  stars          MessageStar[]
+  deletions      MessageDeletion[]
   isPinned       Boolean      @default(false)
   isForwarded    Boolean      @default(false)
-  starredByIds   String[]     @default([])
-  deletedForIds  String[]     @default([])
   fileKey        String?
   fileType       String?
   fileName       String?
@@ -106,9 +108,20 @@ model Message {
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
   @@unique([senderId, clientId])
-  @@index([conversationId, createdAt])
+  @@index([conversationId, createdAt(sort: Desc), id(sort: Desc)])
   @@index([expiresAt])
   @@index([senderId])
+}
+
+model MessageRead {
+  messageId String
+  userId    String
+  readAt    DateTime @default(now())
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([messageId, userId])
+  @@index([userId, messageId])
 }
 
 model ScheduledMessage {
@@ -129,3 +142,26 @@ model ScheduledMessage {
   @@index([sendAt])
   @@index([conversationId, senderId])
 }
+
+model MessageStar {
+  messageId String
+  userId    String
+  createdAt DateTime @default(now())
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([messageId, userId])
+  @@index([userId, messageId])
+}
+
+model MessageDeletion {
+  messageId String
+  userId    String
+  deletedAt DateTime @default(now())
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([messageId, userId])
+  @@index([userId, messageId])
+}
+

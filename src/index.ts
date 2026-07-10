@@ -2,11 +2,12 @@ import 'dotenv/config';
 import path from 'path';
 import cors from 'cors';
 import express from 'express';
+import helmet from 'helmet';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import { clientOrigin, port, trustProxy } from './config/env';
 import { flushLogs, logger } from './config/logger';
-import { loginLimiter, refreshLimiter, registerLimiter, uploadLimiter } from './config/rateLimiters';
+import { loginLimiter, refreshLimiter, registerLimiter, uploadLimiter, globalApiLimiter } from './config/rateLimiters';
 import prisma from './db';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 import { requestLogger, securityStatusLogger } from './middleware/requestLogger';
@@ -33,6 +34,9 @@ const io = new Server(httpServer, {
 
 // Route modülleri gerçek zamanlı olay yayınlamak için aynı Socket.IO örneğini kullanır.
 app.set('io', io);
+
+// HTTP güvenlik başlıklarını (Helmet) en başta ekliyoruz.
+app.use(helmet());
 app.use(express.json({ limit: '100kb' }));
 // CORS'u wildcard bırakmıyoruz; HttpOnly refresh cookie kullandığımız için yalnızca frontend origin'e izin verilir.
 app.use(cors({
@@ -49,10 +53,11 @@ app.use('/api/login', loginLimiter);
 app.use('/api/register', registerLimiter);
 app.use('/api/refresh', refreshLimiter);
 app.use('/api/upload', uploadLimiter);
+app.use('/api', globalApiLimiter);
 
 app.use('/api', authRoutes);
-app.use('/api', callRoutes);
 app.use('/api', healthRoutes);
+app.use('/api', callRoutes);
 app.use('/api', chatRoutes);
 app.use('/api', scheduledMessageRoutes);
 app.use('/api/user', userRoutes);

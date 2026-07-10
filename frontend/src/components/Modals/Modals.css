@@ -11,7 +11,7 @@
 .settings-section h4 { font-size: 13px; color: #888; margin-bottom: 8px; text-transform: uppercase; }
 .settings-input-group { display: flex; gap: 8px; }
 .settings-input-group input { flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 6px; outline: none; }
-.settings-input-group button { padding: 10px 15px; background: #00a884; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 500; }
+.settings-input-group button { padding: 10px 15px; background: #f97316; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 500; }
 .delete-btn { width: 100%; padding: 12px; background: #ffebee; color: #d32f2f; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; }
 .settings-msg { padding: 10px; border-radius: 6px; margin-bottom: 15px; font-size: 13px; }
 .settings-msg.success { background: #e8f5e9; color: #2e7d32; }
@@ -30,13 +30,13 @@
 .section-header-row h4 { margin: 0 !important; }
 
 /* Ekle / İptal Butonu (Hap Tasarımı - Pill Shape) */
-.add-member-toggle-btn { background: #f0f2f5; border: 1px solid #e9edef; color: #00a884; font-weight: 600; cursor: pointer; font-size: 13px; padding: 6px 16px; border-radius: 20px; transition: all 0.2s ease; }
-.add-member-toggle-btn:hover { background: #00a884; color: white; border-color: #00a884; transform: translateY(-1px); }
+.add-member-toggle-btn { background: #f0f2f5; border: 1px solid #e9edef; color: #f97316; font-weight: 600; cursor: pointer; font-size: 13px; padding: 6px 16px; border-radius: 20px; transition: all 0.2s ease; }
+.add-member-toggle-btn:hover { background: #f97316; color: white; border-color: #f97316; transform: translateY(-1px); }
 
 /* Kişi Ekleme Kutusu */
 .add-member-box { border: 1px solid #e9edef; padding: 12px; border-radius: 8px; background: #f8f9fa; margin-top: 8px; }
 .member-checkbox-label { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; cursor: pointer; font-size: 14px; color: #111b21; font-weight: 500;}
-.member-checkbox-label input[type="checkbox"] { width: 18px; height: 18px; cursor: pointer; accent-color: #00a884; }
+.member-checkbox-label input[type="checkbox"] { width: 18px; height: 18px; cursor: pointer; accent-color: #f97316; }
 
 /* Grup Üyeleri Listesi Kutusu */
 .member-list-container { max-height: 220px; overflow-y: auto; border: 1px solid #e9edef; border-radius: 8px; padding: 0 12px; }
@@ -44,12 +44,12 @@
 .member-list-item:last-child { border-bottom: none; }
 .member-info { display: flex; flex-direction: column; }
 .member-name { font-size: 15px; font-weight: 500; color: #111b21; }
-.member-role { font-size: 11px; color: #00a884; font-weight: 600; margin-top: 2px; }
+.member-role { font-size: 11px; color: #f97316; font-weight: 600; margin-top: 2px; }
 
 /* Yönetici Yap ve Çıkar Butonları (Yumuşak Arkaplanlı Modern Görünüm) */
 .member-actions { display: flex; gap: 8px; }
-.action-btn-outline { background: rgba(0, 168, 132, 0.1); border: none; color: #00a884; border-radius: 6px; font-size: 12px; padding: 8px 14px; cursor: pointer; font-weight: 600; transition: all 0.2s ease; }
-.action-btn-outline:hover { background: #00a884; color: white; transform: translateY(-1px); }
+.action-btn-outline { background: rgba(249, 115, 22, 0.1); border: none; color: #f97316; border-radius: 6px; font-size: 12px; padding: 8px 14px; cursor: pointer; font-weight: 600; transition: all 0.2s ease; }
+.action-btn-outline:hover { background: #f97316; color: white; transform: translateY(-1px); }
 
 .action-btn-danger { background: rgba(234, 0, 56, 0.1); border: none; color: #ea0038; border-radius: 6px; font-size: 12px; padding: 8px 14px; cursor: pointer; font-weight: 600; transition: all 0.2s ease; }
 .action-btn-danger:hover { background: #ea0038; color: white; transform: translateY(-1px); }
@@ -59,15 +59,15 @@
 .danger-action-btn:hover { background: #ffebee; }
 
 /* Grup Adı Kaydet Butonu (Modern Primary) */
-.modern-primary-btn { padding: 10px 20px; background: #00a884; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; transition: all 0.2s ease; box-shadow: 0 2px 4px rgba(0, 168, 132, 0.2); }
-.modern-primary-btn:hover { background: #008f6f; transform: translateY(-1px); box-shadow: 0 4px 8px rgba(0, 168, 132, 0.3); }
+.modern-primary-btn { padding: 10px 20px; background: #f97316; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; transition: all 0.2s ease; box-shadow: 0 2px 4px rgba(249, 115, 22, 0.2); }
+.modern-primary-btn:hover { background: #ea580c; transform: translateY(-1px); box-shadow: 0 4px 8px rgba(249, 115, 22, 0.3); }
 
 /* TOGGLE SWITCH (Mavi Tik Kapat/Aç Butonu) */
 .switch { position: relative; display: inline-block; width: 44px; height: 24px; }
 .switch input { opacity: 0; width: 0; height: 0; }
 .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .3s; }
 .slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: white; transition: .3s; box-shadow: 0 2px 4px rgba(0,0,0,0.2); }
-input:checked + .slider { background-color: #00a884; }
+input:checked + .slider { background-color: #f97316; }
 input:checked + .slider:before { transform: translateX(20px); }
 .slider.round { border-radius: 24px; }
 .slider.round:before { border-radius: 50%; }
@@ -81,14 +81,14 @@ body.dark-theme .add-member-box { background: #182229; border-color: #2a3942; }
 body.dark-theme .member-checkbox-label { color: #e9edef; }
 body.dark-theme .member-list-container { border-color: #2a3942; }
 body.dark-theme .member-list-item { border-bottom-color: #202c33; }
-body.dark-theme .member-name { color: #e9edef; } /* İşte ekran görüntüsündeki kayıp isimleri ortaya çıkaran kod */
+body.dark-theme .member-name { color: #e9edef; } 
 
 /* Karanlık mod buton renk uyarlamaları */
-body.dark-theme .add-member-toggle-btn { background: #202c33; border-color: #2a3942; color: #00c29a; }
-body.dark-theme .add-member-toggle-btn:hover { background: #00c29a; color: #111b21; border-color: #00c29a; }
+body.dark-theme .add-member-toggle-btn { background: #202c33; border-color: #2a3942; color: #fdba74; }
+body.dark-theme .add-member-toggle-btn:hover { background: #f97316; color: #ffffff; border-color: #f97316; }
 
-body.dark-theme .action-btn-outline { background: rgba(0, 168, 132, 0.15); color: #00c29a; }
-body.dark-theme .action-btn-outline:hover { background: #00c29a; color: #111b21; }
+body.dark-theme .action-btn-outline { background: rgba(249, 115, 22, 0.15); color: #fdba74; }
+body.dark-theme .action-btn-outline:hover { background: #f97316; color: #ffffff; }
 
 body.dark-theme .action-btn-danger { background: rgba(241, 92, 109, 0.15); color: #f15c6d; }
 body.dark-theme .action-btn-danger:hover { background: #f15c6d; color: #111b21; }
@@ -96,12 +96,12 @@ body.dark-theme .action-btn-danger:hover { background: #f15c6d; color: #111b21; 
 body.dark-theme .danger-action-btn { color: #f15c6d; }
 body.dark-theme .danger-action-btn:hover { background: rgba(241, 92, 109, 0.1); }
 
-body.dark-theme .modern-primary-btn { color: #111b21; }
-body.dark-theme .modern-primary-btn:hover { background: #00c29a; }
+body.dark-theme .modern-primary-btn { color: #ffffff; }
+body.dark-theme .modern-primary-btn:hover { background: #ea580c; }
 
 body.dark-theme .settings-section { border-color: #2a3942 !important; }
 body.dark-theme .slider { background-color: #3b4a54; }
-body.dark-theme input:checked + .slider { background-color: #00a884; }
+body.dark-theme input:checked + .slider { background-color: #f97316; }
 
 /* =========================================
    YENİ ÇİFT SÜTUNLU AYARLAR MENÜSÜ TASARIMI
@@ -147,15 +147,15 @@ body.dark-theme input:checked + .slider { background-color: #00a884; }
 /* Profil Bileşenleri */
 .settings-avatar-row { display: flex; align-items: center; gap: 25px; margin-bottom: 30px; }
 .settings-avatar {
-  width: 80px; height: 80px; border-radius: 50%; background: #00a884; color: white;
-  display: flex; align-items: center; justify-content: center; font-size: 30px; box-shadow: 0 4px 10px rgba(0, 168, 132, 0.3);
+  width: 80px; height: 80px; border-radius: 50%; background: #f97316; color: white;
+  display: flex; align-items: center; justify-content: center; font-size: 30px; box-shadow: 0 4px 10px rgba(249, 115, 22, 0.3);
 }
 .settings-username { margin: 0 0 5px 0; font-size: 22px; color: #111b21; }
-.settings-status-badge { background: #e7f8f0; color: #00a884; padding: 4px 10px; border-radius: 12px; font-size: 13px; font-weight: bold; }
+.settings-status-badge { background: #fff7ed; color: #f97316; padding: 4px 10px; border-radius: 12px; font-size: 13px; font-weight: bold; }
 
 .settings-label { font-size: 14px; color: #667781; font-weight: 500; }
 .settings-modern-input { flex: 1; padding: 12px 15px; border-radius: 8px; border: 1px solid #d1d7db; background: #f0f2f5; color: #3b4a54; font-size: 15px; outline: none; transition: border-color 0.2s; width: 100%; box-sizing: border-box;}
-.settings-modern-input:focus { border-color: #00a884; }
+.settings-modern-input:focus { border-color: #f97316; }
 
 /* Bilgi Kutusu (Mavi Tik alanı) */
 .settings-info-box { display: flex; align-items: center; justify-content: space-between; padding: 15px; background: #f0f2f5; border-radius: 8px; margin-top: 10px; }
@@ -188,11 +188,11 @@ body.dark-theme .settings-close-icon:hover { color: #e9edef; }
 body.dark-theme .settings-title { color: #e9edef; }
 
 body.dark-theme .settings-username { color: #e9edef; }
-body.dark-theme .settings-status-badge { background: rgba(0, 168, 132, 0.15); color: #00c29a; }
+body.dark-theme .settings-status-badge { background: rgba(249, 115, 22, 0.15); color: #fdba74; }
 
 body.dark-theme .settings-label { color: #8696a0; }
 body.dark-theme .settings-modern-input { background: #202c33; border-color: #2a3942; color: #e9edef; }
-body.dark-theme .settings-modern-input:focus { border-color: #00a884; }
+body.dark-theme .settings-modern-input:focus { border-color: #f97316; }
 
 body.dark-theme .settings-info-box { background: #202c33; }
 body.dark-theme .settings-info-box-text h4 { color: #e9edef; }

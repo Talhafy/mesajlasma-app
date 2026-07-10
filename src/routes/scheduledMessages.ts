@@ -7,6 +7,7 @@ import { validateRequest } from '../middleware/validateRequest';
 import { isConversationMember } from '../services/conversationAccess';
 import { deleteFileIfUnreferenced } from '../services/fileCleanup';
 import { withSignedFileUrl } from '../services/fileStorage';
+import { serializeMessage } from '../services/messageService';
 import { getAuthenticatedUserId, getRouteParam } from '../utils/request';
 import { chatSchemas } from '../validation/schemas';
 
@@ -110,6 +111,12 @@ router.post('/messages/schedule/send-now/:id', validateRequest({ params: chatSch
       const claimed = await tx.scheduledMessage.deleteMany({ where: { id, senderId: userId } });
       if (claimed.count !== 1) return null;
 
+      // Konuşmadaki kaybolan mesaj süresini sorguluyoruz
+      const conversation = await tx.conversation.findUnique({
+        where: { id: scheduled.conversationId },
+        select: { disappearingDurationSeconds: true }
+      });
+
       const createdMessage = await tx.message.create({
         data: {
           content: scheduled.content,
@@ -118,7 +125,10 @@ router.post('/messages/schedule/send-now/:id', validateRequest({ params: chatSch
           clientId: `scheduled:${scheduled.id}`,
           fileKey: scheduled.fileKey,
           fileType: scheduled.fileType,
-          fileName: scheduled.fileName
+          fileName: scheduled.fileName,
+          expiresAt: conversation?.disappearingDurationSeconds
+            ? new Date(Date.now() + conversation.disappearingDurationSeconds * 1000)
+            : null
         }
       });
       return createdMessage.id;
@@ -131,7 +141,10 @@ router.post('/messages/schedule/send-now/:id', validateRequest({ params: chatSch
       where: { id: savedMessageId },
       include: {
         sender: { select: { username: true } },
-        conversation: { select: { isGroup: true } }
+        conversation: { select: { isGroup: true } },
+        reads: { select: { userId: true } },
+        stars: { select: { userId: true } },
+        deletions: { select: { userId: true } }
       }
     });
     if (!savedMessage) return res.status(404).json({ error: 'Gönderilen mesaj yüklenemedi.' });
@@ -142,7 +155,7 @@ router.post('/messages/schedule/send-now/:id', validateRequest({ params: chatSch
     });
     // Socket olayı hem conversation odasına hem de kullanıcı odalarına gider; sidebar ve açık chat aynı anda güncellenir.
     const rooms = [scheduled.conversationId, ...(conversation?.participants.map(({ userId: participantId }) => participantId) || [])];
-    req.app.get('io').to([...new Set(rooms)]).emit('yeni_mesaj_geldi', await withSignedFileUrl(savedMessage));
+    req.app.get('io').to([...new Set(rooms)]).emit('yeni_mesaj_geldi', await serializeMessage(savedMessage));
     return res.status(200).json({ success: true, message: 'Mesaj hemen gönderildi.' });
   } catch {
     return res.status(500).json({ error: 'Mesaj hemen gönderilemedi.' });
