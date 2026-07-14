@@ -1143,18 +1143,28 @@ export default function ChatArea({
             const isMe = msg.senderId === currentUser.id;
 
             let showBlueTick = false; // Mavi renk yanacak mı?
-            let actuallyRead = false; // İkinci gri tik için fiziksel okunma durumu
+            let isDoubleTick = false; // İkinci gri tik için durum
 
             if (activeConversation?.isGroup) {
               const otherMembersCount = groupMembers.length > 0 ? groupMembers.length - 1 : 999;
-              actuallyRead = (msg.readByIds?.length || 0) >= otherMembersCount && otherMembersCount > 0;
-              showBlueTick = actuallyRead; // Gruplarda mavi tik gizliliği es geçilir
+              showBlueTick = (msg.readByIds?.length || 0) >= otherMembersCount && otherMembersCount > 0;
+              isDoubleTick = true; // Gruplarda mavi tik gizliliği es geçilir ve her zaman çift tik gösterilir
             } else {
-              actuallyRead = !!(msg.readByIds && msg.readByIds.length > 0);
-              const myReceiptsEnabled = currentUser.readReceiptsOn !== false;
-              const theirReceiptsEnabled = selectedUser?.readReceiptsOn !== false;
+              const otherUser = selectedUser || activeConversation?.otherUser;
+              const otherUserInList = otherUser ? usersList.find(u => u.id === otherUser.id) : null;
+              const actualOtherUser = otherUserInList || otherUser;
 
-              showBlueTick = actuallyRead && myReceiptsEnabled && theirReceiptsEnabled;
+              const isOtherUserOnline = actualOtherUser?.isOnline === true;
+              const msgTime = msg.createdAt ? new Date(msg.createdAt).getTime() : Date.now();
+              const lastSeenTime = actualOtherUser?.lastSeenAt ? new Date(actualOtherUser.lastSeenAt).getTime() : 0;
+              const hasBeenOnlineSinceMessage = lastSeenTime >= msgTime;
+
+              isDoubleTick = !!(msg.readByIds && msg.readByIds.length > 0) || isOtherUserOnline || hasBeenOnlineSinceMessage;
+
+              const myReceiptsEnabled = currentUser.readReceiptsOn !== false;
+              const theirReceiptsEnabled = actualOtherUser?.readReceiptsOn !== false;
+
+              showBlueTick = !!(msg.readByIds && msg.readByIds.length > 0) && myReceiptsEnabled && theirReceiptsEnabled;
             }
 
             const timeString = msg.createdAt ? new Date(msg.createdAt).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
@@ -1287,7 +1297,7 @@ export default function ChatArea({
                       <span>{timeString}</span>
                       {isMe && (
                         <span className={`message-ticks ${showBlueTick ? 'read' : ''}`} style={msg.isOffline ? { fontSize: '11px', opacity: 0.8 } : {}}>
-                          {msg.isOffline ? '⏳' : actuallyRead ? '✓✓' : '✓'}
+                          {msg.isOffline ? '⏳' : isDoubleTick ? '✓✓' : '✓'}
                         </span>
                       )}
                     </div>
@@ -1387,7 +1397,7 @@ export default function ChatArea({
                   {messageInfo.readByIds && messageInfo.readByIds.length > 0 ? (
                     <div style={{ maxHeight: '120px', overflowY: 'auto', background: inputBg, padding: '10px', borderRadius: '8px', border: `1px solid ${borderColor}` }}>
                       {messageInfo.readByIds.map(id => {
-                        const u = usersList.find(user => user.id === id);
+                        const u = id === currentUser.id ? currentUser : usersList.find(user => user.id === id);
                         return (
                           <div key={id} style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
                             <div style={{ width: '24px', height: '24px', borderRadius: '50%', background: '#f97316', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: 'bold' }}>

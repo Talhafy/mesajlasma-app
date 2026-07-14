@@ -10,6 +10,7 @@ import IncomingCallPrompt, { type IncomingCall } from './components/Call/Incomin
 import CreateGroupModal from './components/Modals/CreateGroupModal';
 import GroupSettingsModal from './components/Modals/GroupSettingsModal';
 import SettingsModal from './components/Modals/SettingsModal';
+import GameHub from './components/GameHub/GameHub';
 import { api } from './api/httpClient';
 import { API_ORIGIN } from './config/runtime';
 import type { Conversation, Message, User } from './types/chat';
@@ -36,6 +37,8 @@ export interface CallHistoryItem {
 
 export default function App() {
   const [currentView, setCurrentView] = useState<'login' | 'register' | 'chat'>('login');
+  const [appMode, setAppMode] = useState<'chat' | 'game'>('chat');
+  const [isGameModePromptOpen, setIsGameModePromptOpen] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [socket, setSocket] = useState<Socket | null>(null);
   const [usersList, setUsersList] = useState<User[]>([]);
@@ -106,7 +109,7 @@ export default function App() {
     setAccessToken(null);
     setCurrentUser(null); setSelectedUser(null); setActiveConversation(null);
     setMessages([]); setGroupsList([]); setConversationList([]); setUnreadCounts({});
-    setIsSettingsOpen(false); setIsGroupModalOpen(false); setIsGroupSettingsOpen(false); setCurrentView('login');
+    setIsSettingsOpen(false); setIsGroupModalOpen(false); setIsGroupSettingsOpen(false); setAppMode('chat'); setCurrentView('login');
   };
 
   useEffect(() => { activeConversationRef.current = activeConversation; }, [activeConversation]);
@@ -780,7 +783,8 @@ export default function App() {
       });
     });
 
-    newSocket.on('typing_changed', ({ conversationId, username, isTyping }: { conversationId: string; username: string; isTyping: boolean }) => {
+    newSocket.on('typing_changed', ({ conversationId, gameChannelId, username, isTyping }: { conversationId: string; gameChannelId?: string | null; username: string; isTyping: boolean }) => {
+      if (gameChannelId) return;
       // Yazıyor bilgisi conversation bazlı tutulur.
       // Aynı state hem Sidebar son mesaj alanını hem ChatArea üst bilgisini günceller.
       const conversation = conversationListRef.current.find(c => c.id === conversationId);
@@ -988,7 +992,7 @@ export default function App() {
 
   return (
     <div className={`app-container ${(activeConversation || selectedUser) ? 'chat-active' : ''}`}>
-      {currentUser && (
+      {appMode === 'chat' && currentUser && (
        <Sidebar
           currentUser={currentUser} conversationList={conversationList} usersList={usersList} activeConversation={activeConversation} selectedUser={selectedUser} unreadCounts={unreadCounts}
           startGroupChat={startGroupChat} startChat={startChat} setIsGroupModalOpen={setIsGroupModalOpen} setIsSettingsOpen={setIsSettingsOpen} isDarkMode={isDarkMode} setIsDarkMode={setIsDarkMode}
@@ -997,10 +1001,11 @@ export default function App() {
           onReconnectRealtime={reconnectRealtime}
           typingByConversation={typingByConversation}
           callHistory={callHistory}
+          onOpenGameMode={() => setIsGameModePromptOpen(true)}
         />
       )}
 
-      {currentUser && (
+      {appMode === 'chat' && currentUser && (
         <ChatArea
           currentUser={currentUser} activeConversation={activeConversation} selectedUser={selectedUser} messages={messages} newMessage={newMessage} setNewMessage={setNewMessage}
           mesajGonder={mesajGonder} messagesEndRef={messagesEndRef} openGroupSettings={openGroupSettings} closeChat={closeChat} isDarkMode={isDarkMode} usersList={usersList} groupMembers={groupMembers}
@@ -1035,6 +1040,21 @@ export default function App() {
           onSetDisappearingMode={handleSetDisappearingMode}
           onStartCall={startConversationCall}
           />
+      )}
+
+      {appMode === 'game' && currentUser && (
+        <GameHub currentUser={currentUser} groups={groupsList} users={usersList} socket={socket} onExit={() => setAppMode('chat')} />
+      )}
+
+      {isGameModePromptOpen && (
+        <div className="game-mode-prompt-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setIsGameModePromptOpen(false); }}>
+          <section className="game-mode-prompt" role="dialog" aria-modal="true" aria-labelledby="game-mode-title">
+            <div className="game-mode-prompt-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 8h7a5 5 0 0 1 4.7 3.3l1.3 3.7a3 3 0 0 1-5.1 3l-1.5-1.8H9.1L7.6 18a3 3 0 0 1-5.1-3l1.3-3.7A5 5 0 0 1 8.5 8ZM7 11v4m-2-2h4m8-1h.01M19 14h.01" /></svg></div>
+            <h2 id="game-mode-title">Oyun moduna geçilsin mi?</h2>
+            <p>Grubuna bağlı yazı ve kalıcı ses kanallarını açabilir, arkadaşlarınla anında konuşabilirsin.</p>
+            <div className="game-mode-prompt-actions"><button onClick={() => setIsGameModePromptOpen(false)}>Vazgeç</button><button className="primary" onClick={() => { setIsGameModePromptOpen(false); setAppMode('game'); }}>Oyun moduna geç</button></div>
+          </section>
+        </div>
       )}
 
       {isGroupModalOpen && (

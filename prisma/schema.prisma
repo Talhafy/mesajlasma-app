@@ -65,6 +65,7 @@ model Conversation {
   messages          Message[]
   scheduledMessages ScheduledMessage[]
   participants      Participant[]
+  gameChannels      GameChannel[]
 
   @@index([adminId])
 }
@@ -89,6 +90,7 @@ model Message {
   content        String
   senderId       String
   conversationId String
+  gameChannelId   String?
   clientId       String?
   createdAt      DateTime     @default(now())
   expiresAt      DateTime?
@@ -106,11 +108,35 @@ model Message {
   replies        Message[]    @relation("MessageReplies")
   sender         User         @relation(fields: [senderId], references: [id], onDelete: Cascade)
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  gameChannel    GameChannel? @relation(fields: [gameChannelId], references: [id], onDelete: Cascade)
 
   @@unique([senderId, clientId])
   @@index([conversationId, createdAt(sort: Desc), id(sort: Desc)])
   @@index([expiresAt])
   @@index([senderId])
+  @@index([gameChannelId, createdAt(sort: Desc), id(sort: Desc)])
+}
+
+enum GameChannelType {
+  TEXT
+  VOICE
+}
+
+model GameChannel {
+  id             String          @id @default(uuid())
+  conversationId String
+  createdById    String
+  name           String
+  type           GameChannelType
+  position       Int             @default(0)
+  maxParticipants Int?
+  createdAt      DateTime        @default(now())
+  conversation   Conversation    @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  messages       Message[]
+
+  @@unique([conversationId, type, name])
+  @@index([conversationId, type, position])
+  @@index([createdById])
 }
 
 model MessageRead {
@@ -164,4 +190,3 @@ model MessageDeletion {
   @@id([messageId, userId])
   @@index([userId, messageId])
 }
-

@@ -6,6 +6,7 @@ export interface Message {
   sender?: { username: string };
   readByIds?: string[];
   conversationId: string;
+  gameChannelId?: string | null;
   conversation?: any;
   createdAt?: string;
   isPinned?: boolean;
@@ -21,7 +22,20 @@ export interface Message {
   fileName?: string;
   editedAt?: string;
   expiresAt?: string;
-  isOffline?: boolean; // YENİ: Çevrimdışı gönderilen mesajların takibi için
+  isOffline?: boolean;
+}
+
+export type GameChannelType = 'TEXT' | 'VOICE';
+
+export interface GameChannel {
+  id: string;
+  conversationId: string;
+  createdById: string;
+  name: string;
+  type: GameChannelType;
+  position: number;
+  maxParticipants?: number | null;
+  createdAt: string;
 }
 
 export interface User {

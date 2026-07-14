@@ -39,9 +39,7 @@ export const serializeMessage = async (msg: MessageWithReads) => {
   const signed = await withSignedFileUrl(msg);
   const { reads = [], stars = [], deletions = [], ...rest } = signed;
 
-  // Gönderici otomatik olarak okumuş sayılır
   const readByIds = [...new Set([
-    msg.senderId,
     ...reads.map((r) => r.userId)
   ])];
 
@@ -70,10 +68,11 @@ export const sendMessage = async (
     fileKey?: string | null;
     fileType?: string | null;
     fileName?: string | null;
+    gameChannelId?: string | null;
   },
   io: any
 ) => {
-  const { conversationId, clientId, content, replyToId, isForwarded, fileKey, fileType, fileName } = payload;
+  const { conversationId, clientId, content, replyToId, isForwarded, fileKey, fileType, fileName, gameChannelId } = payload;
 
   const conversation = await prisma.conversation.findUnique({
     where: { id: conversationId },
@@ -82,6 +81,16 @@ export const sendMessage = async (
   if (!conversation) throw new Error("Sohbet bulunamadı.");
   if (!conversation.participants.some((participant) => participant.userId === senderId)) {
     throw new Error("Bu sohbete mesaj gönderme yetkiniz yok.");
+  }
+
+  if (gameChannelId) {
+    const channel = await prisma.gameChannel.findFirst({
+      where: { id: gameChannelId, conversationId, type: 'TEXT' },
+      select: { id: true }
+    });
+    if (!conversation.isGroup || !channel) {
+      throw new Error('Yazı kanalı bulunamadı.');
+    }
   }
 
   // Birebir sohbetlerde engelleme durumları kontrol edilir
@@ -107,7 +116,7 @@ export const sendMessage = async (
   // Yanıtlanan mesaj doğrulaması
   if (replyToId) {
     const repliedMessage = await prisma.message.findFirst({
-      where: { id: String(replyToId), conversationId },
+      where: { id: String(replyToId), conversationId, gameChannelId: gameChannelId || null },
       select: { id: true }
     });
     if (!repliedMessage) throw new Error("Yanıtlanan mesaj bu sohbete ait değil.");
@@ -121,6 +130,7 @@ export const sendMessage = async (
         content: content.trim(),
         senderId,
         conversationId,
+        gameChannelId: gameChannelId || null,
         replyToId: replyToId || null,
         isForwarded: isForwarded || false,
         fileKey: fileKey || null,
@@ -169,7 +179,7 @@ export const sendMessage = async (
   if (io) {
     const targetRooms = conversation.participants.map((p) => p.userId);
     targetRooms.push(conversationId);
-    io.to(targetRooms).emit('yeni_mesaj_geldi', responseMessage);
+    io.to(targetRooms).emit(gameChannelId ? 'game:message' : 'yeni_mesaj_geldi', responseMessage);
   }
 
   return responseMessage;
@@ -186,6 +196,7 @@ export const fetchMessages = async (conversationId: string, userId: string, curs
   const messages = await prisma.message.findMany({
     where: {
       conversationId,
+      gameChannelId: null,
       deletions: { none: { userId } },
       ...visibleMessageWhere()
     },
@@ -211,6 +222,7 @@ export const fetchMessages = async (conversationId: string, userId: string, curs
 export const searchMessages = async (userId: string, searchTerm: string) => {
   const messages = await prisma.message.findMany({
     where: {
+      gameChannelId: null,
       content: { contains: searchTerm.trim(), mode: 'insensitive' },
       deletions: { none: { userId } },
       ...visibleMessageWhere(),
@@ -242,6 +254,7 @@ export const searchMessages = async (userId: string, searchTerm: string) => {
 export const fetchStarredMessages = async (userId: string) => {
   const messages = await prisma.message.findMany({
     where: {
+      gameChannelId: null,
       stars: { some: { userId } },
       deletions: { none: { userId } },
       ...visibleMessageWhere(),
@@ -318,6 +331,7 @@ export const fetchConversationMedia = async (conversationId: string, userId: str
   const records = await prisma.message.findMany({
     where: {
       conversationId,
+      gameChannelId: null,
       deletions: { none: { userId } },
       AND: [
         visibleMessageWhere(),
@@ -499,7 +513,8 @@ export const markAsRead = async (
   userId: string,
   lastReadMessageId?: string,
   emitReceipt?: boolean,
-  io?: any
+  io?: any,
+  gameChannelId?: string | null
 ) => {
   const membership = await prisma.participant.findUnique({
     where: { userId_conversationId: { userId, conversationId } },
@@ -512,7 +527,7 @@ export const markAsRead = async (
   let lastReadMessage = null;
   if (lastReadMessageId) {
     lastReadMessage = await prisma.message.findFirst({
-      where: { id: lastReadMessageId, conversationId },
+      where: { id: lastReadMessageId, conversationId, gameChannelId: gameChannelId || null },
       select: { id: true, createdAt: true }
     });
     if (!lastReadMessage) {
@@ -523,6 +538,7 @@ export const markAsRead = async (
   const unreadMessages = await prisma.message.findMany({
     where: {
       conversationId,
+      gameChannelId: gameChannelId || null,
       senderId: { not: userId },
       createdAt: {
         gte: membership.joinedAt,
@@ -547,11 +563,12 @@ export const markAsRead = async (
     });
   }
 
-  if (emitReceipt !== false && io) {
+  if (unreadMessages.length > 0 && emitReceipt !== false && io) {
     io.to(conversationId).emit('mesajlar_okundu', {
       conversationId,
       readByUserId: userId,
-      lastReadMessageId: lastReadMessageId || null
+      lastReadMessageId: lastReadMessageId || null,
+      gameChannelId: gameChannelId || null
     });
   }
 
@@ -586,6 +603,7 @@ export const getUnreadCounts = async (userId: string) => {
       const count = await prisma.message.count({
         where: {
           conversationId: p.conversationId,
+          gameChannelId: null,
           senderId: { not: userId },
           createdAt: { gte: p.joinedAt },
           ...visibleMessageWhere(),

@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { AccessToken, type VideoGrant } from 'livekit-server-sdk';
+import { AccessToken, RoomServiceClient, type VideoGrant } from 'livekit-server-sdk';
 import {
   livekitApiKey,
   livekitApiSecret,
@@ -22,6 +22,38 @@ export const createLivekitRoomName = (conversationId: string, callId: string) =>
     .slice(0, 32);
 
   return `mesajlasma-call-${digest}`;
+};
+
+export const ensurePersistentVoiceRoom = async ({
+  conversationId,
+  channelId,
+  maxParticipants
+}: {
+  conversationId: string;
+  channelId: string;
+  maxParticipants: number;
+}) => {
+  if (!isLivekitConfigured()) throw new Error('LiveKit ayarları eksik.');
+  const roomName = createLivekitRoomName(conversationId, channelId);
+  const httpUrl = livekitUrl.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:');
+  const roomService = new RoomServiceClient(httpUrl, livekitApiKey, livekitApiSecret);
+  const existing = await roomService.listRooms([roomName]);
+  if (existing.length > 0) return existing[0];
+
+  try {
+    return await roomService.createRoom({
+      name: roomName,
+      maxParticipants,
+      emptyTimeout: 60,
+      departureTimeout: 20,
+      metadata: JSON.stringify({ conversationId, channelId, kind: 'game-voice-channel' })
+    });
+  } catch (error) {
+    // Aynı anda iki katılım olursa ilk istek odayı oluşturmuş olabilir.
+    const racedRoom = await roomService.listRooms([roomName]);
+    if (racedRoom.length > 0) return racedRoom[0];
+    throw error;
+  }
 };
 
 export const createConversationCallToken = async ({

@@ -34,7 +34,7 @@ export const listConversations = async (userId: string) => {
             }
           },
           messages: {
-            where: { deletions: { none: { userId } }, ...visibleMessageWhere() },
+            where: { gameChannelId: null, deletions: { none: { userId } }, ...visibleMessageWhere() },
             orderBy: { createdAt: 'desc' },
             take: 1,
             include: {

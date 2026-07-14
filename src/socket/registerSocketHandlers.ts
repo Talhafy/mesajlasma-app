@@ -22,6 +22,8 @@ interface CallSignalPayload {
 // Map değeri Set olduğu için aynı userId'ye ait bütün socket bağlantılarını takip ederiz.
 // Kullanıcı ancak son sekmesi de kapanınca çevrimdışı kabul edilir.
 const onlineSockets = new Map<string, Set<string>>();
+type VoicePresence = { conversationId: string; channelId: string; userId: string; username: string; isSpeaking: boolean; socketIds: Set<string> };
+const voicePresences = new Map<string, VoicePresence>();
 // Socket ömrü access token refresh'e değil gerçek kullanıcı aktivitesine bağlıdır.
 // Frontend mouse/klavye gibi aktivitelerde client_activity gönderir; uzun inaktivitede socket kapatılır.
 const SOCKET_INACTIVITY_TIMEOUT_MS = 3 * 60 * 60 * 1000;
@@ -98,6 +100,20 @@ export const registerSocketHandlers = (io: Server) => {
 
   io.on('connection', (socket) => {
     const currentUser = socket.data.user as SocketUser;
+    let activeVoicePresence: { conversationId: string; channelId: string } | null = null;
+
+    const leaveVoiceChannel = () => {
+      if (!activeVoicePresence) return;
+      const { conversationId, channelId } = activeVoicePresence;
+      const key = `${channelId}:${currentUser.userId}`;
+      const presence = voicePresences.get(key);
+      presence?.socketIds.delete(socket.id);
+      if (!presence || presence.socketIds.size === 0) {
+        voicePresences.delete(key);
+        socket.to(conversationId).emit('game:voice-presence-left', { conversationId, channelId, userId: currentUser.userId });
+      }
+      activeVoicePresence = null;
+    };
 
     // Her bağlantı kendi inactivity timer'ını taşır.
     // Kullanıcı aynı hesabı iki sekmede açtıysa bir sekmenin inactive olması diğerini kapatmaz.
@@ -128,6 +144,59 @@ export const registerSocketHandlers = (io: Server) => {
       // Frontend görünür kullanıcı aktivitesi algıladığında bunu yollar.
       // Böylece sadece token refresh olduğu için kullanıcı sonsuza kadar online görünmez.
       resetInactivityTimer();
+    });
+
+    socket.on('game:voice-presence-snapshot', async (groupId: unknown) => {
+      if (typeof groupId !== 'string' || !uuidPattern.test(groupId)) return;
+      const membership = await prisma.participant.findUnique({ where: { userId_conversationId: { userId: currentUser.userId, conversationId: groupId } }, select: { id: true } });
+      if (!membership) return;
+      socket.emit('game:voice-presence-snapshot', {
+        groupId,
+        presences: [...voicePresences.values()].filter((presence) => presence.conversationId === groupId).map(({ socketIds, ...presence }) => presence)
+      });
+    });
+
+    socket.on('game:voice-presence', async (payload: unknown) => {
+      resetInactivityTimer();
+      if (!checkSocketRateLimit(socket.id, 'game:voice-presence', 3) || !payload || typeof payload !== 'object') return;
+      const { action, conversationId, channelId } = payload as { action?: unknown; conversationId?: unknown; channelId?: unknown };
+      if (action === 'leave') {
+        if (typeof channelId === 'string' && activeVoicePresence?.channelId !== channelId) return;
+        leaveVoiceChannel();
+        return;
+      }
+      if (action !== 'join' || typeof conversationId !== 'string' || typeof channelId !== 'string' || !uuidPattern.test(conversationId) || !uuidPattern.test(channelId)) return;
+      const channel = await prisma.gameChannel.findFirst({
+        where: { id: channelId, conversationId, type: 'VOICE', conversation: { isGroup: true, participants: { some: { userId: currentUser.userId } } } },
+        select: { id: true }
+      });
+      if (!channel) return;
+      if (activeVoicePresence?.channelId === channelId && activeVoicePresence.conversationId === conversationId) return;
+      leaveVoiceChannel();
+      const key = `${channelId}:${currentUser.userId}`;
+      const existing = voicePresences.get(key);
+      if (existing) {
+        existing.socketIds.add(socket.id);
+      } else {
+        voicePresences.set(key, { conversationId, channelId, userId: currentUser.userId, username: currentUser.username, isSpeaking: false, socketIds: new Set([socket.id]) });
+        socket.to(conversationId).emit('game:voice-presence-joined', { conversationId, channelId, userId: currentUser.userId, username: currentUser.username, isSpeaking: false });
+      }
+      activeVoicePresence = { conversationId, channelId };
+    });
+
+    socket.on('game:voice-speaking', (payload: unknown) => {
+      if (!checkSocketRateLimit(socket.id, 'game:voice-speaking', 5) || !payload || typeof payload !== 'object' || !activeVoicePresence) return;
+      const { channelId, isSpeaking } = payload as { channelId?: unknown; isSpeaking?: unknown };
+      if (channelId !== activeVoicePresence.channelId || typeof isSpeaking !== 'boolean') return;
+      const presence = voicePresences.get(`${activeVoicePresence.channelId}:${currentUser.userId}`);
+      if (!presence || presence.isSpeaking === isSpeaking) return;
+      presence.isSpeaking = isSpeaking;
+      socket.to(activeVoicePresence.conversationId).emit('game:voice-speaking', {
+        conversationId: activeVoicePresence.conversationId,
+        channelId: activeVoicePresence.channelId,
+        userId: currentUser.userId,
+        isSpeaking
+      });
     });
 
     socket.on('odaya_katil', async (
@@ -185,8 +254,8 @@ export const registerSocketHandlers = (io: Server) => {
       }
 
       if (!payload || typeof payload !== 'object') return;
-      const { conversationId, isTyping } = payload as { conversationId?: unknown; isTyping?: unknown };
-      if (typeof conversationId !== 'string' || typeof isTyping !== 'boolean') return;
+      const { conversationId, gameChannelId, isTyping } = payload as { conversationId?: unknown; gameChannelId?: unknown; isTyping?: unknown };
+      if (typeof conversationId !== 'string' || typeof isTyping !== 'boolean' || (gameChannelId !== undefined && gameChannelId !== null && typeof gameChannelId !== 'string')) return;
 
       try {
         // Yazıyor bilgisi de üyelik kontrolünden geçer.
@@ -196,6 +265,10 @@ export const registerSocketHandlers = (io: Server) => {
           select: { id: true }
         });
         if (!membership) return;
+        if (typeof gameChannelId === 'string') {
+          const channel = await prisma.gameChannel.findFirst({ where: { id: gameChannelId, conversationId, type: 'TEXT' }, select: { id: true } });
+          if (!channel) return;
+        }
 
         // socket.to(conversationId) gönderen socket hariç odadaki diğer client'lara yollar.
         // Bu yüzden yazan kişi kendi ekranında kendi "yazıyor" bilgisini görmez.
@@ -203,7 +276,8 @@ export const registerSocketHandlers = (io: Server) => {
           conversationId,
           userId: currentUser.userId,
           username: currentUser.username,
-          isTyping
+          isTyping,
+          gameChannelId: typeof gameChannelId === 'string' ? gameChannelId : null
         });
       } catch (error) {
         logger.error({ event: 'socket.typing_failed', err: error, userId: currentUser.userId, roomId: conversationId }, 'Typing state delivery failed');
@@ -389,6 +463,7 @@ export const registerSocketHandlers = (io: Server) => {
 
     socket.on('disconnect', async () => {
       logger.info({ event: 'socket.disconnected', userId: currentUser.userId, socketId: socket.id }, 'Socket disconnected');
+      leaveVoiceChannel();
       socketEventTimestamps.delete(socket.id);
       if (inactivityTimer) clearTimeout(inactivityTimer);
       const sockets = onlineSockets.get(currentUser.userId);
