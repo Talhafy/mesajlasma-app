@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import { api } from '../../api/httpClient';
 import './Auth.css';
+import type { User } from '../../types/chat';
 
 interface AuthProps {
-  onLoginSuccess: (token: string, user: any) => void;
+  onLoginSuccess: (token: string, user: User) => void;
 }
 
 export default function Auth({ onLoginSuccess }: AuthProps) {
@@ -36,10 +37,11 @@ export default function Auth({ onLoginSuccess }: AuthProps) {
       setCurrentView('login');
       setPassword('');
       setConfirmPassword('');
-    } catch (error: any) {
-      const serverError = error.response?.data;
+    } catch (error: unknown) {
+      const err = error as { response?: { data?: { error?: string; details?: Array<{ message: string }> } } };
+      const serverError = err.response?.data;
       if (serverError?.details && Array.isArray(serverError.details)) {
-        const detailMsg = serverError.details.map((d: any) => d.message).join(' ');
+        const detailMsg = serverError.details.map((d: { message: string }) => d.message).join(' ');
         setHataMesaji(detailMsg);
       } else {
         setHataMesaji(serverError?.error || 'Kayıt başarısız.');
@@ -57,10 +59,11 @@ export default function Auth({ onLoginSuccess }: AuthProps) {
       const response = await api.post('/login', { identifier, password });
       const { accessToken, user } = response.data;
       onLoginSuccess(accessToken, user);
-    } catch (error: any) {
-      const serverError = error.response?.data;
+    } catch (error: unknown) {
+      const err = error as { response?: { data?: { error?: string; details?: Array<{ message: string }> } } };
+      const serverError = err.response?.data;
       if (serverError?.details && Array.isArray(serverError.details)) {
-        const detailMsg = serverError.details.map((d: any) => d.message).join(' ');
+        const detailMsg = serverError.details.map((d: { message: string }) => d.message).join(' ');
         setHataMesaji(detailMsg);
       } else {
         setHataMesaji(serverError?.error || 'Giriş başarısız. Bilgilerinizi kontrol edin.');

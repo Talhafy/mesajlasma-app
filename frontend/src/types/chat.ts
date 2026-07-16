@@ -7,14 +7,14 @@ export interface Message {
   readByIds?: string[];
   conversationId: string;
   gameChannelId?: string | null;
-  conversation?: any;
+  conversation?: Conversation;
   createdAt?: string;
   isPinned?: boolean;
   isForwarded?: boolean;
   starredByIds?: string[];
   deletedForIds?: string[];
   replyToId?: string;
-  replyTo?: any;
+  replyTo?: Message;
   clientId?: string;
   fileKey?: string;
   fileUrl?: string;
@@ -65,4 +65,18 @@ export interface Conversation {
   disappearingDurationSeconds?: number | null;
   otherUser?: User | null;
   lastMessage?: Message | null;
+  participants?: Array<{ user: User }>;
+}
+
+export interface ScheduledMessage {
+  id: string;
+  conversationId: string;
+  clientId?: string;
+  content: string;
+  sendAt: string;
+  fileKey?: string | null;
+  fileType?: string | null;
+  fileName?: string | null;
+  fileUrl?: string | null;
+  createdAt?: string;
 }

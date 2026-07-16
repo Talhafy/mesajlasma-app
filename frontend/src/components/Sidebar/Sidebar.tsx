@@ -53,7 +53,7 @@ export default function Sidebar({
   const [isLoadingStarred, setIsLoadingStarred] = useState(false);
   
   const [isBlockedUsersView, setIsBlockedUsersView] = useState(false);
-  const [blockedUsers, setBlockedUsers] = useState<any[]>([]);
+  const [blockedUsers, setBlockedUsers] = useState<User[]>([]);
   const [isBlockedUsersLoading, setIsBlockedUsersLoading] = useState(false);
 
   const fetchBlockedUsers = async () => {
@@ -113,8 +113,12 @@ export default function Sidebar({
     if (msg.conversation.isGroup) {
       startGroupChat(msg.conversation);
     } else {
-      const otherParticipant = msg.conversation.participants.find((p: any) => p.user.id !== currentUser.id);
-      if (otherParticipant) startChat(otherParticipant.user);
+      const otherParticipant = msg.conversation.participants?.find((p: { user: User }) => p.user.id !== currentUser.id);
+      if (otherParticipant) {
+        startChat(otherParticipant.user);
+      } else if (msg.conversation.otherUser) {
+        startChat(msg.conversation.otherUser);
+      }
     }
   };
 

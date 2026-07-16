@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react';
-import { io, Socket } from 'socket.io-client';
+import { io } from 'socket.io-client';
 import './App.css';
 
 import Auth from './components/Auth/Auth';
@@ -14,6 +14,7 @@ import GameHub from './components/GameHub/GameHub';
 import { api } from './api/httpClient';
 import { API_ORIGIN } from './config/runtime';
 import type { Conversation, Message, User } from './types/chat';
+import type { TypedSocket } from './types/socket';
 import {
   closeRefreshSession,
   getAccessToken,
@@ -46,7 +47,7 @@ export default function App() {
   };
   const [isGameModePromptOpen, setIsGameModePromptOpen] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [socket, setSocket] = useState<Socket | null>(null);
+  const [socket, setSocket] = useState<TypedSocket | null>(null);
   const [usersList, setUsersList] = useState<User[]>([]);
   const [groupsList, setGroupsList] = useState<Conversation[]>([]);
   const [conversationList, setConversationList] = useState<Conversation[]>([]);
@@ -552,7 +553,7 @@ export default function App() {
     const token = getAccessToken();
     // Chat ekranına girildiğinde tek Socket.IO bağlantısı kurulur.
     // Socket auth token'ı access token'dır; refresh token socket'e gönderilmez.
-    const newSocket = io(API_ORIGIN, { auth: { token } });
+    const newSocket = io(API_ORIGIN, { auth: { token } }) as unknown as TypedSocket;
     setSocket(newSocket);
 
     const reconnectSocketIfActive = async () => {
@@ -739,7 +740,7 @@ export default function App() {
       }));
     });
 
-    newSocket.on('presence_changed', ({ userId, isOnline, lastSeenAt }: { userId: string; isOnline: boolean; lastSeenAt?: string }) => {
+    newSocket.on('presence_changed', ({ userId, isOnline, lastSeenAt }: { userId: string; isOnline: boolean; lastSeenAt?: string | null }) => {
       if (isOnline) {
         onlineUserIdsRef.current.add(userId);
       } else {

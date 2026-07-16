@@ -8,7 +8,7 @@ import {
   useRoomContext
 } from '@livekit/components-react';
 import { RoomEvent } from 'livekit-client';
-import type { Socket } from 'socket.io-client';
+import type { TypedSocket } from '../../types/socket';
 import { api } from '../../api/httpClient';
 import type { Conversation, GameChannel, GameChannelType, Message, User } from '../../types/chat';
 import '@livekit/components-styles';
@@ -43,7 +43,7 @@ interface GameHubProps {
   currentUser: User;
   groups: Conversation[];
   users: User[];
-  socket: Socket | null;
+  socket: TypedSocket | null;
   onExit: () => void;
   onStartDirectChat?: (targetUser: User) => void;
 }
@@ -81,7 +81,7 @@ function VoiceChannelConnection({
   onLeave: () => void;
   channelId: string;
   currentUserId: string;
-  socket: Socket | null;
+  socket: TypedSocket | null;
 }) {
   const room = useRoomContext();
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -161,7 +161,7 @@ export default function GameHub({ currentUser, groups, users, socket, onExit, on
 
   const exitGameMode = () => {
     if (voiceConnection) {
-      socket?.emit('game:voice-presence', { action: 'leave', channelId: voiceConnection.channel.id });
+      socket?.emit('game:voice-presence', { action: 'leave', conversationId: voiceConnection.channel.conversationId, channelId: voiceConnection.channel.id });
       setVoiceConnection(null);
       setVoicePresences((previous) => previous.filter((presence) => presence.userId !== currentUser.id));
     }
@@ -429,8 +429,9 @@ export default function GameHub({ currentUser, groups, users, socket, onExit, on
       setChannels((previous) => previous.some((item) => item.id === response.data.id) ? previous : [...previous, response.data]);
       setChannelName('');
       setIsCreating(false);
-    } catch (requestError: any) {
-      setError(requestError.response?.data?.error || 'Kanal oluşturulamadı.');
+    } catch (requestError) {
+      const err = requestError as { response?: { data?: { error?: string } } };
+      setError(err.response?.data?.error || 'Kanal oluşturulamadı.');
     }
   };
 
@@ -452,8 +453,9 @@ export default function GameHub({ currentUser, groups, users, socket, onExit, on
       await api.delete(`/game/groups/${selectedGroupId}/channels/${channel.id}`);
       setChannels((previous) => previous.filter((item) => item.id !== channel.id));
       if (selectedChannel?.id === channel.id) setSelectedChannel({ id: 'general', conversationId: selectedGroupId, createdById: '', name: 'genel', type: 'TEXT', position: -1, createdAt: new Date(0).toISOString() });
-    } catch (requestError: any) {
-      setError(requestError.response?.data?.error || 'Kanal silinemedi.');
+    } catch (requestError) {
+      const err = requestError as { response?: { data?: { error?: string } } };
+      setError(err.response?.data?.error || 'Kanal silinemedi.');
     }
   };
 
@@ -507,7 +509,7 @@ export default function GameHub({ currentUser, groups, users, socket, onExit, on
     try {
       const response = await api.put(`/game/groups/${selectedGroupId}/channels/reorder`, { orderedIds });
       setChannels(response.data);
-    } catch (err: any) {
+    } catch {
       setError('Kanal sıralaması güncellenemedi.');
     }
 
@@ -528,7 +530,7 @@ export default function GameHub({ currentUser, groups, users, socket, onExit, on
         }
         return next;
       });
-    } catch (err: any) {
+    } catch {
       setError('Bildirim ayarı değiştirilemedi.');
     }
   };
@@ -556,9 +558,10 @@ export default function GameHub({ currentUser, groups, users, socket, onExit, on
         setSelectedChannel(response.data);
       }
       setEditingChannel(null);
-    } catch (requestError: any) {
-      console.error("handleUpdateChannel error: ", requestError);
-      setError(requestError.response?.data?.error || 'Kanal güncellenemedi.');
+    } catch (requestError) {
+      const err = requestError as { response?: { data?: { error?: string } } };
+      console.error("handleUpdateChannel error: ", err);
+      setError(err.response?.data?.error || 'Kanal güncellenemedi.');
     }
   };
 
@@ -575,15 +578,16 @@ export default function GameHub({ currentUser, groups, users, socket, onExit, on
 
   const joinVoiceChannel = async (channel: GameChannel) => {
     if (voiceConnection && voiceConnection.channel.id !== channel.id) {
-      socket?.emit('game:voice-presence', { action: 'leave', channelId: voiceConnection.channel.id });
+      socket?.emit('game:voice-presence', { action: 'leave', conversationId: voiceConnection.channel.conversationId, channelId: voiceConnection.channel.id });
       setVoicePresences((previous) => previous.filter((item) => item.userId !== currentUser.id));
     }
     setError('');
     try {
       const response = await api.post(`/game/channels/${channel.id}/token`);
       setVoiceConnection(response.data);
-    } catch (requestError: any) {
-      setError(requestError.response?.data?.error || 'Ses kanalına bağlanılamadı.');
+    } catch (requestError) {
+      const err = requestError as { response?: { data?: { error?: string } } };
+      setError(err.response?.data?.error || 'Ses kanalına bağlanılamadı.');
     }
   };
 
@@ -837,8 +841,8 @@ export default function GameHub({ currentUser, groups, users, socket, onExit, on
       </aside>
 
       {voiceConnection && (
-        <LiveKitRoom key={voiceConnection.channel.id} serverUrl={voiceConnection.serverUrl} token={voiceConnection.token} connect audio video={false} onConnected={() => { const presence: VoicePresence = { conversationId: voiceConnection.channel.conversationId, channelId: voiceConnection.channel.id, userId: currentUser.id, username: currentUser.username, isSpeaking: false }; setVoicePresences((previous) => [...previous.filter((item) => item.userId !== currentUser.id), presence]); socket?.emit('game:voice-presence', { action: 'join', conversationId: presence.conversationId, channelId: presence.channelId }); }} onDisconnected={() => { socket?.emit('game:voice-presence', { action: 'leave', channelId: voiceConnection.channel.id }); setVoicePresences((previous) => previous.filter((item) => item.userId !== currentUser.id || item.channelId !== voiceConnection.channel.id)); setVoiceConnection(null); }} onError={() => setError('Ses bağlantısında bir hata oluştu.')} className="game-livekit-room">
-          <VoiceChannelConnection channelId={voiceConnection.channel.id} currentUserId={currentUser.id} socket={socket} controlsTarget={voiceControlsTarget} onLeave={() => { socket?.emit('game:voice-presence', { action: 'leave', channelId: voiceConnection.channel.id }); setVoiceConnection(null); }} />
+        <LiveKitRoom key={voiceConnection.channel.id} serverUrl={voiceConnection.serverUrl} token={voiceConnection.token} connect audio video={false} onConnected={() => { const presence: VoicePresence = { conversationId: voiceConnection.channel.conversationId, channelId: voiceConnection.channel.id, userId: currentUser.id, username: currentUser.username, isSpeaking: false }; setVoicePresences((previous) => [...previous.filter((item) => item.userId !== currentUser.id), presence]); socket?.emit('game:voice-presence', { action: 'join', conversationId: presence.conversationId, channelId: presence.channelId }); }} onDisconnected={() => { socket?.emit('game:voice-presence', { action: 'leave', conversationId: voiceConnection.channel.conversationId, channelId: voiceConnection.channel.id }); setVoicePresences((previous) => previous.filter((item) => item.userId !== currentUser.id || item.channelId !== voiceConnection.channel.id)); setVoiceConnection(null); }} onError={() => setError('Ses bağlantısında bir hata oluştu.')} className="game-livekit-room">
+          <VoiceChannelConnection channelId={voiceConnection.channel.id} currentUserId={currentUser.id} socket={socket} controlsTarget={voiceControlsTarget} onLeave={() => { socket?.emit('game:voice-presence', { action: 'leave', conversationId: voiceConnection.channel.conversationId, channelId: voiceConnection.channel.id }); setVoiceConnection(null); }} />
         </LiveKitRoom>
       )}
 
