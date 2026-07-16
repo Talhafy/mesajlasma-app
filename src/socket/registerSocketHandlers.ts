@@ -204,7 +204,7 @@ export const registerSocketHandlers = (io: Server) => {
       acknowledge?: (result: { ok: boolean; error?: string }) => void
     ) => {
       resetInactivityTimer();
-      if (!checkSocketRateLimit(socket.id, 'odaya_katil', 5)) {
+      if (!checkSocketRateLimit(socket.id, 'odaya_katil', 100)) {
         logger.warn({ event: 'security.socket_rate_limit', userId: currentUser.userId, eventName: 'odaya_katil' }, 'Socket event rate limit exceeded');
         acknowledge?.({ ok: false, error: 'Çok fazla istek gönderdiniz. Lütfen bekleyin.' });
         return;
@@ -248,7 +248,7 @@ export const registerSocketHandlers = (io: Server) => {
 
     socket.on('typing_changed', async (payload: unknown) => {
       resetInactivityTimer();
-      if (!checkSocketRateLimit(socket.id, 'typing_changed', 3)) {
+      if (!checkSocketRateLimit(socket.id, 'typing_changed', 15)) {
         logger.warn({ event: 'security.socket_rate_limit', userId: currentUser.userId, eventName: 'typing_changed' }, 'Socket event rate limit exceeded');
         return;
       }
@@ -288,7 +288,7 @@ export const registerSocketHandlers = (io: Server) => {
     // dosyanın kendisiyle ilgisi yok. Frontend MediaRecorder start/stop anında bunu emit eder.
     socket.on('voice_recording_changed', async (payload: unknown) => {
       resetInactivityTimer();
-      if (!checkSocketRateLimit(socket.id, 'voice_recording_changed', 3)) {
+      if (!checkSocketRateLimit(socket.id, 'voice_recording_changed', 10)) {
         logger.warn({ event: 'security.socket_rate_limit', userId: currentUser.userId, eventName: 'voice_recording_changed' }, 'Socket event rate limit exceeded');
         return;
       }

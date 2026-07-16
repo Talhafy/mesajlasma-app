@@ -37,7 +37,13 @@ export interface CallHistoryItem {
 
 export default function App() {
   const [currentView, setCurrentView] = useState<'login' | 'register' | 'chat'>('login');
-  const [appMode, setAppMode] = useState<'chat' | 'game'>('chat');
+  const [appMode, setAppMode] = useState<'chat' | 'game'>(() => {
+    return (localStorage.getItem('appMode') as 'chat' | 'game') || 'chat';
+  });
+  const changeAppMode = (mode: 'chat' | 'game') => {
+    setAppMode(mode);
+    localStorage.setItem('appMode', mode);
+  };
   const [isGameModePromptOpen, setIsGameModePromptOpen] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [socket, setSocket] = useState<Socket | null>(null);
@@ -445,6 +451,28 @@ export default function App() {
       emitCallSignal('call:invite', nextCall);
     } catch {
       alert('Görüşme başlatılamadı. LiveKit ayarlarını kontrol edin.');
+    }
+  };
+
+  const startCallWithUser = async (targetUser: User, callType: CallType) => {
+    try {
+      const res = await api.post('/conversations/direct', { targetUserId: targetUser.id });
+      const conversation = res.data;
+      const callId = crypto.randomUUID();
+      const nextCall = await createCallConnection(conversation.id, callId, callType);
+      rememberCall({
+        callId,
+        conversationId: conversation.id,
+        title: targetUser.username,
+        callType,
+        direction: 'outgoing',
+        status: 'started',
+        createdAt: new Date().toISOString()
+      });
+      setActiveCall(nextCall);
+      emitCallSignal('call:invite', nextCall);
+    } catch {
+      alert('Arama başlatılamadı. LiveKit ayarlarını kontrol edin.');
     }
   };
 
@@ -874,6 +902,22 @@ export default function App() {
       }
     });
 
+    newSocket.on('grup_yonetici_degisti', (data: { groupId: string, newAdminId: string }) => {
+      setGroupsList(prev => prev.map(group => group.id === data.groupId ? { ...group, adminId: data.newAdminId } : group));
+      setConversationList(prev => prev.map(c => c.id === data.groupId ? { ...c, adminId: data.newAdminId } : c));
+      setActiveConversation(prev => prev?.id === data.groupId ? { ...prev, adminId: data.newAdminId } : prev);
+    });
+
+    newSocket.on('grup_uyeleri_eklendi', ({ groupId, newMembers }: { groupId: string, newMembers: User[] }) => {
+      if (activeConversationRef.current?.id === groupId) {
+        setGroupMembers(prev => {
+          const existingIds = new Set(prev.map(m => m.id));
+          const filtered = newMembers.filter(m => !existingIds.has(m.id));
+          return [...prev, ...filtered];
+        });
+      }
+    });
+
     newSocket.on('grup_silindi', (data: { groupId: string }) => {
       alert("Bu grup yönetici tarafından kalıcı olarak silindi.");
       setGroupsList(prev => prev.filter(g => g.id !== data.groupId));
@@ -1011,6 +1055,8 @@ export default function App() {
           mesajGonder={mesajGonder} messagesEndRef={messagesEndRef} openGroupSettings={openGroupSettings} closeChat={closeChat} isDarkMode={isDarkMode} usersList={usersList} groupMembers={groupMembers}
           loadMoreMessages={loadMoreMessages}
           socketConnectionStatus={socketConnectionStatus}
+          onStartDirectChat={startChat}
+          onStartCallWithUser={startCallWithUser}
           hasMore={hasMore}
           isLoadingMore={isLoadingMore}
           // Aktif konuşmada biri yazıyorsa ChatArea header'ında gösterilir.
@@ -1043,7 +1089,17 @@ export default function App() {
       )}
 
       {appMode === 'game' && currentUser && (
-        <GameHub currentUser={currentUser} groups={groupsList} users={usersList} socket={socket} onExit={() => setAppMode('chat')} />
+        <GameHub 
+          currentUser={currentUser} 
+          groups={groupsList} 
+          users={usersList} 
+          socket={socket} 
+          onExit={() => changeAppMode('chat')} 
+          onStartDirectChat={(targetUser: User) => {
+            changeAppMode('chat');
+            void startChat(targetUser);
+          }}
+        />
       )}
 
       {isGameModePromptOpen && (
@@ -1052,7 +1108,7 @@ export default function App() {
             <div className="game-mode-prompt-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 8h7a5 5 0 0 1 4.7 3.3l1.3 3.7a3 3 0 0 1-5.1 3l-1.5-1.8H9.1L7.6 18a3 3 0 0 1-5.1-3l1.3-3.7A5 5 0 0 1 8.5 8ZM7 11v4m-2-2h4m8-1h.01M19 14h.01" /></svg></div>
             <h2 id="game-mode-title">Oyun moduna geçilsin mi?</h2>
             <p>Grubuna bağlı yazı ve kalıcı ses kanallarını açabilir, arkadaşlarınla anında konuşabilirsin.</p>
-            <div className="game-mode-prompt-actions"><button onClick={() => setIsGameModePromptOpen(false)}>Vazgeç</button><button className="primary" onClick={() => { setIsGameModePromptOpen(false); setAppMode('game'); }}>Oyun moduna geç</button></div>
+            <div className="game-mode-prompt-actions"><button onClick={() => setIsGameModePromptOpen(false)}>Vazgeç</button><button className="primary" onClick={() => { setIsGameModePromptOpen(false); changeAppMode('game'); }}>Oyun moduna geç</button></div>
           </section>
         </div>
       )}

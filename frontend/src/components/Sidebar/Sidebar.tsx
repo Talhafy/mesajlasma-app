@@ -127,12 +127,23 @@ export default function Sidebar({
       || (conversation.lastMessage.fileType === 'image' ? '📷 Görsel' : '📎 Dosya');
   };
 
-  const archivedConversations = conversationList.filter((conversation) => conversation.isArchived);
+  const archivedConversations = conversationList.filter((conversation) => {
+    if (!conversation.isGroup && !conversation.lastMessage && activeConversation?.id !== conversation.id) {
+      return false;
+    }
+    return conversation.isArchived;
+  });
   const getUnreadKey = (conversation: Conversation) =>
     conversation.isGroup ? conversation.id : conversation.otherUser?.id || conversation.id;
   const archivedUnreadCount = archivedConversations.filter((conversation) => (unreadCounts[getUnreadKey(conversation)] || 0) > 0).length;
   const filteredConversations = conversationList.filter((conversation) => {
     if (conversation.isArchived !== isArchiveView) return false;
+    
+    // Birebir konuşmalarda mesaj yoksa ve şu an aktif seçili konuşma değilse listede gösterme
+    if (!conversation.isGroup && !conversation.lastMessage && activeConversation?.id !== conversation.id) {
+      return false;
+    }
+
     const title = getConversationTitle(conversation);
     // Arama kartı açıkken alttaki sohbet listesi normal sırasını korur; sonuçlar ayrı çerçevede gösterilir.
     if (isGlobalSearchActive) return true;
@@ -227,12 +238,12 @@ export default function Sidebar({
           <span className="user-name">
             {conversation.isPinned ? '📌 ' : ''}{conversation.isMuted ? '🔕 ' : ''}{getConversationTitle(conversation)}
           </span>
-          <div style={{ fontSize: '12px', color: typingUsername ? '#f97316' : iconColor, fontWeight: typingUsername ? 700 : 400, marginTop: '3px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '190px' }}>
+          <div style={{ fontSize: '12px', color: typingUsername ? '#f97316' : iconColor, fontWeight: typingUsername ? 700 : 400, marginTop: '3px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', width: '100%' }}>
             {typingUsername ? `${typingUsername} yazıyor...` : preview}
           </div>
         </div>
         {unreadCounts[unreadKey] > 0 && (
-          <span style={{ background: '#f97316', color: 'white', padding: '2px 8px', borderRadius: '50%', fontSize: '12px', marginLeft: 'auto' }}>
+          <span style={{ background: '#f97316', color: 'white', padding: '2px 8px', borderRadius: '999px', fontSize: '12px', marginLeft: 'auto', flexShrink: 0 }}>
             {unreadCounts[unreadKey]}
           </span>
         )}

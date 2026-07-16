@@ -412,6 +412,7 @@ export const removeGroupParticipant = async (groupId: string, participantId: str
 
   if (io) {
     io.to(groupId).emit('gruptan_atildi', { groupId, removedUserId: participantId, removedById: adminId });
+    io.in(participantId).socketsLeave(groupId);
   }
 
   const remainingParticipants = await prisma.participant.findMany({
@@ -443,12 +444,37 @@ export const removeGroupParticipant = async (groupId: string, participantId: str
       io.to(groupId).emit('grup_silindi', { groupId });
     }
   } else if (group.adminId === participantId) {
-    // Ayrılan kişi yöneticisiyse sıradaki katılımcıyı yönetici yap
-    const newAdminId = remainingParticipants[0].userId;
+    // Ayrılan kişi yöneticisiyse sıradaki yöneticiyi belirle
+    let newAdminId: string | null = null;
+
+    // 1. En son yönetici yapan kişi (adminHistory tersten taranır)
+    const historyList = group.adminHistory ? group.adminHistory.split(',') : [];
+    const remainingIds = new Set(remainingParticipants.map(p => p.userId));
+
+    for (let i = historyList.length - 1; i >= 0; i--) {
+      const historicalId = historyList[i];
+      if (remainingIds.has(historicalId)) {
+        newAdminId = historicalId;
+        break;
+      }
+    }
+
+    // 2. Tarihçedekiler grupta değilse, katılım tarihine göre en eski olan üye (joinedAt)
+    if (!newAdminId) {
+      const sorted = [...remainingParticipants].sort((a, b) => new Date(a.joinedAt).getTime() - new Date(b.joinedAt).getTime());
+      newAdminId = sorted[0].userId;
+    }
+
+    const updatedHistory = historyList.filter(id => id !== participantId && id !== newAdminId).join(',');
+
     await prisma.conversation.update({
       where: { id: groupId },
-      data: { adminId: newAdminId }
+      data: { 
+        adminId: newAdminId,
+        adminHistory: updatedHistory
+      }
     });
+
     if (io) {
       io.to(groupId).emit('grup_yonetici_degisti', { groupId, newAdminId });
     }
@@ -476,10 +502,33 @@ export const addGroupParticipants = async (groupId: string, participantIds: stri
   const data = uniqueUserIds.map((userId) => ({ userId, conversationId: groupId }));
   await prisma.participant.createMany({ data, skipDuplicates: true });
 
+  const newParticipants = await prisma.participant.findMany({
+    where: { conversationId: groupId, userId: { in: uniqueUserIds } },
+    include: { user: { select: { id: true, username: true, email: true, avatarFileKey: true, lastSeenAt: true } } }
+  });
+
+  const blockedRows = await prisma.blockedUser.findMany({
+    where: { userId: adminId },
+    select: { blockedId: true }
+  });
+  const blockedIds = new Set(blockedRows.map((r) => r.blockedId));
+
+  const serializedMembers = await Promise.all(
+    newParticipants.map(async (p) => ({
+      id: p.user.id,
+      username: p.user.username,
+      email: p.user.email,
+      lastSeenAt: p.user.lastSeenAt,
+      avatarUrl: p.user.avatarFileKey ? await createSignedFileUrl(p.user.avatarFileKey) : null,
+      isBlocked: blockedIds.has(p.user.id)
+    }))
+  );
+
   if (io) {
     uniqueUserIds.forEach((userId) => {
       io.to(userId).emit('grup_olusturuldu', group);
     });
+    io.to(groupId).emit('grup_uyeleri_eklendi', { groupId, newMembers: serializedMembers });
   }
 
   return { message: "Kişiler eklendi." };
@@ -498,9 +547,16 @@ export const transferGroupAdmin = async (groupId: string, newAdminId: string, ad
     throw new Error('Yeni yönetici grubun üyesi olmalıdır.');
   }
 
+  const historyList = group.adminHistory ? group.adminHistory.split(',').filter(id => id !== adminId) : [];
+  historyList.push(adminId);
+  const newHistory = historyList.join(',');
+
   await prisma.conversation.update({
     where: { id: groupId },
-    data: { adminId: newAdminId }
+    data: { 
+      adminId: newAdminId,
+      adminHistory: newHistory
+    }
   });
 
   if (io) {

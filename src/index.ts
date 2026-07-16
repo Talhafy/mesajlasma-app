@@ -42,7 +42,7 @@ app.use(express.json({ limit: '100kb' }));
 // CORS'u wildcard bırakmıyoruz; HttpOnly refresh cookie kullandığımız için yalnızca frontend origin'e izin verilir.
 app.use(cors({
   origin: clientOrigin,
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
   credentials: true
 }));
 app.use(requestLogger);

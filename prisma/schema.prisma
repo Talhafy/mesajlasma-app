@@ -26,6 +26,7 @@ model User {
   messageReads              MessageRead[]
   messageStars              MessageStar[]
   messageDeletions          MessageDeletion[]
+  gameChannelMutes          GameChannelMute[]
 }
 
 model BlockedUser {
@@ -59,6 +60,7 @@ model Conversation {
   name              String?
   adminId           String?
   avatarFileKey     String?
+  adminHistory      String             @default("")
   createdAt         DateTime           @default(now())
   disappearingDurationSeconds Int?
   admin             User?              @relation("ConversationAdmin", fields: [adminId], references: [id], onDelete: SetNull)
@@ -133,6 +135,7 @@ model GameChannel {
   createdAt      DateTime        @default(now())
   conversation   Conversation    @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   messages       Message[]
+  mutes          GameChannelMute[]
 
   @@unique([conversationId, type, name])
   @@index([conversationId, type, position])
@@ -189,4 +192,15 @@ model MessageDeletion {
 
   @@id([messageId, userId])
   @@index([userId, messageId])
+}
+
+model GameChannelMute {
+  channelId String
+  userId    String
+  createdAt DateTime @default(now())
+  channel   GameChannel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([channelId, userId])
+  @@index([userId])
 }

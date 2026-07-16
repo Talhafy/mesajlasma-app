@@ -99,4 +99,38 @@ router.post('/game/channels/:channelId/token', validateRequest({ params: gameSch
   }
 });
 
+router.patch('/game/groups/:groupId/channels/:channelId', validateRequest({ params: gameSchemas.channelParams, body: gameSchemas.updateChannel }), async (req: CustomRequest, res: Response): Promise<any> => {
+  try {
+    const groupId = getParam(req, 'groupId');
+    const channelId = getParam(req, 'channelId');
+    const channel = await gameChannelService.updateChannel(groupId, channelId, getUserId(req), req.body);
+    req.app.get('io')?.to(groupId).emit('game:channel-updated', channel);
+    return res.status(200).json(channel);
+  } catch (error: any) {
+    return res.status(statusFor(error.message)).json({ error: error.message });
+  }
+});
+
+router.put('/game/groups/:groupId/channels/reorder', validateRequest({ params: gameSchemas.groupParams, body: gameSchemas.reorderChannels }), async (req: CustomRequest, res: Response): Promise<any> => {
+  try {
+    const groupId = getParam(req, 'groupId');
+    const channels = await gameChannelService.reorderChannels(groupId, getUserId(req), req.body.orderedIds);
+    req.app.get('io')?.to(groupId).emit('game:channels-reordered', { groupId, channels });
+    return res.status(200).json(channels);
+  } catch (error: any) {
+    return res.status(statusFor(error.message)).json({ error: error.message });
+  }
+});
+
+router.post('/game/groups/:groupId/channels/:channelId/mute', validateRequest({ params: gameSchemas.channelParams }), async (req: CustomRequest, res: Response): Promise<any> => {
+  try {
+    const groupId = getParam(req, 'groupId');
+    const channelId = getParam(req, 'channelId');
+    const result = await gameChannelService.toggleChannelMute(groupId, channelId, getUserId(req));
+    return res.status(200).json(result);
+  } catch (error: any) {
+    return res.status(statusFor(error.message)).json({ error: error.message });
+  }
+});
+
 export default router;

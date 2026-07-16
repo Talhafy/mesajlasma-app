@@ -45,6 +45,7 @@ interface GameHubProps {
   users: User[];
   socket: Socket | null;
   onExit: () => void;
+  onStartDirectChat?: (targetUser: User) => void;
 }
 
 const Icon = ({ name }: { name: 'hash' | 'voice' | 'plus' | 'trash' | 'users' | 'game' }) => {
@@ -103,7 +104,7 @@ function VoiceChannelConnection({
   return <><RoomAudioRenderer /><StartAudio label="Sesi etkinleştir" />{controls}</>;
 }
 
-export default function GameHub({ currentUser, groups, users, socket, onExit }: GameHubProps) {
+export default function GameHub({ currentUser, groups, users, socket, onExit, onStartDirectChat }: GameHubProps) {
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(groups[0]?.id || null);
   const [channels, setChannels] = useState<GameChannel[]>([]);
   const [selectedChannel, setSelectedChannel] = useState<SelectedChannel | null>(null);
@@ -122,9 +123,21 @@ export default function GameHub({ currentUser, groups, users, socket, onExit }: 
   const [channelLimit, setChannelLimit] = useState(8);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [mutedChannelIds, setMutedChannelIds] = useState<Set<string>>(new Set());
+  const [channelUnreadCounts, setChannelUnreadCounts] = useState<Record<string, number>>({});
+  const [channelTypings, setChannelTypings] = useState<Record<string, string>>({});
+  const [editingChannel, setEditingChannel] = useState<GameChannel | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editLimit, setEditLimit] = useState(8);
+  const [draggedChannelId, setDraggedChannelId] = useState<string | null>(null);
+  const [dragOverChannelId, setDragOverChannelId] = useState<string | null>(null);
+  const [selectedMemberProfile, setSelectedMemberProfile] = useState<User | null>(null);
+  const [isAddingMember, setIsAddingMember] = useState(false);
+  const [selectedNewMembers, setSelectedNewMembers] = useState<string[]>([]);
   const messageEndRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastSentTypingRef = useRef<{ channelId: string; isTyping: boolean } | null>(null);
 
   const selectedGroup = useMemo(
     () => groups.find((group) => group.id === selectedGroupId) || null,
@@ -133,6 +146,18 @@ export default function GameHub({ currentUser, groups, users, socket, onExit }: 
   const isAdmin = selectedGroup?.adminId === currentUser.id;
   const textChannels = channels.filter((channel) => channel.type === 'TEXT');
   const voiceChannels = channels.filter((channel) => channel.type === 'VOICE');
+  const onlineCount = useMemo(() => {
+    return members.filter((m) => m.isOnline).length;
+  }, [members]);
+  const onlineMembers = useMemo(() => {
+    return members.filter((m) => m.isOnline).sort((a, b) => a.username.localeCompare(b.username));
+  }, [members]);
+  const offlineMembers = useMemo(() => {
+    return members.filter((m) => !m.isOnline).sort((a, b) => a.username.localeCompare(b.username));
+  }, [members]);
+  const availableUsersToAdd = useMemo(() => {
+    return users.filter((u) => u.id !== currentUser.id && !members.some((m) => m.id === u.id));
+  }, [users, members, currentUser.id]);
 
   const exitGameMode = () => {
     if (voiceConnection) {
@@ -174,6 +199,8 @@ export default function GameHub({ currentUser, groups, users, socket, onExit }: 
     setSelectedChannel(null);
     setVoicePresences([]);
     setTypingUsername('');
+    setChannelUnreadCounts({});
+    setChannelTypings({});
     setLoading(true);
     setError('');
     Promise.all([
@@ -182,7 +209,13 @@ export default function GameHub({ currentUser, groups, users, socket, onExit }: 
     ]).then(([channelResponse, memberResponse]) => {
       if (cancelled) return;
       setChannels(channelResponse.data.channels.filter((channel: GameChannel) => channel.conversationId === selectedGroupId));
-      setMembers(memberResponse.data);
+      setMutedChannelIds(new Set(channelResponse.data.mutedChannelIds || []));
+      const mapped = memberResponse.data.map((member: User) => {
+        if (member.id === currentUser.id) return { ...member, ...currentUser, isOnline: true };
+        const liveUser = users.find((u) => u.id === member.id);
+        return liveUser ? { ...member, ...liveUser } : { ...member, isOnline: false };
+      });
+      setMembers(mapped);
       setSelectedChannel({
         id: 'general', conversationId: selectedGroupId, createdById: '', name: 'genel',
         type: 'TEXT', position: -1, createdAt: new Date(0).toISOString()
@@ -198,8 +231,8 @@ export default function GameHub({ currentUser, groups, users, socket, onExit }: 
   useEffect(() => {
     setMembers((previous) => previous.map((member) => {
       if (member.id === currentUser.id) return { ...member, ...currentUser, isOnline: true };
-      const liveUser = users.find((user) => user.id === member.id);
-      return liveUser ? { ...member, ...liveUser } : member;
+      const liveUser = users.find((u) => u.id === member.id);
+      return liveUser ? { ...member, ...liveUser } : { ...member, isOnline: false };
     }));
   }, [users, currentUser]);
 
@@ -267,17 +300,44 @@ export default function GameHub({ currentUser, groups, users, socket, onExit }: 
   useEffect(() => {
     if (!socket) return;
     const receiveGameMessage = (message: Message) => {
-      if (message.conversationId !== selectedGroupId || message.gameChannelId !== selectedChannel?.id) return;
-      setMessages((previous) => previous.some((item) => item.id === message.id) ? previous : [...previous, message]);
+      if (message.conversationId !== selectedGroupId) return;
+      if (message.gameChannelId === selectedChannel?.id) {
+        setMessages((previous) => previous.some((item) => item.id === message.id) ? previous : [...previous, message]);
+      } else if (message.gameChannelId) {
+        const isMuted = mutedChannelIds.has(message.gameChannelId);
+        if (!isMuted) {
+          setChannelUnreadCounts((prev) => ({
+            ...prev,
+            [message.gameChannelId!]: (prev[message.gameChannelId!] || 0) + 1
+          }));
+        }
+      }
     };
     const receiveGeneralMessage = (message: Message) => {
-      if (message.conversationId !== selectedGroupId || selectedChannel?.id !== 'general' || message.gameChannelId) return;
-      setMessages((previous) => previous.some((item) => item.id === message.id) ? previous : [...previous, message]);
+      if (message.conversationId !== selectedGroupId || message.gameChannelId) return;
+      if (selectedChannel?.id === 'general') {
+        setMessages((previous) => previous.some((item) => item.id === message.id) ? previous : [...previous, message]);
+      } else {
+        const isMuted = mutedChannelIds.has('general');
+        if (!isMuted) {
+          setChannelUnreadCounts((prev) => ({
+            ...prev,
+            general: (prev.general || 0) + 1
+          }));
+        }
+      }
     };
     const receiveTyping = ({ conversationId, gameChannelId, username, isTyping }: { conversationId: string; gameChannelId?: string | null; username: string; isTyping: boolean }) => {
+      if (conversationId !== selectedGroupId || username === currentUser.username) return;
+      const targetChannelId = gameChannelId || 'general';
+      setChannelTypings((prev) => ({
+        ...prev,
+        [targetChannelId]: isTyping ? username : ''
+      }));
       const currentChannelId = selectedChannel?.id === 'general' ? null : selectedChannel?.id;
-      if (conversationId !== selectedGroupId || gameChannelId !== currentChannelId || username === currentUser.username) return;
-      setTypingUsername(isTyping ? username : '');
+      if (gameChannelId === currentChannelId) {
+        setTypingUsername(isTyping ? username : '');
+      }
     };
     const receiveReadReceipt = ({ conversationId, gameChannelId, readByUserId }: { conversationId: string; gameChannelId?: string | null; readByUserId: string }) => {
       const currentChannelId = selectedChannel?.id === 'general' ? null : selectedChannel?.id;
@@ -296,6 +356,15 @@ export default function GameHub({ currentUser, groups, users, socket, onExit }: 
       if (channel.conversationId !== selectedGroupId) return;
       setChannels((previous) => previous.some((item) => item.id === channel.id) ? previous : [...previous, channel]);
     };
+    const channelUpdated = (channel: GameChannel) => {
+      if (channel.conversationId !== selectedGroupId) return;
+      setChannels((previous) => previous.map((item) => item.id === channel.id ? channel : item));
+      setSelectedChannel((prev) => prev && prev.id === channel.id ? channel : prev);
+    };
+    const channelsReordered = ({ groupId, channels: nextChannels }: { groupId: string; channels: GameChannel[] }) => {
+      if (groupId !== selectedGroupId) return;
+      setChannels(nextChannels);
+    };
     const channelDeleted = ({ channelId, groupId }: { channelId: string; groupId: string }) => {
       if (groupId !== selectedGroupId) return;
       setChannels((previous) => previous.filter((item) => item.id !== channelId));
@@ -303,21 +372,50 @@ export default function GameHub({ currentUser, groups, users, socket, onExit }: 
         setSelectedChannel({ id: 'general', conversationId: groupId, createdById: '', name: 'genel', type: 'TEXT', position: -1, createdAt: new Date(0).toISOString() });
       }
     };
+    const membersAdded = ({ groupId, newMembers }: { groupId: string; newMembers: User[] }) => {
+      if (groupId !== selectedGroupId) return;
+      setMembers((prev) => {
+        const existingIds = new Set(prev.map(m => m.id));
+        const filtered = newMembers.filter(m => !existingIds.has(m.id)).map(m => {
+          if (m.id === currentUser.id) return { ...m, ...currentUser, isOnline: true };
+          const liveUser = users.find((u) => u.id === m.id);
+          return liveUser ? { ...m, ...liveUser } : { ...m, isOnline: false };
+        });
+        return [...prev, ...filtered];
+      });
+    };
+    const gruptanAtildi = ({ groupId, removedUserId }: { groupId: string; removedUserId: string }) => {
+      if (groupId !== selectedGroupId) return;
+      setMembers((prev) => prev.filter((m) => m.id !== removedUserId));
+      if (removedUserId === currentUser.id) {
+        exitGameMode();
+      }
+    };
+
     socket.on('game:message', receiveGameMessage);
     socket.on('yeni_mesaj_geldi', receiveGeneralMessage);
     socket.on('game:channel-created', channelCreated);
+    socket.on('game:channel-updated', channelUpdated);
+    socket.on('game:channels-reordered', channelsReordered);
     socket.on('game:channel-deleted', channelDeleted);
     socket.on('typing_changed', receiveTyping);
     socket.on('mesajlar_okundu', receiveReadReceipt);
+    socket.on('grup_uyeleri_eklendi', membersAdded);
+    socket.on('gruptan_atildi', gruptanAtildi);
+
     return () => {
       socket.off('game:message', receiveGameMessage);
       socket.off('yeni_mesaj_geldi', receiveGeneralMessage);
       socket.off('game:channel-created', channelCreated);
+      socket.off('game:channel-updated', channelUpdated);
+      socket.off('game:channels-reordered', channelsReordered);
       socket.off('game:channel-deleted', channelDeleted);
       socket.off('typing_changed', receiveTyping);
       socket.off('mesajlar_okundu', receiveReadReceipt);
+      socket.off('grup_uyeleri_eklendi', membersAdded);
+      socket.off('gruptan_atildi', gruptanAtildi);
     };
-  }, [socket, selectedGroupId, selectedChannel?.id, currentUser.username]);
+  }, [socket, selectedGroupId, selectedChannel?.id, currentUser.username, currentUser.id, users]);
 
   const createChannel = async () => {
     if (!selectedGroupId || !channelName.trim()) return;
@@ -336,6 +434,18 @@ export default function GameHub({ currentUser, groups, users, socket, onExit }: 
     }
   };
 
+  const handleAddMembers = async () => {
+    if (!selectedGroupId || selectedNewMembers.length === 0) return;
+    setError('');
+    try {
+      await api.post(`/conversations/group/${selectedGroupId}/participants`, { userIdsToAdd: selectedNewMembers });
+      setIsAddingMember(false);
+      setSelectedNewMembers([]);
+    } catch {
+      setError('Kullanıcılar eklenemedi.');
+    }
+  };
+
   const deleteChannel = async (channel: GameChannel) => {
     if (!selectedGroupId || !window.confirm(`“${channel.name}” kanalını silmek istiyor musunuz?`)) return;
     try {
@@ -345,6 +455,122 @@ export default function GameHub({ currentUser, groups, users, socket, onExit }: 
     } catch (requestError: any) {
       setError(requestError.response?.data?.error || 'Kanal silinemedi.');
     }
+  };
+
+  const handleDragStart = (e: React.DragEvent, channelId: string) => {
+    if (!isAdmin) return;
+    setDraggedChannelId(channelId);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDragOver = (e: React.DragEvent, channelId: string, type: GameChannelType) => {
+    if (!isAdmin || !draggedChannelId) return;
+    const dragged = channels.find(c => c.id === draggedChannelId);
+    if (!dragged || dragged.type !== type) return;
+    e.preventDefault();
+    setDragOverChannelId(channelId);
+  };
+
+  const handleDragEnd = () => {
+    setDraggedChannelId(null);
+    setDragOverChannelId(null);
+  };
+
+  const handleDrop = async (e: React.DragEvent, targetChannelId: string, type: GameChannelType) => {
+    if (!isAdmin || !draggedChannelId || draggedChannelId === targetChannelId) return;
+    const dragged = channels.find(c => c.id === draggedChannelId);
+    if (!dragged || dragged.type !== type) return;
+
+    e.preventDefault();
+
+    const sameTypeChannels = channels.filter(c => c.type === type);
+    const dragIndex = sameTypeChannels.findIndex(c => c.id === draggedChannelId);
+    const hoverIndex = sameTypeChannels.findIndex(c => c.id === targetChannelId);
+
+    if (dragIndex === -1 || hoverIndex === -1) return;
+
+    const result = [...sameTypeChannels];
+    const [removed] = result.splice(dragIndex, 1);
+    result.splice(hoverIndex, 0, removed);
+
+    const orderedIds = result.map(c => c.id);
+
+    const otherTypeChannels = channels.filter(c => c.type !== type);
+    const updatedSameType = result.map((c, i) => ({ ...c, position: i }));
+    const updatedAll = [...otherTypeChannels, ...updatedSameType].sort((a, b) => {
+      if (a.type !== b.type) return a.type.localeCompare(b.type);
+      return a.position - b.position;
+    });
+
+    setChannels(updatedAll);
+
+    try {
+      const response = await api.put(`/game/groups/${selectedGroupId}/channels/reorder`, { orderedIds });
+      setChannels(response.data);
+    } catch (err: any) {
+      setError('Kanal sıralaması güncellenemedi.');
+    }
+
+    setDraggedChannelId(null);
+    setDragOverChannelId(null);
+  };
+
+  const toggleMute = async (channelId: string) => {
+    if (!selectedGroupId) return;
+    try {
+      const response = await api.post(`/game/groups/${selectedGroupId}/channels/${channelId}/mute`);
+      setMutedChannelIds(prev => {
+        const next = new Set(prev);
+        if (response.data.muted) {
+          next.add(channelId);
+        } else {
+          next.delete(channelId);
+        }
+        return next;
+      });
+    } catch (err: any) {
+      setError('Bildirim ayarı değiştirilemedi.');
+    }
+  };
+
+  const openEditModal = (channel: GameChannel) => {
+    setEditingChannel(channel);
+    setEditName(channel.name);
+    setEditLimit(channel.maxParticipants || 8);
+  };
+
+  const handleUpdateChannel = async () => {
+    console.log("handleUpdateChannel called: ", { selectedGroupId, channelId: editingChannel?.id, editName, editLimit });
+    if (!selectedGroupId || !editingChannel || !editName.trim()) {
+      console.warn("handleUpdateChannel skipped: missing required values");
+      return;
+    }
+    try {
+      const response = await api.patch(`/game/groups/${selectedGroupId}/channels/${editingChannel.id}`, {
+        name: editName,
+        maxParticipants: editingChannel.type === 'VOICE' ? editLimit : null
+      });
+      console.log("handleUpdateChannel response: ", response.data);
+      setChannels((prev) => prev.map((c) => c.id === editingChannel.id ? response.data : c));
+      if (selectedChannel?.id === editingChannel.id) {
+        setSelectedChannel(response.data);
+      }
+      setEditingChannel(null);
+    } catch (requestError: any) {
+      console.error("handleUpdateChannel error: ", requestError);
+      setError(requestError.response?.data?.error || 'Kanal güncellenemedi.');
+    }
+  };
+
+  const selectChannel = (channel: SelectedChannel) => {
+    setSelectedChannel(channel);
+    setTypingUsername(channelTypings[channel.id] || '');
+    setChannelUnreadCounts((prev) => {
+      if (prev[channel.id] > 0) {
+        return { ...prev, [channel.id]: 0 };
+      }
+      return prev;
+    });
   };
 
   const joinVoiceChannel = async (channel: GameChannel) => {
@@ -367,6 +593,7 @@ export default function GameHub({ currentUser, groups, users, socket, onExit }: 
     setMessageText('');
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     socket?.emit('typing_changed', { conversationId: selectedGroupId, gameChannelId: selectedChannel.id === 'general' ? null : selectedChannel.id, isTyping: false });
+    lastSentTypingRef.current = { channelId: selectedChannel.id, isTyping: false };
     try {
       let fileData: { fileKey?: string; fileType?: string; fileName?: string } = {};
       if (selectedFile) {
@@ -393,11 +620,29 @@ export default function GameHub({ currentUser, groups, users, socket, onExit }: 
   const handleComposerChange = (value: string) => {
     setMessageText(value);
     if (!socket || !selectedGroupId || !selectedChannel) return;
-    socket.emit('typing_changed', { conversationId: selectedGroupId, gameChannelId: selectedChannel.id === 'general' ? null : selectedChannel.id, isTyping: Boolean(value.trim()) });
+    
+    const isCurrentlyTyping = Boolean(value.trim());
+    const channelId = selectedChannel.id;
+    const current = lastSentTypingRef.current;
+    
+    if (!current || current.channelId !== channelId || current.isTyping !== isCurrentlyTyping) {
+      lastSentTypingRef.current = { channelId, isTyping: isCurrentlyTyping };
+      socket.emit('typing_changed', { 
+        conversationId: selectedGroupId, 
+        gameChannelId: channelId === 'general' ? null : channelId, 
+        isTyping: isCurrentlyTyping 
+      });
+    }
+
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-    if (value.trim()) {
+    if (isCurrentlyTyping) {
       typingTimeoutRef.current = setTimeout(() => {
-        socket.emit('typing_changed', { conversationId: selectedGroupId, gameChannelId: selectedChannel.id === 'general' ? null : selectedChannel.id, isTyping: false });
+        socket.emit('typing_changed', { 
+          conversationId: selectedGroupId, 
+          gameChannelId: channelId === 'general' ? null : channelId, 
+          isTyping: false 
+        });
+        lastSentTypingRef.current = { channelId, isTyping: false };
       }, 1800);
     }
   };
@@ -433,23 +678,95 @@ export default function GameHub({ currentUser, groups, users, socket, onExit }: 
 
       <aside className="game-channel-sidebar">
         <header className="game-server-header">
-          <div><span>OYUN GRUBU</span><h2>{selectedGroup?.name}</h2></div>
-          <div className="game-server-actions"><button className="game-return-icon" onClick={exitGameMode} title="Mesajlara dön" aria-label="Mesajlara dön">←</button><button onClick={() => setIsCreating(true)} title="Kanal oluştur"><Icon name="plus" /></button></div>
+          <div>
+            <span>OYUN GRUBU</span>
+            <h2>{selectedGroup?.name}</h2>
+            <div className="game-server-online-info">
+              <span className="online-indicator-dot" />
+              <span>{onlineCount}/{members.length} Çevrimiçi</span>
+            </div>
+          </div>
+          <div className="game-server-actions">
+            <button className="game-return-icon" onClick={exitGameMode} title="Mesajlara dön" aria-label="Mesajlara dön">←</button>
+            <button onClick={() => setIsCreating(true)} title="Kanal oluştur"><Icon name="plus" /></button>
+          </div>
         </header>
 
         <div className="channel-scroll">
           <ChannelSection title="YAZI KANALLARI" canCreate onAdd={() => { setChannelType('TEXT'); setIsCreating(true); }}>
-            <button className={`channel-row ${selectedChannel?.id === 'general' ? 'active' : ''}`} onClick={() => { setSelectedChannel({ id: 'general', conversationId: selectedGroupId!, createdById: '', name: 'genel', type: 'TEXT', position: -1, createdAt: new Date(0).toISOString() }); }}>
-              <Icon name="hash" /><span>genel</span>
-            </button>
-            {textChannels.map((channel) => <ChannelRow key={channel.id} channel={channel} active={selectedChannel?.id === channel.id} canDelete={isAdmin || channel.createdById === currentUser.id} onSelect={() => { setSelectedChannel(channel); }} onDelete={() => deleteChannel(channel)} />)}
+            <ChannelRow
+              channel={{ id: 'general', name: 'genel', type: 'TEXT' }}
+              active={selectedChannel?.id === 'general'}
+              canDelete={false}
+              canEdit={false}
+              isMuted={mutedChannelIds.has('general')}
+              unreadCount={channelUnreadCounts.general}
+              typingUser={channelTypings.general}
+              onSelect={() => selectChannel({ id: 'general', conversationId: selectedGroupId!, createdById: '', name: 'genel', type: 'TEXT', position: -1, createdAt: new Date(0).toISOString() })}
+              onMuteToggle={() => toggleMute('general')}
+            />
+            {textChannels.map((channel) => (
+              <ChannelRow
+                key={channel.id}
+                channel={channel}
+                active={selectedChannel?.id === channel.id}
+                canDelete={isAdmin || channel.createdById === currentUser.id}
+                canEdit={isAdmin || channel.createdById === currentUser.id}
+                isMuted={mutedChannelIds.has(channel.id)}
+                unreadCount={channelUnreadCounts[channel.id]}
+                typingUser={channelTypings[channel.id]}
+                isAdmin={isAdmin}
+                dragOver={dragOverChannelId === channel.id}
+                onSelect={() => selectChannel(channel)}
+                onDelete={() => deleteChannel(channel)}
+                onEdit={() => openEditModal(channel)}
+                onMuteToggle={() => toggleMute(channel.id)}
+                onDragStart={(e) => handleDragStart(e, channel.id)}
+                onDragOver={(e) => handleDragOver(e, channel.id, 'TEXT')}
+                onDragEnd={handleDragEnd}
+                onDrop={(e) => handleDrop(e, channel.id, 'TEXT')}
+              />
+            ))}
           </ChannelSection>
 
           <ChannelSection title="SES KANALLARI" canCreate onAdd={() => { setChannelType('VOICE'); setIsCreating(true); }}>
             {voiceChannels.length === 0 && <p className="channel-empty">Henüz ses kanalı yok.</p>}
             {voiceChannels.map((channel) => {
               const channelPresences = voicePresences.filter((presence) => presence.channelId === channel.id);
-              return <div key={channel.id}><ChannelRow channel={channel} active={voiceConnection?.channel.id === channel.id} canDelete={isAdmin || channel.createdById === currentUser.id} onSelect={() => void joinVoiceChannel(channel)} onDelete={() => deleteChannel(channel)} />{channelPresences.length > 0 && <div className="voice-channel-members">{channelPresences.map((presence) => { const member = members.find((item) => item.id === presence.userId); return <div className={`voice-channel-member ${presence.isSpeaking ? 'speaking' : ''}`} key={presence.userId}><Avatar user={member || { username: presence.username }} size={27} speaking={presence.isSpeaking} /><span>{member?.username || presence.username}</span></div>; })}</div>}</div>;
+              return (
+                <div key={channel.id}>
+                  <ChannelRow
+                    channel={channel}
+                    active={voiceConnection?.channel.id === channel.id}
+                    canDelete={isAdmin || channel.createdById === currentUser.id}
+                    canEdit={isAdmin || channel.createdById === currentUser.id}
+                    isMuted={mutedChannelIds.has(channel.id)}
+                    isAdmin={isAdmin}
+                    dragOver={dragOverChannelId === channel.id}
+                    onSelect={() => void joinVoiceChannel(channel)}
+                    onDelete={() => deleteChannel(channel)}
+                    onEdit={() => openEditModal(channel)}
+                    onMuteToggle={() => toggleMute(channel.id)}
+                    onDragStart={(e) => handleDragStart(e, channel.id)}
+                    onDragOver={(e) => handleDragOver(e, channel.id, 'VOICE')}
+                    onDragEnd={handleDragEnd}
+                    onDrop={(e) => handleDrop(e, channel.id, 'VOICE')}
+                  />
+                  {channelPresences.length > 0 && (
+                    <div className="voice-channel-members">
+                      {channelPresences.map((presence) => {
+                        const member = members.find((item) => item.id === presence.userId);
+                        return (
+                          <div className={`voice-channel-member ${presence.isSpeaking ? 'speaking' : ''}`} key={presence.userId}>
+                            <Avatar user={member || { username: presence.username }} size={27} speaking={presence.isSpeaking} />
+                            <span>{member?.username || presence.username}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
             })}
           </ChannelSection>
         </div>
@@ -482,6 +799,43 @@ export default function GameHub({ currentUser, groups, users, socket, onExit }: 
         ) : null}
       </section>
 
+      <aside className="game-member-sidebar">
+        <header className="member-sidebar-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '18px 20px 8px 20px', borderBottom: '1px solid var(--game-border)' }}>
+          <h3 style={{ margin: 0, fontSize: '11px', fontWeight: 800, color: 'var(--game-muted)', letterSpacing: '0.05em' }}>ÜYELER</h3>
+          {isAdmin && (
+            <button 
+              onClick={() => setIsAddingMember(true)} 
+              title="Yeni Üye Ekle" 
+              style={{ background: 'transparent', border: 0, color: '#94a3b8', cursor: 'pointer', display: 'grid', placeItems: 'center', padding: 0 }}
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ width: 16, height: 16 }}><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
+            </button>
+          )}
+        </header>
+        <div className="member-scroll">
+          <div className="member-section">
+            <h3 className="member-section-title">ÇEVRİMİÇİ — {onlineMembers.length}</h3>
+            {onlineMembers.map((member) => (
+              <button key={member.id} className="member-row" onClick={() => setSelectedMemberProfile(member)}>
+                <Avatar user={member} size={32} />
+                <span className="member-name">{member.username}</span>
+                <span className="online-status-dot" />
+              </button>
+            ))}
+          </div>
+          
+          <div className="member-section">
+            <h3 className="member-section-title">ÇEVRİMDIŞI — {offlineMembers.length}</h3>
+            {offlineMembers.map((member) => (
+              <button key={member.id} className="member-row offline" onClick={() => setSelectedMemberProfile(member)}>
+                <Avatar user={member} size={32} />
+                <span className="member-name">{member.username}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      </aside>
+
       {voiceConnection && (
         <LiveKitRoom key={voiceConnection.channel.id} serverUrl={voiceConnection.serverUrl} token={voiceConnection.token} connect audio video={false} onConnected={() => { const presence: VoicePresence = { conversationId: voiceConnection.channel.conversationId, channelId: voiceConnection.channel.id, userId: currentUser.id, username: currentUser.username, isSpeaking: false }; setVoicePresences((previous) => [...previous.filter((item) => item.userId !== currentUser.id), presence]); socket?.emit('game:voice-presence', { action: 'join', conversationId: presence.conversationId, channelId: presence.channelId }); }} onDisconnected={() => { socket?.emit('game:voice-presence', { action: 'leave', channelId: voiceConnection.channel.id }); setVoicePresences((previous) => previous.filter((item) => item.userId !== currentUser.id || item.channelId !== voiceConnection.channel.id)); setVoiceConnection(null); }} onError={() => setError('Ses bağlantısında bir hata oluştu.')} className="game-livekit-room">
           <VoiceChannelConnection channelId={voiceConnection.channel.id} currentUserId={currentUser.id} socket={socket} controlsTarget={voiceControlsTarget} onLeave={() => { socket?.emit('game:voice-presence', { action: 'leave', channelId: voiceConnection.channel.id }); setVoiceConnection(null); }} />
@@ -490,12 +844,156 @@ export default function GameHub({ currentUser, groups, users, socket, onExit }: 
 
       {isCreating && (
         <div className="channel-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setIsCreating(false); }}>
-          <div className="channel-modal">
+          <div className="channel-modal" onMouseDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
             <span className="eyebrow">{selectedGroup?.name}</span><h2>Yeni kanal oluştur</h2><p>Grubuna bağlı kalıcı bir yazı veya ses kanalı ekle.</p>
             <div className="channel-type-picker"><button className={channelType === 'TEXT' ? 'active' : ''} onClick={() => setChannelType('TEXT')}><Icon name="hash" /><span><strong>Yazı kanalı</strong><small>Grup içinde ayrı mesaj akışı</small></span></button><button className={channelType === 'VOICE' ? 'active' : ''} onClick={() => setChannelType('VOICE')}><Icon name="voice" /><span><strong>Ses kanalı</strong><small>Anında konuşma ve ekran paylaşımı</small></span></button></div>
             <label>KANAL ADI<input autoFocus value={channelName} onChange={(event) => setChannelName(event.target.value)} maxLength={40} placeholder={channelType === 'VOICE' ? 'Örn. Valorant Takımı' : 'örn-oyun-planı'} /></label>
             {channelType === 'VOICE' && <label>KİŞİ LİMİTİ<select value={channelLimit} onChange={(event) => setChannelLimit(Number(event.target.value))}>{[2, 4, 5, 8, 10, 15, 20, 25].map((limit) => <option key={limit} value={limit}>{limit} kişi</option>)}</select></label>}
             <div className="channel-modal-actions"><button onClick={() => setIsCreating(false)}>Vazgeç</button><button className="primary" disabled={!channelName.trim()} onClick={() => void createChannel()}>Kanalı oluştur</button></div>
+          </div>
+        </div>
+      )}
+
+      {editingChannel && (
+        <div className="channel-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setEditingChannel(null); }}>
+          <div className="channel-modal" onMouseDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
+            <span className="eyebrow">{selectedGroup?.name}</span>
+            <h2>Kanalı düzenle</h2>
+            <p>“{editingChannel.name}” kanalının ayarlarını güncelleyin.</p>
+            <label>KANAL ADI<input autoFocus value={editName} onChange={(event) => setEditName(event.target.value)} maxLength={40} placeholder={editingChannel.type === 'VOICE' ? 'Örn. Valorant Takımı' : 'örn-oyun-planı'} /></label>
+            {editingChannel.type === 'VOICE' && <label>KİŞİ LİMİTİ<select value={editLimit} onChange={(event) => setEditLimit(Number(event.target.value))}>{[2, 4, 5, 8, 10, 15, 20, 25].map((limit) => <option key={limit} value={limit}>{limit} kişi</option>)}</select></label>}
+            <div className="channel-modal-actions"><button onClick={() => setEditingChannel(null)}>Vazgeç</button><button className="primary" disabled={!editName.trim()} onClick={() => void handleUpdateChannel()}>Değişiklikleri kaydet</button></div>
+          </div>
+        </div>
+      )}
+
+      {selectedMemberProfile && (
+        <div className="channel-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setSelectedMemberProfile(null); }}>
+          <div className="channel-modal game-profile-card" onMouseDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
+            <span className="eyebrow">{selectedGroup?.name}</span>
+            <h2>Kullanıcı Profili</h2>
+            <div className="game-profile-header" style={{ display: 'flex', alignItems: 'center', gap: '16px', margin: '20px 0' }}>
+              <div className="game-profile-avatar-wrap" style={{ position: 'relative' }}>
+                <Avatar user={selectedMemberProfile} size={64} />
+                <span 
+                  className={`game-profile-status-dot ${selectedMemberProfile.isOnline ? 'online' : 'offline'}`} 
+                  style={{
+                    position: 'absolute',
+                    bottom: 2,
+                    right: 2,
+                    width: 12,
+                    height: 12,
+                    borderRadius: '50%',
+                    border: '2px solid #131c2a',
+                    background: selectedMemberProfile.isOnline ? '#34d399' : '#94a3b8'
+                  }}
+                />
+              </div>
+              <div className="game-profile-user-details" style={{ minWidth: 0 }}>
+                <h3 style={{ margin: '0 0 4px', fontSize: '18px', fontWeight: 700 }}>{selectedMemberProfile.username}</h3>
+                <span className="game-profile-email" style={{ color: 'var(--game-muted)', fontSize: '12px' }}>{selectedMemberProfile.email || 'E-posta adresi yok'}</span>
+              </div>
+            </div>
+            
+            <div className="game-profile-body" style={{ background: '#0d1521', padding: '14px', borderRadius: '10px', display: 'grid', gap: '10px', marginBottom: '20px', fontSize: '13px' }}>
+              <div className="profile-info-row" style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <strong style={{ color: 'var(--game-muted)' }}>Durum:</strong>
+                <span style={{ color: selectedMemberProfile.isOnline ? '#34d399' : '#94a3b8', fontWeight: 600 }}>{selectedMemberProfile.isOnline ? 'Çevrimiçi' : 'Çevrimdışı'}</span>
+              </div>
+              {selectedMemberProfile.lastSeenAt && (
+                <div className="profile-info-row" style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <strong style={{ color: 'var(--game-muted)' }}>Son Görülme:</strong>
+                  <span>{new Date(selectedMemberProfile.lastSeenAt).toLocaleString('tr-TR', { dateStyle: 'short', timeStyle: 'short' })}</span>
+                </div>
+              )}
+            </div>
+
+             <div className="channel-modal-actions" style={{ gap: '10px' }}>
+               <button onClick={() => setSelectedMemberProfile(null)}>Kapat</button>
+               {selectedMemberProfile.id !== currentUser.id && onStartDirectChat && (
+                 <button className="primary" onClick={() => {
+                   if (window.confirm("Mesajlaşma moduna geçmek istediğinize emin misiniz?")) {
+                     setSelectedMemberProfile(null);
+                     onStartDirectChat(selectedMemberProfile);
+                   }
+                 }}>
+                   Sohbete Başla
+                 </button>
+               )}
+             </div>
+          </div>
+        </div>
+      )}
+
+      {isAddingMember && (
+        <div className="channel-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) { setIsAddingMember(false); setSelectedNewMembers([]); } }}>
+          <div className="channel-modal" onMouseDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()} style={{ width: '380px' }}>
+            <span className="eyebrow">{selectedGroup?.name}</span>
+            <h2>Yeni Üye Ekle</h2>
+            <p>Grubunuza eklemek istediğiniz kullanıcıları seçin.</p>
+            <div className="new-member-list" style={{ maxHeight: '250px', overflowY: 'auto', margin: '15px 0', border: '1px solid var(--game-border)', borderRadius: '8px', background: '#0d1521' }}>
+              {availableUsersToAdd.length === 0 ? (
+                <div style={{ padding: '20px', textAlign: 'center', color: 'var(--game-muted)' }}>Eklenebilecek yeni kullanıcı bulunamadı.</div>
+              ) : (
+                availableUsersToAdd.map((user) => {
+                  const isSelected = selectedNewMembers.includes(user.id);
+                  return (
+                    <button 
+                      key={user.id} 
+                      onClick={() => {
+                        setSelectedNewMembers(prev => prev.includes(user.id) ? prev.filter(id => id !== user.id) : [...prev, user.id]);
+                      }}
+                      style={{
+                        width: '100%',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '12px',
+                        padding: '10px 14px',
+                        background: isSelected ? 'rgba(249, 115, 22, 0.08)' : 'transparent',
+                        border: 0,
+                        borderBottom: '1px solid rgba(255, 255, 255, 0.03)',
+                        cursor: 'pointer',
+                        textAlign: 'left'
+                      }}
+                    >
+                      <div 
+                        className={`game-custom-checkbox ${isSelected ? 'checked' : ''}`}
+                        style={{
+                          width: '16px',
+                          height: '16px',
+                          borderRadius: '4px',
+                          border: isSelected ? '2px solid var(--game-orange)' : '2px solid rgba(255, 255, 255, 0.18)',
+                          background: isSelected ? 'var(--game-orange)' : 'transparent',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          transition: 'all 0.15s ease',
+                          flexShrink: 0
+                        }}
+                      >
+                        {isSelected && (
+                          <svg viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" style={{ width: 10, height: 10 }}>
+                            <polyline points="20 6 9 17 4 12" />
+                          </svg>
+                        )}
+                      </div>
+                      <Avatar user={user} size={28} />
+                      <span style={{ color: isSelected ? '#f5f7fa' : '#cbd5e1', fontSize: '13.5px', fontWeight: 600 }}>{user.username}</span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+            <div className="channel-modal-actions">
+              <button onClick={() => { setIsAddingMember(false); setSelectedNewMembers([]); }}>Vazgeç</button>
+              <button 
+                className="primary" 
+                disabled={selectedNewMembers.length === 0} 
+                onClick={() => void handleAddMembers()}
+              >
+                Gruba Ekle
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -507,6 +1005,95 @@ function ChannelSection({ title, canCreate, onAdd, children }: { title: string; 
   return <section className="channel-section"><div className="channel-section-title"><span>{title}</span>{canCreate && <button onClick={onAdd}><Icon name="plus" /></button>}</div>{children}</section>;
 }
 
-function ChannelRow({ channel, active, canDelete, onSelect, onDelete }: { channel: GameChannel; active: boolean; canDelete: boolean; onSelect: () => void; onDelete: () => void }) {
-  return <div className={`channel-row-wrap ${active ? 'active' : ''}`}><button className="channel-row" onClick={onSelect}><Icon name={channel.type === 'VOICE' ? 'voice' : 'hash'} /><span>{channel.name}</span>{channel.type === 'VOICE' && <small>en fazla {channel.maxParticipants || 8}</small>}</button>{canDelete && <button className="delete-channel" onClick={onDelete} title="Kanalı sil"><Icon name="trash" /></button>}</div>;
+interface ChannelRowProps {
+  channel: GameChannel | { id: 'general'; name: string; type: 'TEXT' };
+  active: boolean;
+  canDelete: boolean;
+  canEdit: boolean;
+  isMuted: boolean;
+  unreadCount?: number;
+  typingUser?: string;
+  isAdmin?: boolean;
+  dragOver?: boolean;
+  onSelect: () => void;
+  onDelete?: () => void;
+  onEdit?: () => void;
+  onMuteToggle: () => void;
+  onDragStart?: (e: React.DragEvent) => void;
+  onDragOver?: (e: React.DragEvent) => void;
+  onDragEnd?: () => void;
+  onDrop?: (e: React.DragEvent) => void;
+}
+
+function ChannelRow({
+  channel,
+  active,
+  canDelete,
+  canEdit,
+  isMuted,
+  unreadCount = 0,
+  typingUser,
+  isAdmin = false,
+  dragOver = false,
+  onSelect,
+  onDelete,
+  onEdit,
+  onMuteToggle,
+  onDragStart,
+  onDragOver,
+  onDragEnd,
+  onDrop
+}: ChannelRowProps) {
+  const isGeneral = channel.id === 'general';
+  
+  return (
+    <div
+      className={`channel-row-wrap ${active ? 'active' : ''} ${dragOver ? 'drag-over' : ''}`}
+      draggable={isAdmin && !isGeneral}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDragEnd={onDragEnd}
+      onDrop={onDrop}
+    >
+      <button className="channel-row" onClick={onSelect}>
+        <Icon name={channel.type === 'VOICE' ? 'voice' : 'hash'} />
+        <div className="channel-info-wrap">
+          <span className="channel-name">{channel.name}</span>
+          {typingUser && <span className="channel-typing-indicator">{typingUser} yazıyor...</span>}
+        </div>
+        {channel.type === 'VOICE' && 'maxParticipants' in channel && (
+          <small className="channel-limit-badge">max {channel.maxParticipants || 8}</small>
+        )}
+        {unreadCount > 0 && (
+          <span className="game-channel-unread">{unreadCount}</span>
+        )}
+      </button>
+      
+      <div className="channel-row-actions">
+        <button
+          className={`channel-mute-btn ${isMuted ? 'muted' : ''}`}
+          onClick={(e) => { e.stopPropagation(); onMuteToggle(); }}
+          title={isMuted ? "Bildirimleri Aç" : "Bildirimleri Sessize Al"}
+        >
+          {isMuted ? (
+            <svg viewBox="0 0 24 24" fill="currentColor" style={{ width: 14, height: 14 }}><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+          ) : (
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: 14, height: 14 }}><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+          )}
+        </button>
+
+        {canEdit && onEdit && (
+          <button className="edit-channel" onClick={(e) => { e.stopPropagation(); onEdit(); }} title="Kanalı Düzenle">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ width: 14, height: 14 }}><path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+          </button>
+        )}
+
+        {canDelete && onDelete && (
+          <button className="delete-channel" onClick={(e) => { e.stopPropagation(); onDelete(); }} title="Kanalı Sil">
+            <Icon name="trash" />
+          </button>
+        )}
+      </div>
+    </div>
+  );
 }

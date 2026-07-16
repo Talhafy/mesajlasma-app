@@ -146,5 +146,12 @@ export const gameSchemas = {
   ),
   readChannel: z.object({
     lastReadMessageId: uuid.optional()
+  }).strict(),
+  updateChannel: z.object({
+    name: z.string().trim().min(2).max(40).regex(/^[\p{L}\p{N} _.-]+$/u).optional(),
+    maxParticipants: z.number().int().min(2).max(25).optional().nullable()
+  }).strict(),
+  reorderChannels: z.object({
+    orderedIds: z.array(uuid)
   }).strict()
 };

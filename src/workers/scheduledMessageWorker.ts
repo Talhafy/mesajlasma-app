@@ -5,7 +5,7 @@ import { deleteFileIfUnreferenced } from '../services/fileCleanup';
 import { serializeMessage } from '../services/messageService';
 import { deletePrivateFile } from '../services/fileStorage';
 
-const WORKER_INTERVAL_MS = 30_000;
+const WORKER_INTERVAL_MS = 2_000;
 
 // Zamanlanmış mesajlar HTTP isteği gelmeden de gönderilebilmelidir.
 // Bu worker periyodik olarak zamanı gelen ScheduledMessage kayıtlarını gerçek Message kaydına dönüştürür.
@@ -24,10 +24,11 @@ export const startScheduledMessageWorker = (io: Server) => {
         // FOR UPDATE SKIP LOCKED çoklu backend instance çalıştığında kritik hale gelir.
         // Aynı scheduled message kaydını iki worker'ın aynı anda almasını engeller.
         // Birden fazla sunucu aynı DB'yi kullansa bile SKIP LOCKED aynı kaydı iki kez seçtirmez.
+        const now = new Date();
         const candidates = await tx.$queryRaw<Array<{ id: string }>>`
           SELECT "id"
           FROM "ScheduledMessage"
-          WHERE "sendAt" <= NOW()
+          WHERE "sendAt" <= ${now}
           ORDER BY "sendAt" ASC
           LIMIT 100
           FOR UPDATE SKIP LOCKED
