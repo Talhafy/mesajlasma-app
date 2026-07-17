@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import type { User } from '../../types/chat';
 import './Modals.css';
+import ImageCropperModal from './ImageCropperModal';
+import AvatarViewerModal from './AvatarViewerModal';
 
 interface SettingsModalProps {
   setIsSettingsOpen: (isOpen: boolean) => void;
@@ -27,6 +29,8 @@ interface SettingsModalProps {
 export default function SettingsModal(props: SettingsModalProps) {
   const [activeTab, setActiveTab] = useState<'profile' | 'account'>('profile');
   const [isAvatarUploading, setIsAvatarUploading] = useState(false);
+  const [selectedFileForCrop, setSelectedFileForCrop] = useState<File | null>(null);
+  const [isAvatarViewerOpen, setIsAvatarViewerOpen] = useState(false);
 
   return (
     <div className="settings-overlay" onClick={() => props.setIsSettingsOpen(false)}>
@@ -54,6 +58,7 @@ export default function SettingsModal(props: SettingsModalProps) {
             </button>
           </div>
 
+
           <div className="settings-sidebar-footer">
             <button onClick={props.cikisYap} className="settings-logout-btn">
               🚪 Çıkış Yap
@@ -78,19 +83,23 @@ export default function SettingsModal(props: SettingsModalProps) {
               )}
 
               <div className="settings-avatar-row">
-                <div className="settings-avatar" style={{ overflow: 'hidden' }}>
+                <div 
+                  className="settings-avatar" 
+                  onClick={() => setIsAvatarViewerOpen(true)}
+                  style={{ overflow: 'hidden', cursor: 'pointer' }}
+                  title="Profil resmini büyük gör"
+                >
                   {props.currentUser?.avatarUrl ? <img src={props.currentUser.avatarUrl} alt="Profil" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : props.currentUser?.username?.[0]?.toUpperCase()}
                 </div>
                 <div>
                   <h3 className="settings-username">{props.currentUser?.username}</h3>
                   <label className="modern-primary-btn" style={{ display: 'inline-block', marginTop: '8px', cursor: isAvatarUploading ? 'wait' : 'pointer' }}>
                     {isAvatarUploading ? 'Yükleniyor...' : 'Fotoğrafı Değiştir'}
-                    <input type="file" accept="image/*" hidden disabled={isAvatarUploading} onChange={async (event) => {
+                    <input type="file" accept="image/*" hidden disabled={isAvatarUploading} onChange={(event) => {
                       const file = event.target.files?.[0];
                       if (!file) return;
-                      setIsAvatarUploading(true);
-                      try { await props.handleUpdateAvatar(file); }
-                      finally { setIsAvatarUploading(false); event.target.value = ''; }
+                      setSelectedFileForCrop(file);
+                      event.target.value = '';
                     }} />
                   </label>
                 </div>
@@ -164,6 +173,7 @@ export default function SettingsModal(props: SettingsModalProps) {
                   value={props.oldPasswordSettings}
                   onChange={(e) => props.setOldPasswordSettings(e.target.value)}
                   className="settings-modern-input"
+                  autoComplete="new-password"
                 />
                 <input
                   type="password"
@@ -171,6 +181,7 @@ export default function SettingsModal(props: SettingsModalProps) {
                   value={props.newPasswordSettings}
                   onChange={(e) => props.setNewPasswordSettings(e.target.value)}
                   className="settings-modern-input"
+                  autoComplete="new-password"
                 />
                 <button onClick={props.handleUpdatePassword} className="modern-primary-btn" style={{alignSelf: 'flex-start'}}>Şifreyi Güncelle</button>
               </div>
@@ -188,6 +199,28 @@ export default function SettingsModal(props: SettingsModalProps) {
 
         </div>
       </div>
+      {selectedFileForCrop && (
+        <ImageCropperModal
+          file={selectedFileForCrop}
+          onClose={() => setSelectedFileForCrop(null)}
+          onCropComplete={async (croppedFile) => {
+            setSelectedFileForCrop(null);
+            setIsAvatarUploading(true);
+            try {
+              await props.handleUpdateAvatar(croppedFile);
+            } finally {
+              setIsAvatarUploading(false);
+            }
+          }}
+        />
+      )}
+      {isAvatarViewerOpen && props.currentUser && (
+        <AvatarViewerModal
+          avatarUrl={props.currentUser.avatarUrl}
+          username={props.currentUser.username}
+          onClose={() => setIsAvatarViewerOpen(false)}
+        />
+      )}
     </div>
   );
 }

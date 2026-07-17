@@ -77,6 +77,7 @@ export const useFileAttachment = () => {
     cancelFile,
     handleFileUpload,
     handlePaste,
-    openFilePicker
+    openFilePicker,
+    selectFile
   };
 };

@@ -1,4 +1,4 @@
-import type { RefObject } from 'react';
+import { useRef, useEffect, type RefObject } from 'react';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 import { tr } from 'date-fns/locale';
@@ -39,7 +39,6 @@ interface ChatInputProps {
   handleScheduledFileChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   newMessage: string;
   setNewMessage: (val: string) => void;
-  onTyping: (isTyping: boolean) => void;
   handleSend: () => void;
   handleBlockToggle: () => void;
   panelBg: string;
@@ -48,6 +47,11 @@ interface ChatInputProps {
   textColor: string;
   iconColor: string;
   toggleVoiceRecording: () => void;
+  editingMessage: Message | null;
+  setEditingMessage: (val: Message | null) => void;
+  handleSaveMessageEdit: () => void;
+  isGroup?: boolean;
+  isActiveGroupMember?: boolean;
 }
 
 export default function ChatInput({
@@ -56,9 +60,20 @@ export default function ChatInput({
   isRecordingAudio, isRecordingPaused, recordingDuration, handleCancelVoiceRecording,
   togglePauseResumeRecording, handleSendVoiceRecording, showEmojiPicker, setShowEmojiPicker,
   showAttachmentMenu, setShowAttachmentMenu, openFilePicker, fileInputRef, fileAccept, handleFileUpload,
-  scheduledFileInputRef, handleScheduledFileChange, newMessage, setNewMessage, onTyping, handleSend,
-  handleBlockToggle, panelBg, inputBg, borderColor, textColor, iconColor, toggleVoiceRecording
+  scheduledFileInputRef, handleScheduledFileChange, newMessage, setNewMessage, handleSend,
+  handleBlockToggle, panelBg, inputBg, borderColor, textColor, iconColor, toggleVoiceRecording,
+  editingMessage, setEditingMessage, handleSaveMessageEdit, isGroup = false, isActiveGroupMember = true
 }: ChatInputProps) {
+
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+      const newHeight = Math.min(textareaRef.current.scrollHeight, 140);
+      textareaRef.current.style.height = `${newHeight}px`;
+    }
+  }, [newMessage]);
 
   const filterPassedTime = (time: Date) => new Date().getTime() < new Date(time).getTime();
 
@@ -67,8 +82,6 @@ export default function ChatInput({
     const secs = totalSeconds % 60;
     return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
   };
-
-  const typingTimeoutRef = { current: null as ReturnType<typeof setTimeout> | null };
 
   if (isBlockedLocally) {
     return (
@@ -96,6 +109,16 @@ export default function ChatInput({
     );
   }
 
+  if (isGroup && !isActiveGroupMember) {
+    return (
+      <div className="input-area" style={{ display: 'flex', alignItems: 'center', width: '100%', gap: '12px', padding: '12px 20px', background: panelBg, borderTop: `1px solid ${borderColor}`, position: 'relative', justifyContent: 'center' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', padding: '10px 15px', background: isDarkMode ? '#222' : '#f5f5f5', borderRadius: '12px', border: `1px solid ${borderColor}`, color: iconColor, fontSize: '14px', fontWeight: 600 }}>
+          <span>🚫 Artık bu grubun üyesi değilsiniz. Geçmiş mesajları okuyabilirsiniz.</span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="input-area" style={{ display: 'flex', alignItems: 'center', width: '100%', gap: '12px', padding: '12px 20px', background: panelBg, borderTop: `1px solid ${borderColor}`, position: 'relative' }}>
       {isUploading && (
@@ -112,6 +135,17 @@ export default function ChatInput({
             <div style={{ fontSize: '13px', color: textColor, opacity: 0.8 }}>{replyingTo.content.substring(0, 60)}...</div>
           </div>
           <button onClick={() => setReplyingTo(null)} style={{ background: 'none', border: 'none', color: iconColor, cursor: 'pointer', fontSize: '16px' }}>✖</button>
+        </div>
+      )}
+
+      {/* EDİTLENEN MESAJ GÖSTERGESİ */}
+      {editingMessage && (
+        <div style={{ position: 'absolute', top: '-52px', left: '20px', right: '20px', background: inputBg, padding: '10px 15px', borderRadius: '8px 8px 0 0', border: `1px solid ${borderColor}`, borderBottom: 'none', display: 'flex', justifyContent: 'space-between', alignItems: 'center', zIndex: 10, boxShadow: '0 -2px 10px rgba(0,0,0,0.05)' }}>
+          <div style={{ borderLeft: '4px solid #f97316', paddingLeft: '10px' }}>
+            <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#f97316' }}>Mesajı Düzenle</div>
+            <div style={{ fontSize: '13px', color: textColor, opacity: 0.8 }}>{editingMessage.content.substring(0, 60)}...</div>
+          </div>
+          <button onClick={() => { setEditingMessage(null); setNewMessage(''); }} style={{ background: 'none', border: 'none', color: iconColor, cursor: 'pointer', fontSize: '16px' }}>✖</button>
         </div>
       )}
 
@@ -136,7 +170,7 @@ export default function ChatInput({
 
       {/* DOSYA ÖNİZLEME KUTUSU */}
       {selectedFile && (
-        <div className="file-preview-banner" style={{ top: replyingTo ? '-130px' : '-80px' }}>
+        <div className="file-preview-banner" style={{ top: (replyingTo || editingMessage) ? '-130px' : '-80px' }}>
           {selectedFile.type.startsWith('image/') && filePreview ? (
             <img src={filePreview} alt="Önizleme" style={{ width: '50px', height: '50px', objectFit: 'cover', borderRadius: '5px' }} />
           ) : (
@@ -250,66 +284,103 @@ export default function ChatInput({
               )}
             </div>
 
-            <div style={{ position: 'relative' }}>
-              <Button variant="icon" onClick={() => { setShowAttachmentMenu(!showAttachmentMenu); setShowEmojiPicker(false); }} title="Dosya Ekle" aria-label="Dosya ekle" style={{ color: iconColor, transform: showAttachmentMenu ? 'rotate(45deg)' : 'none', transition: 'transform 0.2s' }} icon={<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M1.816 15.556v.002c0 1.502.584 2.912 1.646 3.972s2.472 1.647 3.974 1.647a5.58 5.58 0 0 0 3.972-1.645l9.547-9.548c.769-.768 1.147-1.767 1.058-2.817-.079-.968-.548-1.927-1.319-2.698-1.594-1.592-4.068-1.711-5.517-.262l-7.916 7.915c-.881.881-.792 2.25.214 3.261.959.958 2.423 1.053 3.263.215l5.511-5.512c.28-.28.267-.722.053-.936l-.244-.244c-.191-.191-.567-.349-.957.04l-5.506 5.506c-.18.18-.635.127-.976-.214-.098-.097-.576-.613-.213-.973l7.915-7.917c.818-.817 2.267-.699 3.23.262.5.501.802 1.1.849 1.685.051.573-.156 1.111-.589 1.543l-9.547 9.549a3.97 3.97 0 0 1-2.829 1.171 3.975 3.975 0 0 1-2.83-1.173 3.973 3.973 0 0 1-1.172-2.828c0-1.071.415-2.076 1.172-2.83l7.209-7.211c.157-.157.264-.579.028-.814L11.5 4.36a.57.57 0 0 0-.834.018l-7.205 7.207a5.577 5.577 0 0 0-1.645 3.971z"></path></svg>} />
+            {!editingMessage && (
+              <div style={{ position: 'relative' }}>
+                <Button variant="icon" onClick={() => { setShowAttachmentMenu(!showAttachmentMenu); setShowEmojiPicker(false); }} title="Dosya Ekle" aria-label="Dosya ekle" style={{ color: iconColor, transform: showAttachmentMenu ? 'rotate(45deg)' : 'none', transition: 'transform 0.2s' }} icon={<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M1.816 15.556v.002c0 1.502.584 2.912 1.646 3.972s2.472 1.647 3.974 1.647a5.58 5.58 0 0 0 3.972-1.645l9.547-9.548c.769-.768 1.147-1.767 1.058-2.817-.079-.968-.548-1.927-1.319-2.698-1.594-1.592-4.068-1.711-5.517-.262l-7.916 7.915c-.881.881-.792 2.25.214 3.261.959.958 2.423 1.053 3.263.215l5.511-5.512c.28-.28.267-.722.053-.936l-.244-.244c-.191-.191-.567-.349-.957.04l-5.506 5.506c-.18.18-.635.127-.976-.214-.098-.097-.576-.613-.213-.973l7.915-7.917c.818-.817 2.267-.699 3.23.262.5.501.802 1.1.849 1.685.051.573-.156 1.111-.589 1.543l-9.547 9.549a3.97 3.97 0 0 1-2.829 1.171 3.975 3.975 0 0 1-2.83-1.173 3.973 3.973 0 0 1-1.172-2.828c0-1.071.415-2.076 1.172-2.83l7.209-7.211c.157-.157.264-.579.028-.814L11.5 4.36a.57.57 0 0 0-.834.018l-7.205 7.207a5.577 5.577 0 0 0-1.645 3.971z"></path></svg>} />
 
-              {showAttachmentMenu && (
-                <div className="dropdown-menu" style={{ bottom: '55px', left: '0', padding: '10px', gap: '8px', minWidth: '160px' }}>
-                  <button onClick={() => { setShowAttachmentMenu(false); openFilePicker('image/*'); }} className="msg-dropdown-btn" style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 12px', borderRadius: '8px' }}><span style={{ fontSize: '18px' }}>📷</span> Görsel</button>
-                  <button onClick={() => { setShowAttachmentMenu(false); openFilePicker('*/*'); }} className="msg-dropdown-btn" style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 12px', borderRadius: '8px' }}><span style={{ fontSize: '18px' }}>📄</span> Belge</button>
-                </div>
-              )}
-              <input type="file" ref={fileInputRef} style={{ display: 'none' }} accept={fileAccept} onChange={handleFileUpload} />
-              <input type="file" ref={scheduledFileInputRef} style={{ display: 'none' }} onChange={handleScheduledFileChange} />
-            </div>
+                {showAttachmentMenu && (
+                  <div className="dropdown-menu" style={{ bottom: '55px', left: '0', padding: '10px', gap: '8px', minWidth: '160px' }}>
+                    <button onClick={() => { setShowAttachmentMenu(false); openFilePicker('image/*'); }} className="msg-dropdown-btn" style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 12px', borderRadius: '8px' }}><span style={{ fontSize: '18px' }}>📷</span> Görsel</button>
+                    <button onClick={() => { setShowAttachmentMenu(false); openFilePicker('*/*'); }} className="msg-dropdown-btn" style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 12px', borderRadius: '8px' }}><span style={{ fontSize: '18px' }}>📄</span> Belge</button>
+                  </div>
+                )}
+                <input type="file" ref={fileInputRef} style={{ display: 'none' }} accept={fileAccept} onChange={handleFileUpload} />
+                <input type="file" ref={scheduledFileInputRef} style={{ display: 'none' }} onChange={handleScheduledFileChange} />
+              </div>
+            )}
           </div>
 
           {/* INPUT ALANI */}
-          <input
-            type="text"
-            placeholder={isUploading ? "Dosya gönderiliyor..." : "Bir mesaj yazın..."}
+          <textarea
+            ref={textareaRef}
+            rows={1}
+            placeholder={editingMessage ? "Mesajı düzenleyin..." : isUploading ? "Dosya gönderiliyor..." : "Bir mesaj yazın..."}
             value={newMessage}
             onChange={(e) => {
               setNewMessage(e.target.value);
-              onTyping(true);
-              if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-              typingTimeoutRef.current = setTimeout(() => onTyping(false), 1200);
             }}
-            onKeyDown={(e) => { if (e.key === 'Enter') handleSend(); }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault(); // Enter sends message, Shift+Enter breaks line
+                if (editingMessage) {
+                  handleSaveMessageEdit();
+                } else {
+                  handleSend();
+                }
+              }
+            }}
             disabled={isUploading}
             aria-label="Mesaj yazma alanı"
-            style={{ flex: 1, padding: '12px 15px', borderRadius: '8px', border: `1px solid ${borderColor}`, outline: 'none', backgroundColor: inputBg, color: textColor, fontSize: '15px' }}
+            style={{
+              flex: 1,
+              padding: '11px 15px',
+              borderRadius: '8px',
+              border: `1px solid ${borderColor}`,
+              outline: 'none',
+              backgroundColor: inputBg,
+              color: textColor,
+              fontSize: '15px',
+              resize: 'none',
+              boxSizing: 'border-box',
+              minHeight: '42px',
+              maxHeight: '140px',
+              lineHeight: '1.4',
+              fontFamily: 'inherit',
+              overflowY: 'auto'
+            }}
           />
 
-          <button
-            onClick={toggleVoiceRecording}
-            disabled={isUploading}
-            title="Sesli mesaj kaydet"
-            aria-label="Sesli mesaj kaydet"
-            style={{
-              width: '44px',
-              height: '44px',
-              borderRadius: '50%',
-              border: 'none',
-              background: '#f97316',
-              color: 'white',
-              cursor: isUploading ? 'default' : 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              transition: 'all 0.2s ease',
-              flexShrink: 0
-            }}
-          >
-            <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.49 6-3.31 6-6.72h-1.7z"></path></svg>
-          </button>
-
-          {/* GÖNDER BUTONU */}
-          <div style={{ display: 'flex', borderRadius: '8px', overflow: 'hidden', opacity: (newMessage.trim() || selectedFile) ? 1 : 0.5, pointerEvents: ((newMessage.trim() || selectedFile) && !isUploading) ? 'auto' : 'none', transition: 'all 0.2s ease' }}>
-            <button onClick={handleSend} style={{ background: '#f97316', color: 'white', border: 'none', padding: '10px 18px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '18px' }}>
-              <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M1.101 21.757 23.8 12.028 1.101 2.3l.011 7.912 13.623 1.816-13.623 1.817z"></path></svg>
+          {!editingMessage && (
+            <button
+              onClick={toggleVoiceRecording}
+              disabled={isUploading}
+              title="Sesli mesaj kaydet"
+              aria-label="Sesli mesaj kaydet"
+              style={{
+                width: '44px',
+                height: '44px',
+                borderRadius: '50%',
+                border: 'none',
+                background: '#f97316',
+                color: 'white',
+                cursor: isUploading ? 'default' : 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                transition: 'all 0.2s ease',
+                flexShrink: 0
+              }}
+            >
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.49 6-3.31 6-6.72h-1.7z"></path></svg>
             </button>
-            <button onClick={() => setIsScheduling(!isScheduling)} style={{ background: '#ea580c', color: 'white', border: 'none', borderLeft: '1px solid rgba(255,255,255,0.2)', padding: '10px 12px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>▼</button>
+          )}
+
+          {/* GÖNDER / KAYDET BUTONU */}
+          <div style={{ display: 'flex', borderRadius: '8px', overflow: 'hidden', opacity: (newMessage.trim() || selectedFile) ? 1 : 0.5, pointerEvents: ((newMessage.trim() || selectedFile) && !isUploading) ? 'auto' : 'none', transition: 'all 0.2s ease' }}>
+            <button 
+              onClick={editingMessage ? handleSaveMessageEdit : handleSend} 
+              style={{ background: '#f97316', color: 'white', border: 'none', padding: '10px 18px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '18px' }}
+              title={editingMessage ? "Kaydet" : "Gönder"}
+            >
+              {editingMessage ? (
+                <span style={{ fontSize: '20px', fontWeight: 'bold', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✓</span>
+              ) : (
+                <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M1.101 21.757 23.8 12.028 1.101 2.3l.011 7.912 13.623 1.816-13.623 1.817z"></path></svg>
+              )}
+            </button>
+            {!editingMessage && (
+              <button onClick={() => setIsScheduling(!isScheduling)} style={{ background: '#ea580c', color: 'white', border: 'none', borderLeft: '1px solid rgba(255,255,255,0.2)', padding: '10px 12px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>▼</button>
+            )}
           </div>
         </>
       )}

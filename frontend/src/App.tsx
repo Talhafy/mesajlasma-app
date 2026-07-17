@@ -10,6 +10,7 @@ import IncomingCallPrompt, { type IncomingCall } from './components/Call/Incomin
 import CreateGroupModal from './components/Modals/CreateGroupModal';
 import GroupSettingsModal from './components/Modals/GroupSettingsModal';
 import SettingsModal from './components/Modals/SettingsModal';
+import AvatarViewerModal from './components/Modals/AvatarViewerModal';
 import GameHub from './components/GameHub/GameHub';
 import { api } from './api/httpClient';
 import { API_ORIGIN } from './config/runtime';
@@ -22,7 +23,7 @@ import {
   setAccessToken,
   subscribeAccessToken
 } from './auth/tokenStore';
-
+import { useConfirm } from './context/ConfirmContext';
 const SOCKET_INACTIVITY_TIMEOUT_MS = 3 * 60 * 60 * 1000;
 const SOCKET_ACTIVITY_PING_INTERVAL_MS = 60 * 1000;
 
@@ -37,6 +38,7 @@ export interface CallHistoryItem {
 }
 
 export default function App() {
+  const confirm = useConfirm();
   const [currentView, setCurrentView] = useState<'login' | 'register' | 'chat'>('login');
   const [appMode, setAppMode] = useState<'chat' | 'game'>(() => {
     return (localStorage.getItem('appMode') as 'chat' | 'game') || 'chat';
@@ -58,6 +60,7 @@ export default function App() {
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isAvatarViewerOpen, setIsAvatarViewerOpen] = useState(false);
   const [newUsernameSettings, setNewUsernameSettings] = useState('');
   const [newEmailSettings, setNewEmailSettings] = useState('');
   const [oldPasswordSettings, setOldPasswordSettings] = useState('');
@@ -199,7 +202,14 @@ export default function App() {
   };
 
   const handleDeleteAccount = async () => {
-    if (!window.confirm("Hesabınızı ve tüm verilerinizi kalıcı olarak silmek istediğinize emin misiniz?")) return;
+    const isConfirmed = await confirm({
+      title: "Hesabı Sil",
+      message: "Hesabınızı ve tüm verilerinizi kalıcı olarak silmek istediğinize emin misiniz? Bu işlem geri alınamaz.",
+      confirmText: "Hesabımı Sil",
+      cancelText: "Vazgeç",
+      isDanger: true
+    });
+    if (!isConfirmed) return;
     try { await api.delete('/user/account'); alert("Hesabınız silindi."); cikisYap(); }
     catch { alert("Hesap silinirken hata oluştu."); }
   };
@@ -381,7 +391,15 @@ export default function App() {
   };
 
   const handleTransferAdmin = async (newAdminId: string) => {
-    if (!activeConversation || !window.confirm("Yöneticiliği devretmek istediğinize emin misiniz?")) return;
+    if (!activeConversation) return;
+    const isConfirmed = await confirm({
+      title: "Yöneticiliği Devret",
+      message: "Grubun yöneticiliğini bu üyeye devretmek istediğinize emin misiniz?",
+      confirmText: "Yöneticiliği Devret",
+      cancelText: "Vazgeç",
+      isDanger: false
+    });
+    if (!isConfirmed) return;
     try {
       await api.put(`/conversations/group/${activeConversation.id}/admin`, { newAdminId });
       setActiveConversation({ ...activeConversation, adminId: newAdminId });
@@ -509,12 +527,15 @@ export default function App() {
     catch { console.error("Üyeler alınamadı"); }
   };
 
-  const handleUpdateGroupName = async () => {
-    if (!activeConversation || !editGroupName.trim()) return;
+  const handleUpdateGroupName = async (newName?: string) => {
+    if (!activeConversation) return;
+    const nameToUse = (newName || editGroupName).trim();
+    if (!nameToUse) return;
     try {
-      await api.put(`/conversations/group/${activeConversation.id}/name`, { newName: editGroupName });
-      setActiveConversation({ ...activeConversation, name: editGroupName });
-      setGroupsList(prev => prev.map(g => g.id === activeConversation.id ? { ...g, name: editGroupName } : g));
+      await api.put(`/conversations/group/${activeConversation.id}/name`, { newName: nameToUse });
+      setActiveConversation({ ...activeConversation, name: nameToUse });
+      setGroupsList(prev => prev.map(g => g.id === activeConversation.id ? { ...g, name: nameToUse } : g));
+      setConversationList(prev => prev.map(c => c.id === activeConversation.id ? { ...c, name: nameToUse } : c));
     } catch { alert("Ad güncellenemedi."); }
   };
 
@@ -532,16 +553,35 @@ export default function App() {
   };
 
   const handleRemoveMember = async (userId: string) => {
-    if (!activeConversation || !window.confirm("Bu işlemi yapmak istediğinize emin misiniz?")) return;
+    if (!activeConversation) return;
+    const isSelf = userId === currentUser?.id;
+    const isConfirmed = await confirm({
+      title: isSelf ? "Gruptan Çık" : "Üyeyi Çıkar",
+      message: isSelf 
+        ? "Bu gruptan çıkmak istediğinize emin misiniz? Bu gruptaki mesaj geçmişine artık erişemeyeceksiniz." 
+        : "Bu üyeyi gruptan çıkarmak istediğinize emin misiniz?",
+      confirmText: isSelf ? "Gruptan Çık" : "Çıkar",
+      cancelText: "Vazgeç",
+      isDanger: true
+    });
+    if (!isConfirmed) return;
     try {
       await api.delete(`/conversations/group/${activeConversation.id}/participants/${userId}`);
       setGroupMembers(prev => prev.filter(member => member.id !== userId));
-      if (userId === currentUser?.id) { setIsGroupSettingsOpen(false); setActiveConversation(null); setGroupsList(prev => prev.filter(g => g.id !== activeConversation.id)); }
+      if (isSelf) { setIsGroupSettingsOpen(false); setActiveConversation(null); setGroupsList(prev => prev.filter(g => g.id !== activeConversation.id)); }
     } catch { alert("Kişi çıkarılamadı."); }
   };
 
   const handleDeleteGroup = async () => {
-    if (!activeConversation || !window.confirm("Grubu kalıcı olarak silmek istediğinize emin misiniz?")) return;
+    if (!activeConversation) return;
+    const isConfirmed = await confirm({
+      title: "Grubu Kalıcı Olarak Sil",
+      message: "Grubu kalıcı olarak silmek istediğinize emin misiniz? Bu işlem geri alınamaz ve gruptaki tüm üyelerin mesaj geçmişi silinir.",
+      confirmText: "Grubu Sil",
+      cancelText: "Vazgeç",
+      isDanger: true
+    });
+    if (!isConfirmed) return;
     try {
       await api.delete(`/conversations/group/${activeConversation.id}`);
       setIsGroupSettingsOpen(false); setActiveConversation(null); setGroupsList(prev => prev.filter(g => g.id !== activeConversation.id));
@@ -572,10 +612,17 @@ export default function App() {
       }
     };
 
-    const markSocketActive = () => {
+    const markSocketActive = (e?: Event) => {
       // Mouse/klavye/scroll gibi gerçek kullanıcı hareketleri buraya düşer.
       // Bu hareketler hem frontend timer'ını yeniler hem backend'e client_activity ping'i gönderir.
       const wasInactive = !isSocketActiveRef.current;
+      
+      // Eğer kullanıcı inaktif durumdaysa ve sadece fareyi oynattıysa/scroll ettiyse otomatik bağlamıyoruz.
+      // Yeniden bağlanmak için tıklamalı, tuşa basmalı, ekrana dokunmalı veya doğrudan "Bağlan" butonunu kullanmalıdır.
+      if (wasInactive && e && (e.type === 'mousemove' || e.type === 'wheel')) {
+        return;
+      }
+
       isSocketActiveRef.current = true;
       lastUserActivityAtRef.current = Date.now();
 
@@ -620,6 +667,27 @@ export default function App() {
       if (currentUserRef.current) newSocket.emit('odaya_katil', currentUserRef.current.id);
       groupsListRef.current.forEach((group) => newSocket.emit('odaya_katil', group.id));
       if (activeConversationRef.current) newSocket.emit('odaya_katil', activeConversationRef.current.id);
+
+      // Çevrim dışıyken (bağlantı kopukken) gelen kaçırılmış mesajları ve bildirimleri senkronize et
+      void fetchConversations();
+      void fetchUnreadCounts();
+      if (activeConversationRef.current) {
+        api.get(`/conversations/${activeConversationRef.current.id}/messages`)
+          .then((msgs) => {
+            setMessages(msgs.data);
+            // Aktif konuşmayı okundu olarak işaretle
+            void api.post(`/conversations/${activeConversationRef.current!.id}/read`, {
+              emitReceipt: activeConversationRef.current!.isGroup ? true : (currentUserRef.current?.readReceiptsOn !== false)
+            });
+            // Okunmamış sayaçlarını sıfırla
+            setUnreadCounts(prev => ({
+              ...prev,
+              [activeConversationRef.current!.id]: 0,
+              ...(activeConversationRef.current!.otherUser ? { [activeConversationRef.current!.otherUser.id]: 0 } : {})
+            }));
+          })
+          .catch((err) => console.error("Aktif sohbet mesajları eşitlenemedi:", err));
+      }
     });
 
     newSocket.on('disconnect', (reason) => {
@@ -874,8 +942,9 @@ export default function App() {
     });
 
     newSocket.on('grup_olusturuldu', (yeniGrup: Conversation) => {
-      setGroupsList(prev => { if (prev.some(g => g.id === yeniGrup.id)) return prev; return [...prev, yeniGrup]; });
-      setConversationList(prev => { if (prev.some(conversation => conversation.id === yeniGrup.id)) return prev; return [yeniGrup, ...prev]; });
+      setGroupsList(prev => { if (prev.some(g => g.id === yeniGrup.id)) return prev.map(g => g.id === yeniGrup.id ? { ...g, ...yeniGrup, isActive: true } : g); return [...prev, yeniGrup]; });
+      setConversationList(prev => { if (prev.some(conversation => conversation.id === yeniGrup.id)) return prev.map(c => c.id === yeniGrup.id ? { ...c, ...yeniGrup, isActive: true } : c); return [yeniGrup, ...prev]; });
+      setActiveConversation(prev => prev?.id === yeniGrup.id ? { ...prev, ...yeniGrup, isActive: true } : prev);
       newSocket.emit('odaya_katil', yeniGrup.id);
       void fetchGroups();
       void fetchConversations();
@@ -897,9 +966,15 @@ export default function App() {
     newSocket.on('gruptan_atildi', (data: { groupId: string, removedUserId: string, removedById?: string }) => {
       if (data.removedUserId === currentUserRef.current?.id) {
         alert(data.removedById === currentUserRef.current?.id ? "Gruptan başarıyla çıkıldı." : "Grup yöneticisi sizi gruptan çıkardı.");
-        setGroupsList(prev => prev.filter(g => g.id !== data.groupId));
-        setConversationList(prev => prev.filter(conversation => conversation.id !== data.groupId));
-        setActiveConversation(prev => prev?.id === data.groupId ? null : prev);
+        setGroupsList(prev => prev.map(g => g.id === data.groupId ? { ...g, isActive: false } : g));
+        setConversationList(prev => prev.map(c => c.id === data.groupId ? { ...c, isActive: false } : c));
+        setActiveConversation(prev => prev?.id === data.groupId ? { ...prev, isActive: false } : prev);
+        void fetchGroups();
+        void fetchConversations();
+      } else {
+        if (activeConversationRef.current?.id === data.groupId) {
+          setGroupMembers(prev => prev.map(m => m.id === data.removedUserId ? { ...m, isActive: false } : m));
+        }
       }
     });
 
@@ -914,7 +989,11 @@ export default function App() {
         setGroupMembers(prev => {
           const existingIds = new Set(prev.map(m => m.id));
           const filtered = newMembers.filter(m => !existingIds.has(m.id));
-          return [...prev, ...filtered];
+          const updatedPrev = prev.map(m => {
+            const addedBack = newMembers.find(nm => nm.id === m.id);
+            return addedBack ? { ...m, ...addedBack, isActive: true } : m;
+          });
+          return [...updatedPrev, ...filtered];
         });
       }
     });
@@ -1047,6 +1126,7 @@ export default function App() {
           typingByConversation={typingByConversation}
           callHistory={callHistory}
           onOpenGameMode={() => setIsGameModePromptOpen(true)}
+          onViewOwnAvatar={() => setIsAvatarViewerOpen(true)}
         />
       )}
 
@@ -1119,11 +1199,18 @@ export default function App() {
       )}
 
       {isGroupSettingsOpen && activeConversation && (
-        <GroupSettingsModal setIsGroupSettingsOpen={setIsGroupSettingsOpen} activeConversation={activeConversation} currentUser={currentUser} editGroupName={editGroupName} setEditGroupName={setEditGroupName} handleUpdateGroupName={handleUpdateGroupName} handleUpdateGroupAvatar={handleUpdateGroupAvatar} groupMembers={groupMembers} handleRemoveMember={handleRemoveMember} handleDeleteGroup={handleDeleteGroup} usersList={usersList} handleAddMembersToGroup={handleAddMembersToGroup} handleTransferAdmin={handleTransferAdmin} startChat={startChat} />
+        <GroupSettingsModal setIsGroupSettingsOpen={setIsGroupSettingsOpen} activeConversation={activeConversation} currentUser={currentUser} handleUpdateGroupName={handleUpdateGroupName} handleUpdateGroupAvatar={handleUpdateGroupAvatar} groupMembers={groupMembers} handleRemoveMember={handleRemoveMember} handleDeleteGroup={handleDeleteGroup} usersList={usersList} handleAddMembersToGroup={handleAddMembersToGroup} handleTransferAdmin={handleTransferAdmin} startChat={startChat} />
       )}
 
       {isSettingsOpen && (
         <SettingsModal setIsSettingsOpen={setIsSettingsOpen} settingsMessage={settingsMessage} setSettingsMessage={setSettingsMessage} newUsernameSettings={newUsernameSettings} setNewUsernameSettings={setNewUsernameSettings} handleUpdateUsername={handleUpdateUsername} newEmailSettings={newEmailSettings} setNewEmailSettings={setNewEmailSettings} handleUpdateEmail={handleUpdateEmail} currentUser={currentUser} handleToggleReadReceipts={handleToggleReadReceipts} oldPasswordSettings={oldPasswordSettings} setOldPasswordSettings={setOldPasswordSettings} newPasswordSettings={newPasswordSettings} setNewPasswordSettings={setNewPasswordSettings} handleUpdatePassword={handleUpdatePassword} handleUpdateAvatar={handleUpdateAvatar} handleDeleteAccount={handleDeleteAccount} cikisYap={cikisYap} />
+      )}
+      {isAvatarViewerOpen && currentUser && (
+        <AvatarViewerModal
+          avatarUrl={currentUser.avatarUrl}
+          username={currentUser.username}
+          onClose={() => setIsAvatarViewerOpen(false)}
+        />
       )}
       {incomingCall && (
         <IncomingCallPrompt

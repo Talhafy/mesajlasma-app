@@ -49,6 +49,7 @@ export interface User {
   isOnline?: boolean;
   isBlocked?: boolean;
   blockedByOther?: boolean;
+  isActive?: boolean;
 }
 
 export interface Conversation {
@@ -62,6 +63,8 @@ export interface Conversation {
   isPinned?: boolean;
   isArchived?: boolean;
   isMuted?: boolean;
+  isActive?: boolean;
+  leftAt?: string | null;
   disappearingDurationSeconds?: number | null;
   otherUser?: User | null;
   lastMessage?: Message | null;

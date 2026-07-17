@@ -1,3 +1,5 @@
+//Oyun UI için gerekli olan apiler
+
 import express, { Response } from 'express';
 import { authenticateToken, CustomRequest } from '../middleware/authMiddleware';
 import { validateRequest } from '../middleware/validateRequest';
@@ -12,8 +14,8 @@ router.use(authenticateToken);
 
 const statusFor = (message: string) => message.includes('yetkiniz') || message.includes('yönetici') ? 403
   : message.includes('bulunamadı') ? 404
-  : message.includes('en fazla') || message.includes('zaten') ? 409
-  : 500;
+    : message.includes('en fazla') || message.includes('zaten') ? 409
+      : 500;
 
 router.get('/game/groups/:groupId/channels', validateRequest({ params: gameSchemas.groupParams }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {

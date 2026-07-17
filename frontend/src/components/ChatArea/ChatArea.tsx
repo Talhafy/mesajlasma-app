@@ -7,6 +7,7 @@ import { useFileAttachment } from '../../hooks/useFileAttachment';
 import { useVoiceRecorder } from '../../hooks/useVoiceRecorder';
 import { useMessageInput } from '../../hooks/useMessageInput';
 import Button from '../UI/Button';
+import { useConfirm } from '../../context/ConfirmContext';
 
 // SUBCOMPONENTS
 import EmptyChatState from './components/EmptyChatState';
@@ -29,11 +30,11 @@ interface ChatAreaProps {
   isDarkMode: boolean;
   usersList: User[];
   groupMembers: User[];
-  loadMoreMessages: () => void;
+  loadMoreMessages: () => Promise<void>;
   hasMore: boolean;
   isLoadingMore: boolean;
-  typingUsername?: string;
-  recordingUsername?: string;
+  typingUsername: string | null;
+  recordingUsername: string | null;
   onTyping: (isTyping: boolean) => void;
   onVoiceRecording: (isRecording: boolean) => void;
   onToggleConversationPin: (conversationId: string) => void;
@@ -76,6 +77,7 @@ export default function ChatArea({
   onToggleConversationPin, onToggleConversationArchive, onToggleConversationMute, onSetDisappearingMode,
   onStartCall, socketConnectionStatus, onStartDirectChat, onStartCallWithUser
 }: ChatAreaProps) {
+  const confirm = useConfirm();
 
   // ARAMA VE MENÜ DURUMLARI
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -100,7 +102,6 @@ export default function ChatArea({
   const [pinnedIndex, setPinnedIndex] = useState(0);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const [editingMessage, setEditingMessage] = useState<Message | null>(null);
-  const [editMessageText, setEditMessageText] = useState('');
 
   // ZAMANLAMA VE BEKLEYEN MESAJ DURUMLARI
   const [isPendingModalOpen, setIsPendingModalOpen] = useState(false);
@@ -151,10 +152,48 @@ export default function ChatArea({
   const [uploadProgress, setUploadProgress] = useState(0);
   const {
     fileAccept, fileInputRef, filePreview, selectedFile,
-    cancelFile, handleFileUpload, handlePaste, openFilePicker
+    cancelFile, handleFileUpload, handlePaste, openFilePicker, selectFile
   } = useFileAttachment();
   const scheduledFileInputRef = useRef<HTMLInputElement>(null);
   const [scheduledFileTarget, setScheduledFileTarget] = useState<string | null>(null);
+
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const dragCounterRef = useRef(0);
+
+  const handleDragEnter = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current++;
+    if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
+      setIsDraggingFile(true);
+    }
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current--;
+    if (dragCounterRef.current === 0) {
+      setIsDraggingFile(false);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingFile(false);
+    dragCounterRef.current = 0;
+    
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const file = e.dataTransfer.files[0];
+      selectFile(file);
+    }
+  };
 
   useEffect(() => {
     if (activeConversation?.id) {
@@ -501,7 +540,14 @@ export default function ChatArea({
 
   const handleBulkDeleteForMe = async () => {
     if (selectedMessageIds.size === 0) return;
-    if (!window.confirm("Seçilen mesajları kendinizden silmek istediğinize emin misiniz?")) return;
+    const isConfirmed = await confirm({
+      title: "Mesajları Kendimden Sil",
+      message: "Seçilen mesajları kendinizden silmek istediğinize emin misiniz? Diğer katılımcılar bu mesajları görmeye devam edecektir.",
+      confirmText: "Sil",
+      cancelText: "Vazgeç",
+      isDanger: true
+    });
+    if (!isConfirmed) return;
     try {
       await Promise.all(
         [...selectedMessageIds].map(id => api.delete(`/messages/${id}?forEveryone=false`))
@@ -526,7 +572,14 @@ export default function ChatArea({
       return;
     }
 
-    if (!window.confirm(`${mySelectedIds.length} mesajı herkesten silmek istediğinize emin misiniz?`)) return;
+    const isConfirmed = await confirm({
+      title: "Mesajları Herkesten Sil",
+      message: `${mySelectedIds.length} mesajı herkesten silmek istediğinize emin misiniz? Bu işlem geri alınamaz.`,
+      confirmText: "Herkesten Sil",
+      cancelText: "Vazgeç",
+      isDanger: true
+    });
+    if (!isConfirmed) return;
     try {
       await Promise.all(
         mySelectedIds.map(id => api.delete(`/messages/${id}?forEveryone=true`))
@@ -627,17 +680,24 @@ export default function ChatArea({
   };
 
   const handleEditMessage = async (message: Message) => {
+    setReplyingTo(null);
     setEditingMessage(message);
-    setEditMessageText(message.content || '');
+    setNewMessage(message.content || '');
   };
 
   const handleSaveMessageEdit = async () => {
     if (!editingMessage) return;
-    const content = editMessageText.trim();
-    if (!content || content === editingMessage.content) return setEditingMessage(null);
+    const content = newMessage.trim();
+    if (!content) return;
+    if (content === editingMessage.content) {
+      setEditingMessage(null);
+      setNewMessage('');
+      return;
+    }
     try {
       await api.put(`/messages/${editingMessage.id}`, { content });
       setEditingMessage(null);
+      setNewMessage('');
     } catch { alert('Mesaj düzenlenemedi.'); }
   };
 
@@ -690,12 +750,26 @@ export default function ChatArea({
   };
 
   const handleDeleteForMe = async (msgId: string) => {
-    if (!window.confirm("Bu mesajı kendinizden silmek istediğinize emin misiniz?")) return;
+    const isConfirmed = await confirm({
+      title: "Mesajı Kendimden Sil",
+      message: "Bu mesajı kendinizden silmek istediğinize emin misiniz? Diğer katılımcılar bu mesajı görmeye devam edecektir.",
+      confirmText: "Sil",
+      cancelText: "Vazgeç",
+      isDanger: true
+    });
+    if (!isConfirmed) return;
     try { await api.delete(`/messages/${msgId}?forEveryone=false`); } catch { alert("İşlem başarısız."); }
   };
 
   const handleDeleteForEveryone = async (msgId: string) => {
-    if (!window.confirm("Bu mesajı HERKESTEN silmek istediğinize emin misiniz?")) return;
+    const isConfirmed = await confirm({
+      title: "Mesajı Herkesten Sil",
+      message: "Bu mesajı herkesten silmek istediğinize emin misiniz? Bu işlem geri alınamaz.",
+      confirmText: "Herkesten Sil",
+      cancelText: "Vazgeç",
+      isDanger: true
+    });
+    if (!isConfirmed) return;
     try { await api.delete(`/messages/${msgId}?forEveryone=true`); } catch { alert("İşlem başarısız."); }
   };
 
@@ -801,7 +875,38 @@ export default function ChatArea({
     <div className="chat-area-wrapper" style={{ position: 'relative', display: 'flex', height: '100%', width: '100%', overflow: 'hidden' }}>
 
       {/* SOL TARAF: ANA SOHBET ALANI */}
-      <div className="chat-area" onPaste={handlePaste} style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, background: chatBg }}>
+      <div 
+        className="chat-area" 
+        onPaste={handlePaste} 
+        style={{ position: 'relative', display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, background: chatBg }}
+        onDragEnter={handleDragEnter}
+        onDragLeave={handleDragLeave}
+        onDragOver={handleDragOver}
+        onDrop={handleDrop}
+      >
+        {isDraggingFile && (
+          <div style={{
+            position: 'absolute',
+            inset: 0,
+            background: 'rgba(249, 115, 22, 0.08)',
+            backdropFilter: 'blur(3px)',
+            border: '3px dashed #f97316',
+            borderRadius: '16px',
+            margin: '10px',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 5000,
+            color: '#f97316',
+            pointerEvents: 'none',
+            boxSizing: 'border-box'
+          }}>
+            <div style={{ fontSize: '48px', marginBottom: '10px' }}>📁</div>
+            <h3 style={{ margin: 0, fontWeight: 700, fontSize: '18px' }}>Dosyaları Buraya Bırakın</h3>
+            <p style={{ margin: '6px 0 0', fontSize: '13px', opacity: 0.85 }}>Sohbet alanına sürüklediğiniz dosyaları göndermek için bırakın.</p>
+          </div>
+        )}
 
         {/* ÜST BAR (HEADER) */}
         <ChatHeader
@@ -1153,42 +1258,10 @@ export default function ChatArea({
           </div>
         )}
 
-        {/* DÜZENLEME MODALI */}
-        {editingMessage && (
-          <div className="settings-overlay" onClick={() => setEditingMessage(null)} style={{ position: 'fixed', inset: 0, zIndex: 10000, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }}>
-            <div style={{ width: '380px', maxWidth: '100%', background: panelBg, borderRadius: '16px', padding: '18px', boxShadow: '0 20px 60px rgba(0,0,0,0.35)', color: textColor, border: `1px solid ${borderColor}` }} onClick={(e) => e.stopPropagation()}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
-                <div>
-                  <div style={{ fontSize: '12px', color: '#f97316', fontWeight: 700 }}>Mesaj düzenleme</div>
-                  <h3 style={{ margin: '2px 0 0', fontSize: '18px' }}>Gönderilmiş mesaj</h3>
-                </div>
-                <button onClick={() => setEditingMessage(null)} style={{ border: 'none', background: inputBg, color: iconColor, borderRadius: '50%', width: '32px', height: '32px', cursor: 'pointer' }}>✕</button>
-              </div>
-
-              {editingMessage.fileKey && (
-                <div style={{ marginBottom: '12px', padding: '10px', borderRadius: '12px', background: inputBg, border: `1px solid ${borderColor}`, fontSize: '13px', color: iconColor }}>
-                  {editingMessage.fileType === 'image' || editingMessage.fileType?.startsWith('image') ? '📷 Görsel eklentisi' : `📎 ${editingMessage.fileName || 'Dosya eklentisi'}`}
-                </div>
-              )}
-
-              <textarea
-                value={editMessageText}
-                onChange={(e) => setEditMessageText(e.target.value)}
-                autoFocus
-                style={{ width: '100%', minHeight: '110px', padding: '12px', borderRadius: '12px', border: `1px solid ${borderColor}`, background: inputBg, color: textColor, resize: 'vertical', outline: 'none', boxSizing: 'border-box', fontSize: '14px' }}
-                placeholder="Mesaj metni..."
-              />
-
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '14px' }}>
-                <Button variant="outline" text="Vazgeç" onClick={() => setEditingMessage(null)} style={{ background: 'transparent', color: iconColor, border: `1px solid ${borderColor}` }} />
-                <Button text="Kaydet" onClick={handleSaveMessageEdit} />
-              </div>
-            </div>
-          </div>
-        )}
-
         {/* ALT KISIM: YAZMA VE ARAÇLAR ALANI */}
         <ChatInput
+          isGroup={activeConversation?.isGroup}
+          isActiveGroupMember={activeConversation?.isActive !== false}
           isBlockedLocally={isBlockedLocally}
           chatPartner={chatPartner}
           isDarkMode={isDarkMode}
@@ -1221,7 +1294,6 @@ export default function ChatArea({
           handleScheduledFileChange={handleScheduledFileChange}
           newMessage={newMessage}
           setNewMessage={setNewMessage}
-          onTyping={onTyping}
           handleSend={handleSend}
           handleBlockToggle={handleBlockToggle}
           panelBg={panelBg}
@@ -1230,6 +1302,9 @@ export default function ChatArea({
           textColor={textColor}
           iconColor={iconColor}
           toggleVoiceRecording={toggleVoiceRecordingWrapper}
+          editingMessage={editingMessage}
+          setEditingMessage={setEditingMessage}
+          handleSaveMessageEdit={handleSaveMessageEdit}
         />
 
         <style>{`

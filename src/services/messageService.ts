@@ -1,3 +1,5 @@
+//Mesajlaşma ile ilgili özellikler
+
 import { Prisma } from '@prisma/client';
 import prisma from '../db';
 import { withSignedFileUrl } from './fileStorage';
@@ -79,7 +81,7 @@ export const sendMessage = async (
     include: { participants: true }
   });
   if (!conversation) throw new Error("Sohbet bulunamadı.");
-  if (!conversation.participants.some((participant) => participant.userId === senderId)) {
+  if (!conversation.participants.some((participant: any) => participant.userId === senderId && participant.isActive)) {
     throw new Error("Bu sohbete mesaj gönderme yetkiniz yok.");
   }
 
@@ -177,7 +179,7 @@ export const sendMessage = async (
   const responseMessage = await serializeMessage(savedMessage);
 
   if (io) {
-    const targetRooms = conversation.participants.map((p) => p.userId);
+    const targetRooms = conversation.participants.filter((p: any) => p.isActive).map((p) => p.userId);
     targetRooms.push(conversationId);
     io.to(targetRooms).emit(gameChannelId ? 'game:message' : 'yeni_mesaj_geldi', responseMessage);
   }
@@ -189,17 +191,27 @@ export const sendMessage = async (
  * Geçmiş mesajları sayfalanmış şekilde döner.
  */
 export const fetchMessages = async (conversationId: string, userId: string, cursor?: string) => {
-  if (!(await isConversationMember(conversationId, userId))) {
+  const participant: any = await prisma.participant.findUnique({
+    where: { userId_conversationId: { userId, conversationId } },
+    select: { leftAt: true } as any
+  });
+  if (!participant) {
     throw new Error("Bu sohbetin mesajlarını görüntüleme yetkiniz yok.");
   }
 
+  const whereClause: any = {
+    conversationId,
+    gameChannelId: null,
+    deletions: { none: { userId } },
+    ...visibleMessageWhere()
+  };
+
+  if (participant.leftAt) {
+    whereClause.createdAt = { lte: participant.leftAt };
+  }
+
   const messages = await prisma.message.findMany({
-    where: {
-      conversationId,
-      gameChannelId: null,
-      deletions: { none: { userId } },
-      ...visibleMessageWhere()
-    },
+    where: whereClause,
     take: 50,
     skip: cursor ? 1 : 0,
     ...(cursor ? { cursor: { id: String(cursor) } } : {}),

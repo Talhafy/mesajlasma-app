@@ -80,6 +80,8 @@ model Participant {
   isPinned       Boolean      @default(false)
   isArchived     Boolean      @default(false)
   isMuted        Boolean      @default(false)
+  isActive       Boolean      @default(true)
+  leftAt         DateTime?
   user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 

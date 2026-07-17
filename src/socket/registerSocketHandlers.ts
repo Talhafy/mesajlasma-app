@@ -1,3 +1,5 @@
+//Socket.IO tabanlı gerçek zamanlı (real-time) iletişim için gerekenler.
+
 import { Server } from 'socket.io';
 import { logger } from '../config/logger';
 import prisma from '../db';

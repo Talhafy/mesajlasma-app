@@ -1,3 +1,5 @@
+//jwt ve refresh token sistemi
+
 import express, { NextFunction, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import prisma from '../db';
@@ -99,10 +101,10 @@ router.post('/login', requireTrustedOrigin, validateRequest({ body: authSchemas.
     });
 
     if (!user) {
-      // Zamanlama analizini (timing attack) zorlaştırmak için sabit/rastgele gecikme ekliyoruz.
+      // Zamanlama analizini (timing attack) zorlaştırmak için sabit/rastgele gecikme
       const fakeDelay = 200 + Math.floor(Math.random() * 300);
       await new Promise((resolve) => setTimeout(resolve, fakeDelay));
-      
+
       logger.warn(authLogContext(req, {
         event: 'auth.login_failed',
         reason: 'user_not_found'
@@ -140,7 +142,7 @@ router.post('/login', requireTrustedOrigin, validateRequest({ body: authSchemas.
 
     const refreshToken = createRefreshToken();
     const refreshExpiresAt = getRefreshExpiry();
-    
+
     await prisma.$transaction(async (tx) => {
       await tx.refreshSession.deleteMany({
         where: { expiresAt: { lt: new Date() } }

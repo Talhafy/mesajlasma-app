@@ -1,3 +1,5 @@
+//İstekleri izleme, kimlik verme,  güvenlik olaylarını ayrıca işaretleme
+
 import { randomUUID } from 'crypto';
 import { Request, Response, NextFunction } from 'express';
 import pinoHttp from 'pino-http';

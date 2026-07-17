@@ -1,4 +1,6 @@
+import { useState } from 'react';
 import type { User, Conversation, Message, ScheduledMessage } from '../../../types/chat';
+import AvatarViewerModal from '../../Modals/AvatarViewerModal';
 
 interface ConversationInfoSidebarProps {
   isConversationInfoOpen: boolean;
@@ -37,6 +39,8 @@ export default function ConversationInfoSidebar({
   panelBg, inputBg, borderColor, textColor, iconColor, isDarkMode, lightboxImageUrl, setLightboxImageUrl,
   avatarProfileUser, setAvatarProfileUser, onStartDirectChat, onStartCallWithUser
 }: ConversationInfoSidebarProps) {
+  const [viewerUser, setViewerUser] = useState<{ avatarUrl: string | null; username: string } | null>(null);
+
   return (
     <>
       {isConversationInfoOpen && (
@@ -64,7 +68,14 @@ export default function ConversationInfoSidebar({
 
             {/* PROFİL FOTO VE İSİM (BÜYÜK) */}
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '30px 20px', background: inputBg, marginBottom: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }}>
-              <div style={{ width: '200px', height: '200px', borderRadius: '50%', background: '#f97316', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '64px', overflow: 'hidden', marginBottom: '20px' }}>
+              <div 
+                onClick={() => setViewerUser({ 
+                  avatarUrl: activeConversation?.isGroup ? activeConversation.avatarUrl : (chatPartner?.avatarUrl || null), 
+                  username: activeConversation?.isGroup ? activeConversation.name : (chatPartner?.username || '') 
+                })}
+                title="Profil resmini görüntüle"
+                style={{ width: '200px', height: '200px', borderRadius: '50%', background: '#f97316', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '64px', overflow: 'hidden', marginBottom: '20px', cursor: 'pointer' }}
+              >
                 {activeConversation?.isGroup && activeConversation?.avatarUrl
                   ? <img src={activeConversation.avatarUrl} alt="Grup" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                   : !activeConversation?.isGroup && chatPartner?.avatarUrl
@@ -227,6 +238,11 @@ export default function ConversationInfoSidebar({
             
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', marginTop: '12px' }}>
               <div 
+                onClick={() => setViewerUser({ 
+                  avatarUrl: avatarProfileUser.avatarUrl || null, 
+                  username: avatarProfileUser.username 
+                })}
+                title="Profil resmini görüntüle"
                 style={{ 
                   width: '90px', 
                   height: '90px', 
@@ -240,7 +256,8 @@ export default function ConversationInfoSidebar({
                   fontSize: '36px',
                   fontWeight: 'bold',
                   overflow: 'hidden',
-                  marginBottom: '16px'
+                  marginBottom: '16px',
+                  cursor: 'pointer'
                 }}
               >
                 {avatarProfileUser.avatarUrl ? (
@@ -343,6 +360,13 @@ export default function ConversationInfoSidebar({
             </div>
           </div>
         </div>
+      )}
+      {viewerUser && (
+        <AvatarViewerModal
+          avatarUrl={viewerUser.avatarUrl}
+          username={viewerUser.username}
+          onClose={() => setViewerUser(null)}
+        />
       )}
     </>
   );

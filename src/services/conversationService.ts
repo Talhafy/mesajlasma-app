@@ -1,3 +1,5 @@
+//sohbet ve grup mesajları için gerekli olan servisler
+
 import prisma from '../db';
 import { createSignedFileUrl } from './fileStorage';
 import { deleteFileIfUnreferenced } from './fileCleanup';
@@ -62,25 +64,45 @@ export const listConversations = async (userId: string) => {
   const blockedMeSet = new Set(blockedMe.map((r) => r.userId));
 
   const conversations = await Promise.all(
-    memberships.map(async (membership) => {
+    memberships.map(async (membership: any) => {
       const { conversation } = membership;
       const otherParticipant = conversation.isGroup
         ? null
-        : conversation.participants.find((p) => p.userId !== userId);
+        : conversation.participants.find((p: any) => p.userId !== userId);
 
       const otherUser = otherParticipant?.user
         ? {
-            ...otherParticipant.user,
-            avatarUrl: otherParticipant.user.avatarFileKey
-              ? await createSignedFileUrl(otherParticipant.user.avatarFileKey)
-              : null,
-            isBlocked: myBlockedSet.has(otherParticipant.user.id),
-            blockedByOther: blockedMeSet.has(otherParticipant.user.id)
-          }
+          ...otherParticipant.user,
+          avatarUrl: otherParticipant.user.avatarFileKey
+            ? await createSignedFileUrl(otherParticipant.user.avatarFileKey)
+            : null,
+          isBlocked: myBlockedSet.has(otherParticipant.user.id),
+          blockedByOther: blockedMeSet.has(otherParticipant.user.id)
+        }
         : null;
 
-      const lastMessage = conversation.messages[0]
-        ? await serializeMessage(conversation.messages[0])
+      let lastMessageRaw: any = conversation.messages[0];
+      if (membership.leftAt && lastMessageRaw && new Date(lastMessageRaw.createdAt) > membership.leftAt) {
+        lastMessageRaw = await prisma.message.findFirst({
+          where: {
+            conversationId: conversation.id,
+            gameChannelId: null,
+            deletions: { none: { userId } },
+            ...visibleMessageWhere(),
+            createdAt: { lte: membership.leftAt }
+          },
+          orderBy: { createdAt: 'desc' },
+          include: {
+            sender: { select: { username: true } },
+            reads: { select: { userId: true } },
+            stars: { select: { userId: true } },
+            deletions: { select: { userId: true } }
+          }
+        });
+      }
+
+      const lastMessage = lastMessageRaw
+        ? await serializeMessage(lastMessageRaw)
         : null;
 
       return {
@@ -94,6 +116,8 @@ export const listConversations = async (userId: string) => {
         isPinned: membership.isPinned,
         isArchived: membership.isArchived,
         isMuted: membership.isMuted,
+        isActive: membership.isActive,
+        leftAt: membership.leftAt ? membership.leftAt.toISOString() : null,
         disappearingDurationSeconds: conversation.disappearingDurationSeconds,
         otherUser,
         lastMessage
@@ -293,13 +317,15 @@ export const listGroupConversations = async (userId: string) => {
   });
 
   return Promise.all(
-    myGroups.map(async (p) => {
+    myGroups.map(async (p: any) => {
       const responseGroup = await withConversationAvatarUrl(p.conversation);
       return {
         ...responseGroup,
         isPinned: p.isPinned,
         isArchived: p.isArchived,
-        isMuted: p.isMuted
+        isMuted: p.isMuted,
+        isActive: p.isActive,
+        leftAt: p.leftAt ? p.leftAt.toISOString() : null
       };
     })
   );
@@ -325,13 +351,14 @@ export const listGroupParticipants = async (groupId: string, userId: string) => 
   const blockedIds = new Set(blockedRows.map((r) => r.blockedId));
 
   return Promise.all(
-    participants.map(async (p) => ({
+    participants.map(async (p: any) => ({
       id: p.user.id,
       username: p.user.username,
       email: p.user.email,
       lastSeenAt: p.user.lastSeenAt,
       avatarUrl: p.user.avatarFileKey ? await createSignedFileUrl(p.user.avatarFileKey) : null,
-      isBlocked: blockedIds.has(p.user.id)
+      isBlocked: blockedIds.has(p.user.id),
+      isActive: p.isActive
     }))
   );
 };
@@ -402,8 +429,10 @@ export const removeGroupParticipant = async (groupId: string, participantId: str
   }
 
   await prisma.$transaction(async (tx) => {
-    await tx.participant.deleteMany({
-      where: { conversationId: groupId, userId: participantId }
+    // Katılımcıyı tamamen silmek yerine pasife çekiyoruz ve leftAt zamanını kaydediyoruz
+    await (tx.participant.update as any)({
+      where: { userId_conversationId: { userId: participantId, conversationId: groupId } },
+      data: { isActive: false, leftAt: new Date() }
     });
     await tx.scheduledMessage.deleteMany({
       where: { conversationId: groupId, senderId: participantId }
@@ -415,8 +444,9 @@ export const removeGroupParticipant = async (groupId: string, participantId: str
     io.in(participantId).socketsLeave(groupId);
   }
 
+  // Sadece AKTİF kalan katılımcıları buluyoruz
   const remainingParticipants = await prisma.participant.findMany({
-    where: { conversationId: groupId }
+    where: { conversationId: groupId, isActive: true } as any
   });
 
   if (remainingParticipants.length === 0) {
@@ -444,7 +474,7 @@ export const removeGroupParticipant = async (groupId: string, participantId: str
       io.to(groupId).emit('grup_silindi', { groupId });
     }
   } else if (group.adminId === participantId) {
-    // Ayrılan kişi yöneticisiyse sıradaki yöneticiyi belirle
+    // Ayrılan kişi yöneticisiyse sıradaki aktif yöneticiyi belirle
     let newAdminId: string | null = null;
 
     // 1. En son yönetici yapan kişi (adminHistory tersten taranır)
@@ -469,7 +499,7 @@ export const removeGroupParticipant = async (groupId: string, participantId: str
 
     await prisma.conversation.update({
       where: { id: groupId },
-      data: { 
+      data: {
         adminId: newAdminId,
         adminHistory: updatedHistory
       }
@@ -499,8 +529,22 @@ export const addGroupParticipants = async (groupId: string, participantIds: stri
     throw new Error('Sadece yönetici kişi ekleyebilir.');
   }
 
-  const data = uniqueUserIds.map((userId) => ({ userId, conversationId: groupId }));
-  await prisma.participant.createMany({ data, skipDuplicates: true });
+  // Her bir kullanıcıyı gruba eklerken, eğer önceden pasif bir kaydı varsa aktif ediyoruz
+  for (const userId of uniqueUserIds) {
+    const existing = await prisma.participant.findUnique({
+      where: { userId_conversationId: { userId, conversationId: groupId } }
+    });
+    if (existing) {
+      await (prisma.participant.update as any)({
+        where: { id: existing.id },
+        data: { isActive: true, leftAt: null, joinedAt: new Date() }
+      });
+    } else {
+      await (prisma.participant.create as any)({
+        data: { userId, conversationId: groupId, isActive: true, leftAt: null }
+      });
+    }
+  }
 
   const newParticipants = await prisma.participant.findMany({
     where: { conversationId: groupId, userId: { in: uniqueUserIds } },
@@ -514,19 +558,31 @@ export const addGroupParticipants = async (groupId: string, participantIds: stri
   const blockedIds = new Set(blockedRows.map((r) => r.blockedId));
 
   const serializedMembers = await Promise.all(
-    newParticipants.map(async (p) => ({
+    newParticipants.map(async (p: any) => ({
       id: p.user.id,
       username: p.user.username,
       email: p.user.email,
       lastSeenAt: p.user.lastSeenAt,
       avatarUrl: p.user.avatarFileKey ? await createSignedFileUrl(p.user.avatarFileKey) : null,
-      isBlocked: blockedIds.has(p.user.id)
+      isBlocked: blockedIds.has(p.user.id),
+      isActive: p.isActive
     }))
   );
 
+  const enrichedGroup = await withConversationAvatarUrl(group);
+  const resultGroup = {
+    ...enrichedGroup,
+    isPinned: false,
+    isArchived: false,
+    isMuted: false,
+    isActive: true,
+    leftAt: null
+  };
+
   if (io) {
     uniqueUserIds.forEach((userId) => {
-      io.to(userId).emit('grup_olusturuldu', group);
+      io.to(userId).emit('grup_olusturuldu', resultGroup);
+      io.in(userId).socketsJoin(groupId);
     });
     io.to(groupId).emit('grup_uyeleri_eklendi', { groupId, newMembers: serializedMembers });
   }
@@ -553,7 +609,7 @@ export const transferGroupAdmin = async (groupId: string, newAdminId: string, ad
 
   await prisma.conversation.update({
     where: { id: groupId },
-    data: { 
+    data: {
       adminId: newAdminId,
       adminHistory: newHistory
     }

@@ -1,3 +1,5 @@
+//Livekit jwt koruması
+
 import express, { Response } from 'express';
 import prisma from '../db';
 import { authenticateToken, CustomRequest } from '../middleware/authMiddleware';
@@ -45,7 +47,7 @@ router.post('/calls/token', validateRequest({ body: chatSchemas.callToken }), as
     }
 
     // LiveKit token yalnızca bu konuşma/callId için üretilen oda adına geçerlidir.
-    // Kullanıcı başka bir odanın adını tahmin etse bile bu endpoint üyelik kontrolü yapar.
+    // bu endpoint üyelik kontrolü yapar.
     const livekit = await createConversationCallToken({
       conversationId,
       callId,

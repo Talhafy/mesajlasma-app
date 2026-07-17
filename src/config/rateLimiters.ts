@@ -1,3 +1,5 @@
+//Çok fazla denemeler istekler atılınca kontrolü ve uyarısı için
+
 import type { Request, Response } from 'express';
 import { rateLimit } from 'express-rate-limit';
 import { logger } from './logger';

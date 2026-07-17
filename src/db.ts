@@ -4,8 +4,8 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
 import { logger } from './config/logger';
 
-// Prisma 7 bu projede @prisma/adapter-pg ile çalışıyor.
-// DATABASE_URL pg Pool'e verilir; PrismaClient bu pool üstünden PostgreSQL'e bağlanır.
+// Prisma 7 requires an explicit driver adapter (or Accelerate) for PostgreSQL database connections.
+// We configure pg Pool and map it to PrismaPg adapter.
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });

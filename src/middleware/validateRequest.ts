@@ -1,3 +1,5 @@
+//API ya gelen isteklerin verilerini Zod şemaları ile doğrulamak için
+
 import { NextFunction, Request, Response } from 'express';
 import { ZodType } from 'zod';
 

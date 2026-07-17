@@ -1,3 +1,5 @@
+// Uygulama için genel olarak gerekli olan apiler
+
 import express, { Response } from 'express';
 import { uploadSingleFile } from '../config/fileUpload';
 import { authenticateToken, CustomRequest } from '../middleware/authMiddleware';
@@ -27,11 +29,11 @@ router.post('/upload', uploadSingleFile, async (req: CustomRequest, res: Respons
     if (!req.file) return res.status(400).json({ error: "Dosya bulunamadı." });
 
     // Multer/busboy Türkçe karakterleri latin1 olarak çözümler. 
-    // Karakter bozulmalarını (örneğin "Ekran görüntüsü" -> "Ekran gÃ¶rÃ¼ntÃ¼sÃ¼") önlemek için UTF-8'e dönüştürüyoruz.
+    // Karakter bozulmalarını önlemek için UTF-8'e dönüştürüyoruz.
     const originalNameDecoded = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
 
-    // Dosya içeriğinin (magic bytes/signature) beyan edilen MIME tipi ile uyuşup uyuşmadığını doğrula.
-    // Bu sayede MIME ve uzantısı sahtelenmiş (spoofed) zararlı dosyaları kesinlikle engelleriz.
+    // Dosya içeriğinin beyan edilen MIME tipi ile uyuşup uyuşmadığını doğrula.
+    // Bu sayede uzantısı sahtelenmiş zararlı dosyaları kesinlikle engelleriz.
     if (!verifyFileSignature(req.file.buffer, req.file.mimetype)) {
       logger.warn({
         event: 'security.file_signature_mismatch',
@@ -54,7 +56,7 @@ router.post('/upload', uploadSingleFile, async (req: CustomRequest, res: Respons
       fileUrl: signedFile.fileUrl,
       fileName: originalNameDecoded,
       fileType: req.file.mimetype.startsWith('image/') ? 'image' :
-                req.file.mimetype.startsWith('audio/') || req.file.mimetype.startsWith('video/') ? 'audio' : 'document'
+        req.file.mimetype.startsWith('audio/') || req.file.mimetype.startsWith('video/') ? 'audio' : 'document'
     });
   } catch (error) {
     logger.error({ event: 'chat.file_upload_failed', err: error, userId: req.user?.userId, ip: req.ip }, 'File upload failed');
@@ -364,8 +366,8 @@ router.post('/messages', validateRequest({ body: chatSchemas.message }), async (
   } catch (error: any) {
     logger.error({ event: 'chat.message_send_failed', err: error, userId: req.user?.userId, conversationId: req.body.conversationId, ip: req.ip }, 'Message send failed');
     const status = error.message.includes('yetkiniz yok') || error.message.includes('engellendiniz') || error.message.includes('engellediniz') ? 403 :
-                   error.message.includes('bulunamadı') ? 404 :
-                   error.message.includes('Yanıtlanan') ? 400 : 500;
+      error.message.includes('bulunamadı') ? 404 :
+        error.message.includes('Yanıtlanan') ? 400 : 500;
     return res.status(status).json({ error: error.message || 'Mesaj gönderilemedi.' });
   }
 });

@@ -1,3 +1,5 @@
+//Dosya gönderme işlemleri
+
 import multer = require('multer');
 import path = require('path');
 

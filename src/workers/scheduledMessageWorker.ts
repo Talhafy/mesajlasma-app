@@ -11,6 +11,7 @@ const WORKER_INTERVAL_MS = 2_000;
 // Bu worker periyodik olarak zamanı gelen ScheduledMessage kayıtlarını gerçek Message kaydına dönüştürür.
 export const startScheduledMessageWorker = (io: Server) => {
   let workerRunning = false;
+  let lastCleanupTime = 0;
 
   const deliverScheduledMessages = async () => {
     // Aynı Node sürecinde önceki tur bitmeden ikinci tur başlamaz.
@@ -102,40 +103,44 @@ export const startScheduledMessageWorker = (io: Server) => {
         await deleteFileIfUnreferenced(fileKey);
       }
 
-      // 1. Dosyası olmayan süresi geçmiş mesajları topluca sil (R2 işlemi gerekmez)
-      await prisma.message.deleteMany({
-        where: { expiresAt: { lte: new Date() }, fileKey: null }
-      });
+      // Temizlik işlemlerini her 2 saniyede bir değil, 60 saniyede bir çalıştırıyoruz.
+      const nowMs = Date.now();
+      if (nowMs - lastCleanupTime > 60_000) {
+        lastCleanupTime = nowMs;
 
-      // 2. Dosyası olan süresi geçmiş mesajları bul
-      const expiredWithFiles = await prisma.message.findMany({
-        where: { expiresAt: { lte: new Date() }, fileKey: { not: null } }
-      });
+        // 1. Dosyası olmayan süresi geçmiş mesajları topluca sil (R2 işlemi gerekmez)
+        await prisma.message.deleteMany({
+          where: { expiresAt: { lte: new Date() }, fileKey: null }
+        });
 
-      // 3. Dosyalı mesajları tek tek transaction içinde işle ki R2 silme hatasında DB kaydı rollback olsun (retry mekanizması)
-      for (const msg of expiredWithFiles) {
-        try {
-          await prisma.$transaction(async (tx) => {
+        // 2. Dosyası olan süresi geçmiş mesajları bul
+        const expiredWithFiles = await prisma.message.findMany({
+          where: { expiresAt: { lte: new Date() }, fileKey: { not: null } }
+        });
+
+        // 3. Dosyalı mesajları tek tek işle (ağır işlem olmaması ve DB kilitlememesi için transaction dışı)
+        for (const msg of expiredWithFiles) {
+          try {
             // Mesaj kaydını sil
-            await tx.message.delete({ where: { id: msg.id } });
+            await prisma.message.delete({ where: { id: msg.id } });
 
             // Kalan referansları kontrol et
-            const messageReferences = await tx.message.count({ where: { fileKey: msg.fileKey } });
-            const scheduledReferences = await tx.scheduledMessage.count({ where: { fileKey: msg.fileKey } });
-            const avatarReferences = await tx.user.count({ where: { avatarFileKey: msg.fileKey } });
+            const messageReferences = await prisma.message.count({ where: { fileKey: msg.fileKey } });
+            const scheduledReferences = await prisma.scheduledMessage.count({ where: { fileKey: msg.fileKey } });
+            const avatarReferences = await prisma.user.count({ where: { avatarFileKey: msg.fileKey } });
 
             if (messageReferences === 0 && scheduledReferences === 0 && avatarReferences === 0) {
-              // R2'den sil. Eğer hata fırlatırsa transaction rollback olur ve DB kaydı silinmez.
+              // R2'den sil.
               await deletePrivateFile(msg.fileKey!);
             }
-          });
-        } catch (error) {
-          logger.error({
-            event: 'worker.expired_file_cleanup_failed',
-            err: error,
-            messageId: msg.id,
-            fileKey: msg.fileKey
-          }, 'Failed to clean up expired file, keeping database record for retry');
+          } catch (error) {
+            logger.error({
+              event: 'worker.expired_file_cleanup_failed',
+              err: error,
+              messageId: msg.id,
+              fileKey: msg.fileKey
+            }, 'Failed to clean up expired file or database record');
+          }
         }
       }
     } catch (error) {

@@ -1,3 +1,5 @@
+//Zamanlanmış mesajlar için ayrı bir route
+
 import express, { Response } from 'express';
 import { Prisma } from '@prisma/client';
 import prisma from '../db';

@@ -1,3 +1,5 @@
+//Sunucu 200 döndürüyor mu? çalışıyor mu?
+
 import express, { Response } from 'express';
 import { logger, loggerRuntime } from '../config/logger';
 import { CustomRequest } from '../middleware/authMiddleware';

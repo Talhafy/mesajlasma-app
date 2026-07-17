@@ -11,8 +11,10 @@ import { RoomEvent } from 'livekit-client';
 import type { TypedSocket } from '../../types/socket';
 import { api } from '../../api/httpClient';
 import type { Conversation, GameChannel, GameChannelType, Message, User } from '../../types/chat';
+import AvatarViewerModal from '../Modals/AvatarViewerModal';
 import '@livekit/components-styles';
 import './GameHub.css';
+import { useConfirm } from '../../context/ConfirmContext';
 
 type SelectedChannel = GameChannel | {
   id: 'general';
@@ -105,6 +107,7 @@ function VoiceChannelConnection({
 }
 
 export default function GameHub({ currentUser, groups, users, socket, onExit, onStartDirectChat }: GameHubProps) {
+  const confirm = useConfirm();
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(groups[0]?.id || null);
   const [channels, setChannels] = useState<GameChannel[]>([]);
   const [selectedChannel, setSelectedChannel] = useState<SelectedChannel | null>(null);
@@ -132,6 +135,7 @@ export default function GameHub({ currentUser, groups, users, socket, onExit, on
   const [draggedChannelId, setDraggedChannelId] = useState<string | null>(null);
   const [dragOverChannelId, setDragOverChannelId] = useState<string | null>(null);
   const [selectedMemberProfile, setSelectedMemberProfile] = useState<User | null>(null);
+  const [viewerUser, setViewerUser] = useState<{ avatarUrl: string | null; username: string } | null>(null);
   const [isAddingMember, setIsAddingMember] = useState(false);
   const [selectedNewMembers, setSelectedNewMembers] = useState<string[]>([]);
   const messageEndRef = useRef<HTMLDivElement | null>(null);
@@ -448,7 +452,15 @@ export default function GameHub({ currentUser, groups, users, socket, onExit, on
   };
 
   const deleteChannel = async (channel: GameChannel) => {
-    if (!selectedGroupId || !window.confirm(`“${channel.name}” kanalını silmek istiyor musunuz?`)) return;
+    if (!selectedGroupId) return;
+    const isConfirmed = await confirm({
+      title: "Kanalı Sil",
+      message: `“${channel.name}” kanalını silmek istediğinize emin misiniz? Bu işlem geri alınamaz.`,
+      confirmText: "Kanalı Sil",
+      cancelText: "Vazgeç",
+      isDanger: true
+    });
+    if (!isConfirmed) return;
     try {
       await api.delete(`/game/groups/${selectedGroupId}/channels/${channel.id}`);
       setChannels((previous) => previous.filter((item) => item.id !== channel.id));
@@ -877,7 +889,15 @@ export default function GameHub({ currentUser, groups, users, socket, onExit, on
             <span className="eyebrow">{selectedGroup?.name}</span>
             <h2>Kullanıcı Profili</h2>
             <div className="game-profile-header" style={{ display: 'flex', alignItems: 'center', gap: '16px', margin: '20px 0' }}>
-              <div className="game-profile-avatar-wrap" style={{ position: 'relative' }}>
+              <div 
+                className="game-profile-avatar-wrap" 
+                onClick={() => setViewerUser({ 
+                  avatarUrl: selectedMemberProfile.avatarUrl || null, 
+                  username: selectedMemberProfile.username 
+                })}
+                title="Profil resmini görüntüle"
+                style={{ position: 'relative', cursor: 'pointer' }}
+              >
                 <Avatar user={selectedMemberProfile} size={64} />
                 <span 
                   className={`game-profile-status-dot ${selectedMemberProfile.isOnline ? 'online' : 'offline'}`} 
@@ -912,19 +932,26 @@ export default function GameHub({ currentUser, groups, users, socket, onExit, on
               )}
             </div>
 
-             <div className="channel-modal-actions" style={{ gap: '10px' }}>
-               <button onClick={() => setSelectedMemberProfile(null)}>Kapat</button>
-               {selectedMemberProfile.id !== currentUser.id && onStartDirectChat && (
-                 <button className="primary" onClick={() => {
-                   if (window.confirm("Mesajlaşma moduna geçmek istediğinize emin misiniz?")) {
-                     setSelectedMemberProfile(null);
-                     onStartDirectChat(selectedMemberProfile);
-                   }
-                 }}>
-                   Sohbete Başla
-                 </button>
-               )}
-             </div>
+            <div className="channel-modal-actions" style={{ gap: '10px' }}>
+              <button onClick={() => setSelectedMemberProfile(null)}>Kapat</button>
+              {selectedMemberProfile.id !== currentUser.id && onStartDirectChat && (
+                <button className="primary" onClick={async () => {
+                  const isConfirmed = await confirm({
+                    title: "Sohbete Geçiş Yap",
+                    message: "Mesajlaşma moduna geçmek ve bu kullanıcıyla doğrudan sohbet başlatmak istediğinize emin misiniz?",
+                    confirmText: "Sohbete Geç",
+                    cancelText: "Vazgeç",
+                    isDanger: false
+                  });
+                  if (isConfirmed) {
+                    setSelectedMemberProfile(null);
+                    onStartDirectChat(selectedMemberProfile);
+                  }
+                }}>
+                  Sohbete Başla
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -1000,6 +1027,13 @@ export default function GameHub({ currentUser, groups, users, socket, onExit, on
             </div>
           </div>
         </div>
+      )}
+      {viewerUser && (
+        <AvatarViewerModal
+          avatarUrl={viewerUser.avatarUrl}
+          username={viewerUser.username}
+          onClose={() => setViewerUser(null)}
+        />
       )}
     </main>
   );

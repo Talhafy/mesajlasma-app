@@ -1,3 +1,5 @@
+//Engellenen kullanıcılar için ayrı bir servis
+
 import prisma from '../db';
 import { createSignedFileUrl } from './fileStorage';
 

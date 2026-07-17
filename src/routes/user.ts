@@ -1,3 +1,5 @@
+//Kullanıcı ile ilgili olan apiler
+
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import prisma from '../db';
@@ -110,15 +112,15 @@ router.delete('/account', authenticateToken, async (req: CustomRequest, res: any
           conversation.adminId === userId && conversation.participants.length === 1
         ))
         .map(({ conversation }) => conversation.id);
-      
+
       const affectedUserIds = [...new Set(memberships
         .flatMap(({ conversation }) => conversation.participants.map((participant) => participant.userId))
         .filter((participantUserId) => participantUserId !== userId))];
-      
+
       const deletedGroupIds = memberships
         .filter(({ conversation }) => conversation.isGroup && conversation.adminId === userId && conversation.participants.length === 1)
         .map(({ conversation }) => conversation.id);
-      
+
       const updatedGroups = memberships
         .filter(({ conversation }) => conversation.isGroup && !deletedGroupIds.includes(conversation.id))
         .map(({ conversation }) => {
@@ -129,25 +131,25 @@ router.delete('/account', authenticateToken, async (req: CustomRequest, res: any
         });
 
       const messageFiles = await tx.message.findMany({
-          where: {
-            fileKey: { not: null },
-            OR: [
-              { senderId: userId },
-              { conversationId: { in: deletedConversationIds } }
-            ]
-          },
-          select: { fileKey: true }
-        });
+        where: {
+          fileKey: { not: null },
+          OR: [
+            { senderId: userId },
+            { conversationId: { in: deletedConversationIds } }
+          ]
+        },
+        select: { fileKey: true }
+      });
       const scheduledFiles = await tx.scheduledMessage.findMany({
-          where: {
-            fileKey: { not: null },
-            OR: [
-              { senderId: userId },
-              { conversationId: { in: deletedConversationIds } }
-            ]
-          },
-          select: { fileKey: true }
-        });
+        where: {
+          fileKey: { not: null },
+          OR: [
+            { senderId: userId },
+            { conversationId: { in: deletedConversationIds } }
+          ]
+        },
+        select: { fileKey: true }
+      });
 
       for (const membership of memberships) {
         const conversation = membership.conversation;
@@ -210,13 +212,13 @@ router.get('/me', authenticateToken, async (req: CustomRequest, res: any) => {
     if (!user) return res.status(404).json({ error: "Kullanıcı bulunamadı." });
 
     res.status(200).json({
-        id: user.id,
-        username: user.username,
-        email: user.email,
-        readReceiptsOn: user.readReceiptsOn,
-        lastSeenAt: user.lastSeenAt,
-        avatarFileKey: user.avatarFileKey,
-        avatarUrl: user.avatarFileKey ? await createSignedFileUrl(user.avatarFileKey) : null
+      id: user.id,
+      username: user.username,
+      email: user.email,
+      readReceiptsOn: user.readReceiptsOn,
+      lastSeenAt: user.lastSeenAt,
+      avatarFileKey: user.avatarFileKey,
+      avatarUrl: user.avatarFileKey ? await createSignedFileUrl(user.avatarFileKey) : null
     });
   } catch (error) {
     logger.error({ event: 'user.get_me_failed', err: error, userId }, 'Get me profile failed');

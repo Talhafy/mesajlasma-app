@@ -1,4 +1,5 @@
-import 'dotenv/config';
+//Ortam değişkenleri için ayrı güvenlik amaçlı dosyamız
+// import 'dotenv/config';
 import path from 'path';
 
 // .env dosyasındaki boolean değerler string gelir.

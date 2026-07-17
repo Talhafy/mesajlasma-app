@@ -32,12 +32,13 @@ interface SidebarProps {
   typingByConversation: Record<string, string>;
   callHistory: CallHistoryItem[];
   onOpenGameMode: () => void;
+  onViewOwnAvatar: () => void;
 }
 
 export default function Sidebar({
   currentUser, conversationList, usersList, activeConversation, selectedUser,
   unreadCounts, isDarkMode, setIsDarkMode, startGroupChat, startChat, setIsGroupModalOpen, setIsSettingsOpen,
-  socketConnectionStatus, onReconnectRealtime, typingByConversation, callHistory, onOpenGameMode
+  socketConnectionStatus, onReconnectRealtime, typingByConversation, callHistory, onOpenGameMode, onViewOwnAvatar
 }: SidebarProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [messageResults, setMessageResults] = useState<Message[]>([]);
@@ -259,8 +260,9 @@ export default function Sidebar({
     <div className="sidebar" style={{ position: 'relative', display: 'flex', flexDirection: 'row', height: '100%', background: isDarkMode ? '#111b21' : '#ffffff' }}>
       <div style={{ width: '58px', flexShrink: 0, background: panelBg, borderRight: `1px solid ${borderColor}`, display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '12px 8px', boxSizing: 'border-box', gap: '10px' }}>
         <div
-          title={`${currentUser.username} • Profil`}
-          style={{ width: '40px', height: '40px', borderRadius: '50%', border: 'none', background: '#f97316', color: 'white', fontWeight: 800, fontSize: '17px', cursor: 'default', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', boxShadow: '0 2px 8px rgba(0,0,0,0.18)' }}
+          title={`${currentUser.username} • Profil resmini gör`}
+          onClick={onViewOwnAvatar}
+          style={{ width: '40px', height: '40px', borderRadius: '50%', border: 'none', background: '#f97316', color: 'white', fontWeight: 800, fontSize: '17px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', boxShadow: '0 2px 8px rgba(0,0,0,0.18)' }}
         >
           {currentUser.avatarUrl ? <img src={currentUser.avatarUrl} alt={currentUser.username} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : currentUser.username?.[0]?.toUpperCase()}
         </div>
@@ -304,8 +306,11 @@ export default function Sidebar({
       </div>
 
       <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
-      <div className="sidebar-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '15px 20px', background: panelBg, borderBottom: `1px solid ${borderColor}` }}>
-        <h2 style={{ margin: 0, fontSize: '22px', color: textColor, fontWeight: 'bold' }}>
+      <div className="sidebar-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '15px 12px', background: panelBg, borderBottom: `1px solid ${borderColor}`, minWidth: 0 }}>
+        <h2 
+          title={isBlockedUsersView ? 'Engellenenler' : isContactsListView ? 'Kayıtlı Kullanıcılar' : isCallsView ? 'Aramalar' : isArchiveView ? 'Arşiv' : 'Sohbetler'}
+          style={{ margin: 0, fontSize: '18px', color: textColor, fontWeight: 'bold', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1, marginRight: '8px' }}
+        >
           {isBlockedUsersView ? 'Engellenenler' : isContactsListView ? 'Kayıtlı Kullanıcılar' : isCallsView ? 'Aramalar' : isArchiveView ? 'Arşiv' : 'Sohbetler'}
         </h2>
 
@@ -461,33 +466,72 @@ export default function Sidebar({
 
       <div className="users-list" style={{ flex: 1, overflowY: 'auto', position: 'relative' }}>
         {isContactsListView && (
-          <div style={{ position: 'absolute', inset: 0, zIndex: 45, background: isDarkMode ? '#111b21' : '#ffffff', color: textColor, overflowY: 'auto' }}>
-            <div style={{ padding: '12px', display: 'flex', gap: '8px', borderBottom: `1px solid ${borderColor}` }}>
-              <button onClick={openGroupCreator} style={{ border: 'none', background: '#f97316', color: 'white', borderRadius: '10px', padding: '9px 11px', cursor: 'pointer', fontWeight: 700, whiteSpace: 'nowrap' }}>
-                Yeni grup
-              </button>
-              <input
-                value={contactsSearchTerm}
-                onChange={(event) => setContactsSearchTerm(event.target.value)}
-                placeholder="Kullanıcı ara..."
-                autoFocus
-                style={{ flex: 1, minWidth: 0, padding: '9px 11px', borderRadius: '10px', border: `1px solid ${borderColor}`, background: panelBg, color: textColor, outline: 'none' }}
-              />
-            </div>
-            {filteredContactUsers.length > 0 ? filteredContactUsers.map((user) => (
-              <div key={user.id} className={`user-item ${selectedUser?.id === user.id ? 'active' : ''}`} onClick={() => startContactChat(user)} style={{ color: textColor, cursor: 'pointer' }}>
-                <div className="avatar-small" style={{ position: 'relative', overflow: 'visible' }}>
-                  {user.avatarUrl ? <img src={user.avatarUrl} alt="" style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }} /> : user.username.charAt(0).toUpperCase()}
-                  {user.isOnline && <span style={{ position: 'absolute', right: '-1px', bottom: '1px', width: '11px', height: '11px', borderRadius: '50%', background: '#25d366', border: `2px solid ${panelBg}` }} />}
-                </div>
-                <div className="user-info">
-                  <span className="user-name">{user.username}</span>
-                  <div style={{ fontSize: '12px', color: iconColor, marginTop: '3px' }}>{user.isOnline ? 'Çevrimiçi' : 'Sohbet başlat'}</div>
-                </div>
+          <div style={{ position: 'absolute', inset: 0, zIndex: 45, background: isDarkMode ? '#111b21' : '#ffffff', color: textColor, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
+            {/* WhatsApp/Telegram Style Search Bar */}
+            <div style={{ padding: '10px 14px', borderBottom: `1px solid ${borderColor}`, background: isDarkMode ? '#111b21' : '#ffffff', flexShrink: 0 }}>
+              <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                <span style={{ position: 'absolute', left: '12px', color: iconColor, fontSize: '15px', pointerEvents: 'none', display: 'flex', alignItems: 'center' }}>🔍</span>
+                <input
+                  value={contactsSearchTerm}
+                  onChange={(event) => setContactsSearchTerm(event.target.value)}
+                  placeholder="Kullanıcı ara..."
+                  autoFocus
+                  style={{
+                    width: '100%',
+                    padding: '8px 12px 8px 36px',
+                    borderRadius: '20px',
+                    border: 'none',
+                    background: isDarkMode ? '#202c33' : '#f0f2f5',
+                    color: textColor,
+                    fontSize: '14px',
+                    outline: 'none',
+                    boxSizing: 'border-box'
+                  }}
+                />
               </div>
-            )) : (
-              <div style={{ padding: '18px', textAlign: 'center', color: iconColor, fontSize: '13px' }}>Kullanıcı bulunamadı.</div>
-            )}
+            </div>
+
+            {/* Contacts list content */}
+            <div style={{ flex: 1, overflowY: 'auto' }}>
+              {/* "Yeni Grup" list item option */}
+              {contactsSearchTerm.trim() === '' && (
+                <div 
+                  onClick={openGroupCreator}
+                  className="user-item"
+                  style={{ 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    padding: '10px 15px', 
+                    cursor: 'pointer', 
+                    borderBottom: `1px solid ${borderColor}`,
+                    color: textColor
+                  }}
+                >
+                  <div className="avatar-small" style={{ width: '40px', height: '40px', borderRadius: '50%', background: 'rgba(249, 115, 22, 0.15)', color: '#f97316', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '18px', marginRight: '12px', flexShrink: 0 }}>
+                    👥
+                  </div>
+                  <div className="user-info">
+                    <span className="user-name" style={{ color: '#f97316', fontWeight: 600 }}>Yeni Grup Kur</span>
+                    <div style={{ fontSize: '11px', color: iconColor, marginTop: '2px' }}>Arkadaşlarınla grup sohbeti başlat</div>
+                  </div>
+                </div>
+              )}
+
+              {filteredContactUsers.length > 0 ? filteredContactUsers.map((user) => (
+                <div key={user.id} className={`user-item ${selectedUser?.id === user.id ? 'active' : ''}`} onClick={() => startContactChat(user)} style={{ color: textColor, cursor: 'pointer' }}>
+                  <div className="avatar-small" style={{ position: 'relative', overflow: 'visible' }}>
+                    {user.avatarUrl ? <img src={user.avatarUrl} alt="" style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }} /> : user.username.charAt(0).toUpperCase()}
+                    {user.isOnline && <span style={{ position: 'absolute', right: '-1px', bottom: '1px', width: '11px', height: '11px', borderRadius: '50%', background: '#25d366', border: `2px solid ${panelBg}` }} />}
+                  </div>
+                  <div className="user-info">
+                    <span className="user-name">{user.username}</span>
+                    <div style={{ fontSize: '12px', color: iconColor, marginTop: '3px' }}>{user.isOnline ? 'Çevrimiçi' : 'Sohbet başlat'}</div>
+                  </div>
+                </div>
+              )) : (
+                <div style={{ padding: '18px', textAlign: 'center', color: iconColor, fontSize: '13px' }}>Kullanıcı bulunamadı.</div>
+              )}
+            </div>
           </div>
         )}
 

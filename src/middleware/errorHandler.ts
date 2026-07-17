@@ -1,3 +1,5 @@
+//Projemizde ollmayan bir route fark edilirse gerekli loglamayı yapmak için
+
 import { NextFunction, Request, Response } from 'express';
 import { logger } from '../config/logger';
 import { RequestWithId } from './requestLogger';
