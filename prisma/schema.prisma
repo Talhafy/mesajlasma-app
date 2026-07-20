@@ -27,6 +27,30 @@ model User {
   messageStars              MessageStar[]
   messageDeletions          MessageDeletion[]
   gameChannelMutes          GameChannelMute[]
+  uploadedAssets            UploadedAsset[]
+}
+
+enum UploadedAssetStatus {
+  READY
+  ATTACHED
+  REJECTED
+}
+
+model UploadedAsset {
+  id           String              @id @default(uuid())
+  fileKey      String              @unique
+  ownerId      String
+  mimeType     String
+  sizeBytes    Int
+  checksum     String
+  status       UploadedAssetStatus @default(READY)
+  expiresAt    DateTime?
+  attachedAt   DateTime?
+  createdAt    DateTime            @default(now())
+  owner        User                @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@index([ownerId, status])
+  @@index([status, expiresAt])
 }
 
 model BlockedUser {
@@ -63,6 +87,7 @@ model Conversation {
   adminHistory      String             @default("")
   createdAt         DateTime           @default(now())
   disappearingDurationSeconds Int?
+  isDeleted         Boolean            @default(false)
   admin             User?              @relation("ConversationAdmin", fields: [adminId], references: [id], onDelete: SetNull)
   messages          Message[]
   scheduledMessages ScheduledMessage[]

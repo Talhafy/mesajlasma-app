@@ -14,6 +14,18 @@ const parseBoolean = (key: string, defaultValue: boolean) => {
   throw new Error(`${key} true/false formatında olmalıdır.`);
 };
 
+const parseIntegerInRange = (key: string, defaultValue: number, min: number, max: number) => {
+  const rawValue = process.env[key];
+  if (rawValue === undefined || rawValue === '') return defaultValue;
+
+  const value = Number(rawValue);
+  if (!Number.isInteger(value) || value < min || value > max) {
+    throw new Error(`${key} ${min} ile ${max} arasında tam sayı olmalıdır.`);
+  }
+
+  return value;
+};
+
 const allowedLogLevels = new Set(['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'silent']);
 // LOG_LEVEL yanlış yazılırsa logger sessizce garip davranmasın diye başlangıçta hata veriyoruz.
 const resolveLogLevel = () => {
@@ -54,6 +66,18 @@ export const livekitUrl = process.env.LIVEKIT_URL || 'ws://localhost:7880';
 export const livekitApiKey = process.env.LIVEKIT_API_KEY || '';
 export const livekitApiSecret = process.env.LIVEKIT_API_SECRET || '';
 export const livekitTokenTtlSeconds = Number(process.env.LIVEKIT_TOKEN_TTL_SECONDS || 60 * 60);
+export const scheduledMessageWorkerIntervalMs = parseIntegerInRange(
+  'SCHEDULED_MESSAGE_WORKER_INTERVAL_MS',
+  5_000,
+  1_000,
+  60_000
+);
+export const uploadedAssetTtlHours = parseIntegerInRange('UPLOADED_ASSET_TTL_HOURS', 24, 1, 168);
+// Production defaults to fail-closed malware scanning. Set MALWARE_SCAN_ENABLED=false only for a
+// deliberately isolated development environment; production needs a reachable ClamAV binary.
+export const malwareScanEnabled = parseBoolean('MALWARE_SCAN_ENABLED', nodeEnv === 'production');
+export const clamavBinary = process.env.CLAMAV_BINARY || 'clamscan';
+export const malwareScanTimeoutMs = parseIntegerInRange('MALWARE_SCAN_TIMEOUT_MS', 60_000, 5_000, 5 * 60_000);
 
 if (!Number.isInteger(port) || port <= 0 || port > 65535) {
   throw new Error('PORT geçerli bir port numarası olmalıdır.');

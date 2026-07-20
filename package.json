@@ -4,7 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev": "nodemon --exec ts-node src/index.ts",
+    "dev": "nodemon --exec \"node --no-warnings -r ts-node/register src/index.ts\"",
+    "worker:scheduled": "node --no-warnings -r ts-node/register src/workers/scheduledMessageWorkerProcess.ts",
+    "dev:worker:scheduled": "nodemon --exec \"node --no-warnings -r ts-node/register src/workers/scheduledMessageWorkerProcess.ts\"",
     "typecheck": "tsc --noEmit",
     "logging:up": "docker compose -f docker-compose.logging.yml up -d",
     "logging:down": "docker compose -f docker-compose.logging.yml down",

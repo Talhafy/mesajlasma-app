@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import type { User } from '../../types/chat';
 import './Modals.css';
 import ImageCropperModal from './ImageCropperModal';
 import AvatarViewerModal from './AvatarViewerModal';
+import { api } from '../../api/httpClient';
 
 interface SettingsModalProps {
   setIsSettingsOpen: (isOpen: boolean) => void;
@@ -27,10 +28,39 @@ interface SettingsModalProps {
 }
 
 export default function SettingsModal(props: SettingsModalProps) {
-  const [activeTab, setActiveTab] = useState<'profile' | 'account'>('profile');
+  const [activeTab, setActiveTab] = useState<'profile' | 'account' | 'blocked'>('profile');
   const [isAvatarUploading, setIsAvatarUploading] = useState(false);
   const [selectedFileForCrop, setSelectedFileForCrop] = useState<File | null>(null);
   const [isAvatarViewerOpen, setIsAvatarViewerOpen] = useState(false);
+  const [blockedUsers, setBlockedUsers] = useState<User[]>([]);
+  const [isBlockedUsersLoading, setIsBlockedUsersLoading] = useState(false);
+
+  const fetchBlockedUsers = async () => {
+    setIsBlockedUsersLoading(true);
+    try {
+      const res = await api.get('/users/blocked/list');
+      setBlockedUsers(res.data);
+    } catch (err) {
+      console.error("Engellenen kullanıcılar getirilemedi.", err);
+    } finally {
+      setIsBlockedUsersLoading(false);
+    }
+  };
+
+  const handleUnblock = async (id: string) => {
+    try {
+      await api.delete(`/users/${id}/block`);
+      setBlockedUsers(prev => prev.filter(u => u.id !== id));
+    } catch {
+      alert("Engel kaldırılamadı.");
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'blocked') {
+      void fetchBlockedUsers();
+    }
+  }, [activeTab]);
 
   return (
     <div className="settings-overlay" onClick={() => props.setIsSettingsOpen(false)}>
@@ -43,25 +73,31 @@ export default function SettingsModal(props: SettingsModalProps) {
             Ayarlar
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', padding: '0 10px', flex: 1 }}>
+          <div className="settings-sidebar-tabs">
             <button
-              onClick={() => { setActiveTab('profile'); props.setSettingsMessage({type: '', text: ''}); }}
+              onClick={() => { setActiveTab('profile'); props.setSettingsMessage({ type: '', text: '' }); }}
               className={`settings-tab-btn ${activeTab === 'profile' ? 'active' : ''}`}
             >
               <span>👤</span> Profil
             </button>
             <button
-              onClick={() => { setActiveTab('account'); props.setSettingsMessage({type: '', text: ''}); }}
+              onClick={() => { setActiveTab('account'); props.setSettingsMessage({ type: '', text: '' }); }}
               className={`settings-tab-btn ${activeTab === 'account' ? 'active' : ''}`}
             >
               <span>⚙️</span> Hesap
+            </button>
+            <button
+              onClick={() => { setActiveTab('blocked'); props.setSettingsMessage({ type: '', text: '' }); }}
+              className={`settings-tab-btn ${activeTab === 'blocked' ? 'active' : ''}`}
+            >
+              <span>🚫</span> Engellenenler
             </button>
           </div>
 
 
           <div className="settings-sidebar-footer">
             <button onClick={props.cikisYap} className="settings-logout-btn">
-              🚪 Çıkış Yap
+              Çıkış Yap
             </button>
           </div>
         </div>
@@ -83,8 +119,8 @@ export default function SettingsModal(props: SettingsModalProps) {
               )}
 
               <div className="settings-avatar-row">
-                <div 
-                  className="settings-avatar" 
+                <div
+                  className="settings-avatar"
                   onClick={() => setIsAvatarViewerOpen(true)}
                   style={{ overflow: 'hidden', cursor: 'pointer' }}
                   title="Profil resmini büyük gör"
@@ -166,7 +202,7 @@ export default function SettingsModal(props: SettingsModalProps) {
               )}
 
               <div style={{ display: 'flex', flexDirection: 'column', gap: '15px', marginBottom: '40px' }}>
-                <label className="settings-label" style={{marginBottom: 0}}>Şifre Değiştir</label>
+                <label className="settings-label" style={{ marginBottom: 0 }}>Şifre Değiştir</label>
                 <input
                   type="password"
                   placeholder="Mevcut Şifreniz"
@@ -183,16 +219,84 @@ export default function SettingsModal(props: SettingsModalProps) {
                   className="settings-modern-input"
                   autoComplete="new-password"
                 />
-                <button onClick={props.handleUpdatePassword} className="modern-primary-btn" style={{alignSelf: 'flex-start'}}>Şifreyi Güncelle</button>
+                <button onClick={props.handleUpdatePassword} className="modern-primary-btn" style={{ alignSelf: 'flex-start' }}>Şifreyi Güncelle</button>
               </div>
 
               <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '20px' }}>
                 <h4 style={{ margin: '0 0 10px 0', color: '#d32f2f', fontSize: '16px' }}>Tehlikeli Bölge</h4>
-                <p className="settings-label" style={{marginBottom: '15px'}}>Hesabınızı silerseniz, tüm sohbet geçmişiniz, gruplarınız ve verileriniz kalıcı olarak yok olur.</p>
-                <button onClick={props.handleDeleteAccount} className="danger-action-btn" style={{justifyContent: 'center'}}>
+                <p className="settings-label" style={{ marginBottom: '15px' }}>Hesabınızı silerseniz, tüm sohbet geçmişiniz, gruplarınız ve verileriniz kalıcı olarak yok olur.</p>
+                <button onClick={props.handleDeleteAccount} className="danger-action-btn" style={{ justifyContent: 'center' }}>
                   <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
                   Hesabımı Kalıcı Olarak Sil
                 </button>
+              </div>
+            </div>
+          )}
+
+          {/* ENGELLENENLER SEKMESİ İÇERİĞİ */}
+          {activeTab === 'blocked' && (
+            <div style={{ animation: 'fadeIn 0.3s ease', display: 'flex', flexDirection: 'column', height: '100%' }}>
+              <h2 className="settings-title">Engellenen Kullanıcılar</h2>
+              <p className="settings-label" style={{ marginBottom: '20px' }}>
+                Engellediğiniz kullanıcıların engelini buradan kaldırabilirsiniz. Bu kullanıcılar size mesaj gönderemez veya arayamaz.
+              </p>
+
+              <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '350px', paddingRight: '5px' }}>
+                {isBlockedUsersLoading ? (
+                  <div style={{ padding: '20px', textAlign: 'center', color: '#8696a0', fontSize: '14px' }}>Yükleniyor...</div>
+                ) : blockedUsers.length > 0 ? (
+                  blockedUsers.map((user) => (
+                    <div
+                      key={user.id}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        padding: '12px 16px',
+                        background: 'var(--panel-bg)',
+                        border: '1px solid var(--border-color)',
+                        borderRadius: '12px',
+                        transition: 'background 0.2s'
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <div style={{
+                          width: '40px',
+                          height: '40px',
+                          borderRadius: '50%',
+                          background: '#f97316',
+                          color: '#fff',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontWeight: 'bold',
+                          fontSize: '16px',
+                          overflow: 'hidden'
+                        }}>
+                          {user.avatarUrl ? <img src={user.avatarUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : user.username.charAt(0).toUpperCase()}
+                        </div>
+                        <span style={{ fontWeight: 600, fontSize: '15px', color: 'var(--text-color)' }}>{user.username}</span>
+                      </div>
+                      <button
+                        onClick={() => handleUnblock(user.id)}
+                        className="action-btn-outline"
+                        style={{
+                          padding: '6px 14px',
+                          fontSize: '12px',
+                          borderRadius: '8px',
+                          fontWeight: 600,
+                          cursor: 'pointer'
+                        }}
+                      >
+                        Engeli Kaldır
+                      </button>
+                    </div>
+                  ))
+                ) : (
+                  <div style={{ padding: '30px', textAlign: 'center', color: '#8696a0', fontSize: '14px', border: '1.5px dashed var(--border-color)', borderRadius: '12px' }}>
+                    Engellenen kullanıcı bulunmuyor.
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -216,7 +320,7 @@ export default function SettingsModal(props: SettingsModalProps) {
       )}
       {isAvatarViewerOpen && props.currentUser && (
         <AvatarViewerModal
-          avatarUrl={props.currentUser.avatarUrl}
+          avatarUrl={props.currentUser.avatarUrl ?? null}
           username={props.currentUser.username}
           onClose={() => setIsAvatarViewerOpen(false)}
         />

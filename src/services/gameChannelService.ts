@@ -1,6 +1,7 @@
 // Oyun grupları altındaki sesli ve yazılı kanalların yönetimini sağlayan servis katmanı.
 import type { GameChannelType } from '@prisma/client';
 import prisma from '../db';
+import { requireActiveParticipant } from './conversationAccess';
 import { markAsRead, sendMessage, serializeMessage } from './messageService';
 
 // Her kanal türü (ses/yazı) için grup başına maksimum kanal sınırı
@@ -11,16 +12,21 @@ const MAX_CHANNELS_PER_TYPE = 5;
  * Üye değilse hata fırlatır, üyeyse grup bilgilerini döner.
  */
 const requireGroupMember = async (groupId: string, userId: string) => {
+  const membership = await requireActiveParticipant(
+    groupId,
+    userId,
+    'Bu oyun grubuna erişim yetkiniz yok.'
+  );
   const group = await prisma.conversation.findFirst({
     where: {
       id: groupId,
       isGroup: true,
-      participants: { some: { userId } }
+      isDeleted: false
     },
     select: { id: true, name: true, adminId: true }
   });
   if (!group) throw new Error('Bu oyun grubuna erişim yetkiniz yok.');
-  return group;
+  return { group, membership };
 };
 
 /**
@@ -28,7 +34,7 @@ const requireGroupMember = async (groupId: string, userId: string) => {
  */
 export const listChannels = async (groupId: string, userId: string) => {
   // Grup üyeliği doğrulanır
-  const group = await requireGroupMember(groupId, userId);
+  const { group } = await requireGroupMember(groupId, userId);
   
   // Kanallar türlerine, sıralarına ve oluşturulma tarihlerine göre listelenir
   const channels = await prisma.gameChannel.findMany({
@@ -54,7 +60,7 @@ export const createChannel = async (
   userId: string,
   input: { name: string; type: GameChannelType; maxParticipants?: number | null }
 ) => {
-  const group = await requireGroupMember(groupId, userId);
+  const { group } = await requireGroupMember(groupId, userId);
   
   // Kanal limit kontrolü
   const count = await prisma.gameChannel.count({
@@ -93,7 +99,7 @@ export const createChannel = async (
  * Oyun grubundaki bir kanalı siler (Yalnızca grup yöneticisi veya kanalı oluşturan kişi silebilir).
  */
 export const deleteChannel = async (groupId: string, channelId: string, userId: string) => {
-  const group = await requireGroupMember(groupId, userId);
+  const { group } = await requireGroupMember(groupId, userId);
   const channel = await prisma.gameChannel.findFirst({
     where: { id: channelId, conversationId: groupId },
     select: { id: true, createdById: true }
@@ -118,7 +124,7 @@ export const fetchChannelMessages = async (
   userId: string,
   cursor?: string
 ) => {
-  await requireGroupMember(groupId, userId);
+  const { membership } = await requireGroupMember(groupId, userId);
   const channel = await prisma.gameChannel.findFirst({
     where: { id: channelId, conversationId: groupId, type: 'TEXT' },
     select: { id: true }
@@ -131,6 +137,7 @@ export const fetchChannelMessages = async (
       conversationId: groupId,
       gameChannelId: channelId,
       deletions: { none: { userId } },
+      createdAt: { gte: membership.joinedAt },
       OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }]
     },
     take: 50,
@@ -201,16 +208,19 @@ export const getVoiceChannelAccess = async (channelId: string, userId: string) =
         select: {
           id: true,
           isGroup: true,
-          name: true,
-          participants: { where: { userId }, select: { user: { select: { id: true, username: true } } } }
+          name: true
         }
       }
     }
   });
-  const membership = channel?.conversation.participants[0];
-  if (!channel || channel.type !== 'VOICE' || !channel.conversation.isGroup || !membership) {
+  if (!channel || channel.type !== 'VOICE' || !channel.conversation.isGroup) {
     throw new Error('Bu ses kanalına katılma yetkiniz yok.');
   }
+  const membership = await requireActiveParticipant(
+    channel.conversation.id,
+    userId,
+    'Bu ses kanalına katılma yetkiniz yok.'
+  );
   return { channel, conversation: channel.conversation, user: membership.user };
 };
 
@@ -223,7 +233,7 @@ export const updateChannel = async (
   userId: string,
   input: { name?: string; maxParticipants?: number | null }
 ) => {
-  const group = await requireGroupMember(groupId, userId);
+  const { group } = await requireGroupMember(groupId, userId);
   const channel = await prisma.gameChannel.findFirst({
     where: { id: channelId, conversationId: groupId }
   });
@@ -278,7 +288,7 @@ export const reorderChannels = async (
   userId: string,
   orderedIds: string[]
 ) => {
-  const group = await requireGroupMember(groupId, userId);
+  const { group } = await requireGroupMember(groupId, userId);
   // Transaction ile toplu pozisyon güncellemesi yapılır
   await prisma.$transaction(
     orderedIds.map((id, index) =>

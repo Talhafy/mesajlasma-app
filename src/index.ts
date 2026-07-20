@@ -19,7 +19,7 @@ import gameRoutes from './routes/game';
 import scheduledMessageRoutes from './routes/scheduledMessages';
 import userRoutes from './routes/user';
 import { registerSocketHandlers } from './socket/registerSocketHandlers';
-import { startScheduledMessageWorker } from './workers/scheduledMessageWorker';
+import { startScheduledMessageDeliveryListener } from './socket/scheduledMessageDeliveryListener';
 
 // index.ts yalnızca uygulamayı birleştirir; iş kuralları ilgili modüllerde kalır.
 const app = express();
@@ -68,8 +68,8 @@ app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 app.get('/', (_req, res) => res.send('Mesajlaşma API çalışıyor 🚀'));
 
 registerSocketHandlers(io);
-// Zamanlanmış mesaj worker'ı API ile aynı process içinde başlar; stop fonksiyonu graceful shutdown'da çağrılır.
-const stopScheduledWorker = startScheduledMessageWorker(io);
+// Worker ayrı süreçte çalışır; API yalnızca teslim bildirimlerini dinleyip yerel Socket.IO istemcilerine iletir.
+const stopScheduledMessageDeliveryListener = startScheduledMessageDeliveryListener(io);
 
 app.use(notFoundHandler);
 app.use(errorHandler);
@@ -86,7 +86,7 @@ httpServer.on('error', (error) => {
 // Interval, socket ve DB bağlantısı kontrollü sırayla kapatılır.
 const shutdown = (signal: string) => {
   logger.info({ event: 'system.server_shutdown', signal }, 'Server shutting down');
-  stopScheduledWorker();
+  stopScheduledMessageDeliveryListener();
   io.disconnectSockets(true);
   httpServer.close(async () => {
     try {
@@ -101,6 +101,10 @@ const shutdown = (signal: string) => {
 process.once('SIGINT', () => shutdown('SIGINT'));
 process.once('SIGTERM', () => shutdown('SIGTERM'));
 process.on('warning', (warning) => {
+  // Ignore pg client query deprecation warning as it is generated internally by Prisma Pg adapter and is benign but spammy.
+  if (warning.name === 'DeprecationWarning' && warning.message.includes('Calling client.query() when the client is already executing a query')) {
+    return;
+  }
   // Node/pg/Prisma deprecation warning'leri console'da kaybolmasın diye structured log'a alınır.
   // Özellikle adapter-pg warning'lerinde stack, hangi akışın tetiklediğini bulmamızı sağlar.
   logger.warn({

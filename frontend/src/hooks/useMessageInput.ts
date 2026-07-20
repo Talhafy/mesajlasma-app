@@ -14,16 +14,21 @@ export function useMessageInput({ onTyping, conversationId, newMessageProp, setN
   const [scheduleTime, setScheduleTime] = useState<Date | null>(null);
   
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const callbacksRef = useRef({ onTyping, setNewMessageProp });
+
+  useEffect(() => {
+    callbacksRef.current = { onTyping, setNewMessageProp };
+  }, [onTyping, setNewMessageProp]);
 
   useEffect(() => {
     // Sohbet değiştiğinde durumları temizle
-    setNewMessageProp('');
+    callbacksRef.current.setNewMessageProp('');
     setReplyingTo(null);
     setIsScheduling(false);
     setScheduleTime(null);
     if (typingTimeoutRef.current) {
       clearTimeout(typingTimeoutRef.current);
-      onTyping(false);
+      callbacksRef.current.onTyping(false);
     }
   }, [conversationId]);
 

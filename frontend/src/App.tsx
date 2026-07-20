@@ -1,17 +1,16 @@
-import { useEffect, useState, useRef } from 'react';
+import { lazy, Suspense, useEffect, useState, useRef } from 'react';
 import { io } from 'socket.io-client';
 import './App.css';
 
 import Auth from './components/Auth/Auth';
 import Sidebar from './components/Sidebar/Sidebar';
 import ChatArea from './components/ChatArea/ChatArea';
-import CallModal, { type ActiveCall, type CallType } from './components/Call/CallModal';
+import type { ActiveCall, CallType } from './components/Call/CallModal';
 import IncomingCallPrompt, { type IncomingCall } from './components/Call/IncomingCallPrompt';
 import CreateGroupModal from './components/Modals/CreateGroupModal';
 import GroupSettingsModal from './components/Modals/GroupSettingsModal';
 import SettingsModal from './components/Modals/SettingsModal';
 import AvatarViewerModal from './components/Modals/AvatarViewerModal';
-import GameHub from './components/GameHub/GameHub';
 import { api } from './api/httpClient';
 import { API_ORIGIN } from './config/runtime';
 import type { Conversation, Message, User } from './types/chat';
@@ -23,7 +22,10 @@ import {
   setAccessToken,
   subscribeAccessToken
 } from './auth/tokenStore';
-import { useConfirm } from './context/ConfirmContext';
+import { useConfirm } from './context/useConfirm';
+
+const GameHub = lazy(() => import('./components/GameHub/GameHub'));
+const CallModal = lazy(() => import('./components/Call/CallModal'));
 const SOCKET_INACTIVITY_TIMEOUT_MS = 3 * 60 * 60 * 1000;
 const SOCKET_ACTIVITY_PING_INTERVAL_MS = 60 * 1000;
 
@@ -303,23 +305,27 @@ export default function App() {
 
   const startGroupChat = async (group: Conversation) => {
     setSelectedUser(null); setActiveConversation(group);
+    setGroupMembers([]);
     setHasMore(true);
     try {
       const msgs = await api.get(`/conversations/${group.id}/messages`);
       autoScrollRef.current = true;
       setMessages(msgs.data);
 
-      const partRes = await api.get(`/conversations/group/${group.id}/participants`);
-      setGroupMembers(partRes.data);
+      const hasActiveAccess = group.isActive !== false && !group.isDeleted;
+      if (hasActiveAccess) {
+        const partRes = await api.get(`/conversations/group/${group.id}/participants`);
+        setGroupMembers(partRes.data);
+      }
 
-      if (currentUser) {
+      if (currentUser && hasActiveAccess) {
         // Grup sohbetlerinde okundu listesi üye bazlı hesaplandığı için receipt her zaman gönderilir.
         await api.post(`/conversations/${group.id}/read`, {
           emitReceipt: true
         });
         setUnreadCounts(prev => ({ ...prev, [group.id]: 0 }));
       }
-      if (socket) socket.emit('odaya_katil', group.id);
+      if (socket && hasActiveAccess) socket.emit('odaya_katil', group.id);
     } catch (error) { console.error("Grup mesajları çekilemedi", error); }
   };
 
@@ -386,7 +392,6 @@ export default function App() {
     if (!activeConversation || userIds.length === 0) return;
     try {
       await api.post(`/conversations/group/${activeConversation.id}/participants`, { userIdsToAdd: userIds });
-      alert("Kişiler eklendi."); openGroupSettings();
     } catch { alert("Kişiler eklenemedi."); }
   };
 
@@ -521,7 +526,7 @@ export default function App() {
   };
 
   const openGroupSettings = async () => {
-    if (!activeConversation) return;
+    if (!activeConversation || activeConversation.isActive === false || activeConversation.isDeleted) return;
     setIsGroupSettingsOpen(true); setEditGroupName(activeConversation.name || '');
     try { const res = await api.get(`/conversations/group/${activeConversation.id}/participants`); setGroupMembers(res.data); }
     catch { console.error("Üyeler alınamadı"); }
@@ -552,40 +557,55 @@ export default function App() {
     setConversationList(prev => prev.map(conversation => conversation.id === activeConversation.id ? { ...conversation, ...response.data } : conversation));
   };
 
-  const handleRemoveMember = async (userId: string) => {
+  const handleRemoveMember = async (userId: string, skipConfirm = false) => {
     if (!activeConversation) return;
     const isSelf = userId === currentUser?.id;
-    const isConfirmed = await confirm({
-      title: isSelf ? "Gruptan Çık" : "Üyeyi Çıkar",
-      message: isSelf 
-        ? "Bu gruptan çıkmak istediğinize emin misiniz? Bu gruptaki mesaj geçmişine artık erişemeyeceksiniz." 
-        : "Bu üyeyi gruptan çıkarmak istediğinize emin misiniz?",
-      confirmText: isSelf ? "Gruptan Çık" : "Çıkar",
-      cancelText: "Vazgeç",
-      isDanger: true
-    });
-    if (!isConfirmed) return;
+    if (!skipConfirm) {
+      const isConfirmed = await confirm({
+        title: isSelf ? "Gruptan Çık" : "Üyeyi Çıkar",
+        message: isSelf 
+          ? "Bu gruptan çıkmak istediğinize emin misiniz?" 
+          : "Bu üyeyi gruptan çıkarmak istediğinize emin misiniz?",
+        confirmText: isSelf ? "Gruptan Çık" : "Çıkar",
+        cancelText: "Vazgeç",
+        isDanger: true
+      });
+      if (!isConfirmed) return;
+    }
     try {
       await api.delete(`/conversations/group/${activeConversation.id}/participants/${userId}`);
-      setGroupMembers(prev => prev.filter(member => member.id !== userId));
-      if (isSelf) { setIsGroupSettingsOpen(false); setActiveConversation(null); setGroupsList(prev => prev.filter(g => g.id !== activeConversation.id)); }
+      setGroupMembers(prev => prev.map(m => m.id === userId ? {
+        ...m,
+        isActive: false,
+        leftAt: new Date().toISOString(),
+        leftReason: isSelf ? 'LEAVE' : 'KICK'
+      } : m));
+      if (isSelf) { 
+        setIsGroupSettingsOpen(false); 
+        await fetchConversations();
+        await fetchGroups();
+        setActiveConversation(prev => prev?.id === activeConversation.id ? { ...prev, isActive: false } : prev);
+      }
     } catch { alert("Kişi çıkarılamadı."); }
   };
 
-  const handleDeleteGroup = async () => {
-    if (!activeConversation) return;
+  const handleDeleteConversationHistory = async (conversationId: string) => {
     const isConfirmed = await confirm({
-      title: "Grubu Kalıcı Olarak Sil",
-      message: "Grubu kalıcı olarak silmek istediğinize emin misiniz? Bu işlem geri alınamaz ve gruptaki tüm üyelerin mesaj geçmişi silinir.",
-      confirmText: "Grubu Sil",
+      title: "Sohbeti Kalıcı Olarak Sil",
+      message: "Bu grubu ve mesaj geçmişinizi kendi listenizden tamamen silmek istediğinize emin misiniz? Bu işlem geri alınamaz.",
+      confirmText: "Sohbeti Sil",
       cancelText: "Vazgeç",
       isDanger: true
     });
     if (!isConfirmed) return;
     try {
-      await api.delete(`/conversations/group/${activeConversation.id}`);
-      setIsGroupSettingsOpen(false); setActiveConversation(null); setGroupsList(prev => prev.filter(g => g.id !== activeConversation.id));
-    } catch { alert("Grup silinirken hata oluştu."); }
+      await api.delete(`/conversations/${conversationId}`);
+      setActiveConversation(null);
+      setGroupsList(prev => prev.filter(g => g.id !== conversationId));
+      setConversationList(prev => prev.filter(c => c.id !== conversationId));
+    } catch {
+      alert("Sohbet silinirken hata oluştu.");
+    }
   };
 
   useEffect(() => {
@@ -665,8 +685,14 @@ export default function App() {
       lastSocketActivityPingRef.current = Date.now();
       newSocket.emit('client_activity');
       if (currentUserRef.current) newSocket.emit('odaya_katil', currentUserRef.current.id);
-      groupsListRef.current.forEach((group) => newSocket.emit('odaya_katil', group.id));
-      if (activeConversationRef.current) newSocket.emit('odaya_katil', activeConversationRef.current.id);
+      groupsListRef.current.forEach((group) => {
+        if (group.isActive !== false) {
+          newSocket.emit('odaya_katil', group.id);
+        }
+      });
+      if (activeConversationRef.current && activeConversationRef.current.isActive !== false) {
+        newSocket.emit('odaya_katil', activeConversationRef.current.id);
+      }
 
       // Çevrim dışıyken (bağlantı kopukken) gelen kaçırılmış mesajları ve bildirimleri senkronize et
       void fetchConversations();
@@ -714,8 +740,10 @@ export default function App() {
       processedMessagesRef.current.add(gelenMesaj.id);
       void fetchConversations();
 
+      const isSystemMessage = gelenMesaj.content?.startsWith('[SYSTEM_');
+
       const notificationConversation = conversationListRef.current.find((conversation) => conversation.id === gelenMesaj.conversationId);
-      if (!notificationConversation?.isMuted && gelenMesaj.senderId !== currentUserRef.current?.id && document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+      if (!isSystemMessage && !notificationConversation?.isMuted && gelenMesaj.senderId !== currentUserRef.current?.id && document.hidden && 'Notification' in window && Notification.permission === 'granted') {
         // Browser bildirimi yalnızca sayfa arka plandayken, sohbet sessizde değilken ve mesaj başkasından geldiyse gösterilir.
         new Notification(gelenMesaj.sender?.username || 'Yeni mesaj', {
           body: gelenMesaj.content || (gelenMesaj.fileType === 'image' ? '📷 Görsel' : '📎 Dosya')
@@ -741,7 +769,9 @@ export default function App() {
       }
       else {
         if (isKnownGroup || isBackendToldUsGroup) {
-          setUnreadCounts((prev) => ({ ...prev, [gelenMesaj.conversationId]: (prev[gelenMesaj.conversationId] || 0) + 1 }));
+          if (!isSystemMessage) {
+            setUnreadCounts((prev) => ({ ...prev, [gelenMesaj.conversationId]: (prev[gelenMesaj.conversationId] || 0) + 1 }));
+          }
           if (!isKnownGroup && currentUserRef.current) { fetchGroups(); newSocket.emit('odaya_katil', gelenMesaj.conversationId); }
         } else {
           if (currentUserRef.current) { fetchGroups(); fetchUnreadCounts(); newSocket.emit('odaya_katil', gelenMesaj.conversationId); }
@@ -965,15 +995,24 @@ export default function App() {
 
     newSocket.on('gruptan_atildi', (data: { groupId: string, removedUserId: string, removedById?: string }) => {
       if (data.removedUserId === currentUserRef.current?.id) {
-        alert(data.removedById === currentUserRef.current?.id ? "Gruptan başarıyla çıkıldı." : "Grup yöneticisi sizi gruptan çıkardı.");
         setGroupsList(prev => prev.map(g => g.id === data.groupId ? { ...g, isActive: false } : g));
         setConversationList(prev => prev.map(c => c.id === data.groupId ? { ...c, isActive: false } : c));
         setActiveConversation(prev => prev?.id === data.groupId ? { ...prev, isActive: false } : prev);
+        if (activeConversationRef.current?.id === data.groupId) {
+          setGroupMembers([]);
+          setIsGroupSettingsOpen(false);
+        }
         void fetchGroups();
         void fetchConversations();
       } else {
         if (activeConversationRef.current?.id === data.groupId) {
-          setGroupMembers(prev => prev.map(m => m.id === data.removedUserId ? { ...m, isActive: false } : m));
+          const isSelfAction = data.removedById === data.removedUserId;
+          setGroupMembers(prev => prev.map(m => m.id === data.removedUserId ? {
+            ...m,
+            isActive: false,
+            leftAt: new Date().toISOString(),
+            leftReason: isSelfAction ? 'LEAVE' : 'KICK'
+          } : m));
         }
       }
     });
@@ -999,10 +1038,13 @@ export default function App() {
     });
 
     newSocket.on('grup_silindi', (data: { groupId: string }) => {
-      alert("Bu grup yönetici tarafından kalıcı olarak silindi.");
-      setGroupsList(prev => prev.filter(g => g.id !== data.groupId));
-      setConversationList(prev => prev.filter(conversation => conversation.id !== data.groupId));
-      setActiveConversation(prev => prev?.id === data.groupId ? null : prev);
+      setGroupsList(prev => prev.map(g => g.id === data.groupId ? { ...g, isDeleted: true, adminId: undefined } : g));
+      setConversationList(prev => prev.map(c => c.id === data.groupId ? { ...c, isDeleted: true, adminId: undefined } : c));
+      setActiveConversation(prev => prev?.id === data.groupId ? { ...prev, isDeleted: true, adminId: undefined } : prev);
+      if (activeConversationRef.current?.id === data.groupId) {
+        setGroupMembers([]);
+        setIsGroupSettingsOpen(false);
+      }
     });
 
     newSocket.on('kullanici_silindi', (data: {
@@ -1054,7 +1096,15 @@ export default function App() {
   }, [currentView, currentUser?.id]);
 
   useEffect(() => { if (socket && currentUser) socket.emit('odaya_katil', currentUser.id); }, [socket, currentUser]);
-  useEffect(() => { if (socket && groupsList.length > 0) groupsList.forEach(group => socket.emit('odaya_katil', group.id)); }, [socket, groupsList]);
+  useEffect(() => {
+    if (socket && groupsList.length > 0) {
+      groupsList.forEach(group => {
+        if (group.isActive !== false) {
+          socket.emit('odaya_katil', group.id);
+        }
+      });
+    }
+  }, [socket, groupsList]);
 
   const closeChat = () => { setActiveConversation(null); setSelectedUser(null); };
 
@@ -1141,8 +1191,8 @@ export default function App() {
           hasMore={hasMore}
           isLoadingMore={isLoadingMore}
           // Aktif konuşmada biri yazıyorsa ChatArea header'ında gösterilir.
-          typingUsername={activeConversation ? typingByConversation[activeConversation.id] : undefined}
-          recordingUsername={activeConversation ? recordingByConversation[activeConversation.id] : undefined}
+          typingUsername={activeConversation ? (typingByConversation[activeConversation.id] ?? null) : null}
+          recordingUsername={activeConversation ? (recordingByConversation[activeConversation.id] ?? null) : null}
           onVoiceRecording={(isRecording) => {
             if (!activeConversation || !socket) return;
             const current = lastSentRecordingRef.current;
@@ -1170,6 +1220,7 @@ export default function App() {
       )}
 
       {appMode === 'game' && currentUser && (
+        <Suspense fallback={<div className="app-loading">Oyun alanı yükleniyor…</div>}>
         <GameHub 
           currentUser={currentUser} 
           groups={groupsList} 
@@ -1181,6 +1232,7 @@ export default function App() {
             void startChat(targetUser);
           }}
         />
+        </Suspense>
       )}
 
       {isGameModePromptOpen && (
@@ -1199,7 +1251,22 @@ export default function App() {
       )}
 
       {isGroupSettingsOpen && activeConversation && (
-        <GroupSettingsModal setIsGroupSettingsOpen={setIsGroupSettingsOpen} activeConversation={activeConversation} currentUser={currentUser} handleUpdateGroupName={handleUpdateGroupName} handleUpdateGroupAvatar={handleUpdateGroupAvatar} groupMembers={groupMembers} handleRemoveMember={handleRemoveMember} handleDeleteGroup={handleDeleteGroup} usersList={usersList} handleAddMembersToGroup={handleAddMembersToGroup} handleTransferAdmin={handleTransferAdmin} startChat={startChat} />
+        <GroupSettingsModal 
+          setIsGroupSettingsOpen={setIsGroupSettingsOpen} 
+          activeConversation={activeConversation} 
+          currentUser={currentUser} 
+          handleUpdateGroupName={handleUpdateGroupName} 
+          handleUpdateGroupAvatar={handleUpdateGroupAvatar} 
+          groupMembers={groupMembers} 
+          handleRemoveMember={handleRemoveMember} 
+          handleDeleteConversationHistory={handleDeleteConversationHistory} 
+          usersList={usersList} 
+          handleAddMembersToGroup={handleAddMembersToGroup} 
+          handleTransferAdmin={handleTransferAdmin} 
+          startChat={startChat}
+          isDarkMode={isDarkMode}
+          onStartCallWithUser={startCallWithUser}
+        />
       )}
 
       {isSettingsOpen && (
@@ -1207,7 +1274,7 @@ export default function App() {
       )}
       {isAvatarViewerOpen && currentUser && (
         <AvatarViewerModal
-          avatarUrl={currentUser.avatarUrl}
+          avatarUrl={currentUser.avatarUrl ?? null}
           username={currentUser.username}
           onClose={() => setIsAvatarViewerOpen(false)}
         />
@@ -1221,11 +1288,13 @@ export default function App() {
       )}
 
       {activeCall && (
+        <Suspense fallback={<div className="app-loading">Arama hazırlanıyor…</div>}>
         <CallModal
           call={activeCall}
           title={getCallTitle(activeCall.conversationId, activeCall.conversation?.name)}
           onClose={closeActiveCall}
         />
+        </Suspense>
       )}
     </div>
   );

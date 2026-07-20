@@ -8,7 +8,7 @@ interface AvatarViewerModalProps {
 
 export default function AvatarViewerModal({ avatarUrl, username, onClose }: AvatarViewerModalProps) {
   return (
-    <div className="viewer-overlay" onClick={onClose}>
+    <div className="viewer-overlay" onClick={onClose} style={{ zIndex: 200000 }}>
       <div className="viewer-container" onClick={(e) => e.stopPropagation()}>
         <div className="viewer-image-wrapper">
           {avatarUrl ? (

@@ -52,31 +52,6 @@ export default function Sidebar({
   const [isStarredPanelOpen, setIsStarredPanelOpen] = useState(false);
   const [starredMessages, setStarredMessages] = useState<Message[]>([]);
   const [isLoadingStarred, setIsLoadingStarred] = useState(false);
-  
-  const [isBlockedUsersView, setIsBlockedUsersView] = useState(false);
-  const [blockedUsers, setBlockedUsers] = useState<User[]>([]);
-  const [isBlockedUsersLoading, setIsBlockedUsersLoading] = useState(false);
-
-  const fetchBlockedUsers = async () => {
-    setIsBlockedUsersLoading(true);
-    try {
-      const res = await api.get('/users/blocked/list');
-      setBlockedUsers(res.data);
-    } catch {
-      console.error("Engellenen kullanıcılar getirilemedi.");
-    } finally {
-      setIsBlockedUsersLoading(false);
-    }
-  };
-
-  const handleUnblock = async (id: string) => {
-    try {
-      await api.delete(`/users/${id}/block`);
-      setBlockedUsers(prev => prev.filter(u => u.id !== id));
-    } catch {
-      alert("Engel kaldırılamadı.");
-    }
-  };
 
   const panelBg = isDarkMode ? '#202c33' : '#f0f2f5';
   const textColor = isDarkMode ? '#e9edef' : '#111b21';
@@ -128,8 +103,53 @@ export default function Sidebar({
 
   const getConversationPreview = (conversation: Conversation) => {
     if (!conversation.lastMessage) return 'Henüz mesaj yok';
-    return conversation.lastMessage.content
-      || (conversation.lastMessage.fileType === 'image' ? '📷 Görsel' : '📎 Dosya');
+    const content = conversation.lastMessage.content;
+    if (content) {
+      if (content.startsWith('[SYSTEM_LEAVE]:')) {
+        const username = content.replace('[SYSTEM_LEAVE]:', '');
+        return username === currentUser?.username ? 'Gruptan ayrıldınız' : `${username} gruptan ayrıldı`;
+      }
+      if (content.startsWith('[SYSTEM_KICK]:')) {
+        const parts = content.replace('[SYSTEM_KICK]:', '').split(':');
+        const adminUsername = parts[0];
+        const kickedUsername = parts[1];
+        return kickedUsername === currentUser?.username 
+          ? `${adminUsername} sizi gruptan çıkardı`
+          : `${adminUsername}, ${kickedUsername} kullanıcısını gruptan çıkardı`;
+      }
+      if (content.startsWith('[SYSTEM_ADD]:')) {
+        const parts = content.replace('[SYSTEM_ADD]:', '').split(':');
+        const adminUsername = parts[0];
+        const addedUsername = parts[1];
+        if (addedUsername === currentUser?.username) {
+          return `${adminUsername} sizi ekledi`;
+        } else if (adminUsername === currentUser?.username) {
+          return `Siz "${addedUsername}" kullanıcısını eklediniz`;
+        } else {
+          return `${adminUsername}, "${addedUsername}" kullanıcısını ekledi`;
+        }
+      }
+      if (content.startsWith('[SYSTEM_ADMIN_ASSIGN]:')) {
+        const newAdminUsername = content.replace('[SYSTEM_ADMIN_ASSIGN]:', '');
+        return newAdminUsername === currentUser?.username 
+          ? 'Yeni grup yöneticisi siz oldunuz' 
+          : `Yeni grup yöneticisi: ${newAdminUsername}`;
+      }
+      if (content.startsWith('[SYSTEM_ADMIN_TRANSFER]:')) {
+        const parts = content.replace('[SYSTEM_ADMIN_TRANSFER]:', '').split(':');
+        const adminUsername = parts[0];
+        const newAdminUsername = parts[1];
+        if (newAdminUsername === currentUser?.username) {
+          return `${adminUsername} sizi grup yöneticisi yaptı`;
+        } else if (adminUsername === currentUser?.username) {
+          return `"${newAdminUsername}" kullanıcısını grup yöneticisi yaptınız`;
+        } else {
+          return `${adminUsername}, "${newAdminUsername}" kullanıcısını grup yöneticisi yaptı`;
+        }
+      }
+      return content;
+    }
+    return conversation.lastMessage.fileType === 'image' ? '📷 Görsel' : '📎 Dosya';
   };
 
   const archivedConversations = conversationList.filter((conversation) => {
@@ -205,7 +225,6 @@ export default function Sidebar({
     setIsCallsView(false);
     setIsArchiveView(false);
     setIsStarredPanelOpen(false);
-    setIsBlockedUsersView(false);
   };
 
   const startContactChat = (user: User) => {
@@ -229,7 +248,7 @@ export default function Sidebar({
         onClick={() => conversation.isGroup ? startGroupChat(conversation) : otherUser && startChat(otherUser)}
         style={{ color: textColor, opacity: conversation.isArchived ? 0.85 : 1 }}
       >
-        <div className="avatar-small" style={{ background: conversation.isArchived ? '#607d8b' : '#f97316', color: 'white', position: 'relative', overflow: 'visible' }}>
+        <div className="avatar-small" style={{ background: '#f97316', color: 'white', position: 'relative', overflow: 'visible' }}>
           {conversation.isGroup && conversation.avatarUrl
             ? <img src={conversation.avatarUrl} alt="" style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }} />
             : otherUser?.avatarUrl
@@ -280,18 +299,12 @@ export default function Sidebar({
 
         <button
           title="Aramalar"
-          onClick={() => { setIsCallsView(true); setIsArchiveView(false); setIsContactsListView(false); setIsStarredPanelOpen(false); setIsSidebarMenuOpen(false); setIsBlockedUsersView(false); }}
-          style={{ width: '38px', height: '38px', borderRadius: '12px', border: 'none', background: isCallsView ? '#f97316' : 'transparent', color: isCallsView ? 'white' : iconColor, cursor: 'pointer', fontSize: '18px' }}
+          onClick={() => { setIsCallsView(true); setIsArchiveView(false); setIsContactsListView(false); setIsStarredPanelOpen(false); setIsSidebarMenuOpen(false); }}
+          style={{ width: '38px', height: '38px', borderRadius: '12px', border: 'none', background: isCallsView ? '#f97316' : 'transparent', color: isCallsView ? 'white' : iconColor, cursor: 'pointer', display: 'grid', placeItems: 'center' }}
         >
-          ☎
-        </button>
-
-        <button
-          title="Engellenen Kullanıcılar"
-          onClick={() => { setIsBlockedUsersView(true); setIsCallsView(false); setIsArchiveView(false); setIsContactsListView(false); setIsStarredPanelOpen(false); setIsSidebarMenuOpen(false); fetchBlockedUsers(); }}
-          style={{ width: '38px', height: '38px', borderRadius: '12px', border: 'none', background: isBlockedUsersView ? '#f97316' : 'transparent', color: isBlockedUsersView ? 'white' : iconColor, cursor: 'pointer', fontSize: '20px' }}
-        >
-          🚫
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+            <path d="M20.01 15.38c-1.23 0-2.42-.2-3.53-.57a1 1 0 0 0-1.01.24l-2.2 2.2a15.045 15.045 0 0 1-6.59-6.59l2.2-2.2a1 1 0 0 0 .24-1.01c-.38-1.11-.57-2.3-.57-3.53 0-.55-.45-1-1-1H3.99c-.55 0-1 .45-1 1 0 9.39 7.62 17 17 17 .55 0 1-.45 1-1v-3.51c0-.55-.45-1-1-1z"/>
+          </svg>
         </button>
 
         <button
@@ -299,24 +312,27 @@ export default function Sidebar({
           title="Ayarlar"
           aria-label="Ayarlar"
           onClick={() => setIsSettingsOpen(true)}
-          style={{ fontSize: '20px' }}
+          style={{ display: 'grid', placeItems: 'center' }}
         >
-          ⚙
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
         </button>
       </div>
 
       <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
       <div className="sidebar-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '15px 12px', background: panelBg, borderBottom: `1px solid ${borderColor}`, minWidth: 0 }}>
         <h2 
-          title={isBlockedUsersView ? 'Engellenenler' : isContactsListView ? 'Kayıtlı Kullanıcılar' : isCallsView ? 'Aramalar' : isArchiveView ? 'Arşiv' : 'Sohbetler'}
+          title={isContactsListView ? 'Kayıtlı Kullanıcılar' : isCallsView ? 'Aramalar' : isArchiveView ? 'Arşiv' : 'Sohbetler'}
           style={{ margin: 0, fontSize: '18px', color: textColor, fontWeight: 'bold', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1, marginRight: '8px' }}
         >
-          {isBlockedUsersView ? 'Engellenenler' : isContactsListView ? 'Kayıtlı Kullanıcılar' : isCallsView ? 'Aramalar' : isArchiveView ? 'Arşiv' : 'Sohbetler'}
+          {isContactsListView ? 'Kayıtlı Kullanıcılar' : isCallsView ? 'Aramalar' : isArchiveView ? 'Arşiv' : 'Sohbetler'}
         </h2>
 
         <div style={{ display: 'flex', gap: '4px' }}>
-          {(isArchiveView || isContactsListView || isCallsView || isBlockedUsersView) && (
-            <Button variant="icon" onClick={() => { setIsArchiveView(false); setIsContactsListView(false); setIsCallsView(false); setIsBlockedUsersView(false); }} title="Sohbetlere dön" aria-label="Sohbetlere dön" style={{ color: iconColor }} icon={<span style={{ fontSize: '20px' }}>←</span>} />
+          {(isArchiveView || isContactsListView || isCallsView) && (
+            <Button variant="icon" onClick={() => { setIsArchiveView(false); setIsContactsListView(false); setIsCallsView(false); }} title="Sohbetlere dön" aria-label="Sohbetlere dön" style={{ color: iconColor }} icon={<span style={{ fontSize: '20px' }}>←</span>} />
           )}
           <Button
             variant="icon"
@@ -559,35 +575,6 @@ export default function Sidebar({
           </div>
         )}
 
-        {isBlockedUsersView && (
-          <div style={{ position: 'absolute', inset: 0, zIndex: 45, background: isDarkMode ? '#111b21' : '#ffffff', color: textColor, overflowY: 'auto' }}>
-            <div style={{ padding: '15px 20px', borderBottom: `1px solid ${borderColor}` }}>
-               <h3 style={{ margin: 0, fontSize: '15px', color: '#f97316', fontWeight: 'bold' }}>Engellenen Kullanıcılar</h3>
-               <p style={{ margin: '5px 0 0', fontSize: '12px', color: iconColor }}>Engellediğiniz kullanıcıların engelini buradan kaldırabilirsiniz.</p>
-            </div>
-            {isBlockedUsersLoading ? (
-              <div style={{ padding: '18px', textAlign: 'center', color: iconColor, fontSize: '13px' }}>Yükleniyor...</div>
-            ) : blockedUsers.length > 0 ? (
-              blockedUsers.map(user => (
-                <div key={user.id} className="user-item" style={{ color: textColor, cursor: 'default', justifyContent: 'space-between', alignItems: 'center', paddingRight: '15px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                    <div className="avatar-small" style={{ background: '#f97316', color: 'white', position: 'relative', overflow: 'hidden' }}>
-                      {user.avatarUrl ? <img src={user.avatarUrl} alt="" style={{ width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover' }} /> : user.username.charAt(0).toUpperCase()}
-                    </div>
-                    <div className="user-info">
-                      <span className="user-name">{user.username}</span>
-                    </div>
-                  </div>
-                  <button onClick={() => handleUnblock(user.id)} style={{ border: `1px solid ${borderColor}`, background: panelBg, color: textColor, borderRadius: '8px', padding: '6px 12px', fontSize: '12px', fontWeight: 600, cursor: 'pointer' }}>
-                    Engeli Kaldır
-                  </button>
-                </div>
-              ))
-            ) : (
-              <div style={{ padding: '18px', textAlign: 'center', color: iconColor, fontSize: '13px' }}>Engellenen kullanıcı yok.</div>
-            )}
-          </div>
-        )}
 
         {isGlobalSearchActive && (
           <>
@@ -647,9 +634,15 @@ export default function Sidebar({
         )}
 
 
-        {!isArchiveView && !isContactsListView && !isCallsView && !isBlockedUsersView && archivedConversations.length > 0 && searchTerm.trim() === '' && (
+        {!isArchiveView && !isContactsListView && !isCallsView && archivedConversations.length > 0 && searchTerm.trim() === '' && (
           <div onClick={() => { setIsArchiveView(true); setIsCallsView(false); setIsContactsListView(false); }} className="user-item" style={{ color: textColor, borderBottom: `1px solid ${borderColor}`, cursor: 'pointer' }}>
-            <div className="avatar-small" style={{ background: '#607d8b', color: 'white' }}>🗄️</div>
+            <div className="avatar-small" style={{ background: '#f97316', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="21 8 21 21 3 21 3 8"></polyline>
+                <rect x="1" y="3" width="22" height="5" rx="1"></rect>
+                <line x1="10" y1="12" x2="14" y2="12"></line>
+              </svg>
+            </div>
             <div className="user-info">
               <span className="user-name">Arşivlenen sohbetler</span>
               <div style={{ fontSize: '12px', color: iconColor, marginTop: '3px' }}>Ayrı arşiv görünümüne git</div>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ControlBar,
@@ -14,7 +14,7 @@ import type { Conversation, GameChannel, GameChannelType, Message, User } from '
 import AvatarViewerModal from '../Modals/AvatarViewerModal';
 import '@livekit/components-styles';
 import './GameHub.css';
-import { useConfirm } from '../../context/ConfirmContext';
+import { useConfirm } from '../../context/useConfirm';
 
 type SelectedChannel = GameChannel | {
   id: 'general';
@@ -163,14 +163,14 @@ export default function GameHub({ currentUser, groups, users, socket, onExit, on
     return users.filter((u) => u.id !== currentUser.id && !members.some((m) => m.id === u.id));
   }, [users, members, currentUser.id]);
 
-  const exitGameMode = () => {
+  const exitGameMode = useCallback(() => {
     if (voiceConnection) {
       socket?.emit('game:voice-presence', { action: 'leave', conversationId: voiceConnection.channel.conversationId, channelId: voiceConnection.channel.id });
       setVoiceConnection(null);
       setVoicePresences((previous) => previous.filter((presence) => presence.userId !== currentUser.id));
     }
     onExit();
-  };
+  }, [currentUser.id, onExit, socket, voiceConnection]);
 
   const selectGroup = (groupId: string) => {
     if (groupId === selectedGroupId) return;
@@ -230,7 +230,7 @@ export default function GameHub({ currentUser, groups, users, socket, onExit, on
       if (!cancelled) setLoading(false);
     });
     return () => { cancelled = true; };
-  }, [selectedGroupId]);
+  }, [currentUser, selectedGroupId, users]);
 
   useEffect(() => {
     setMembers((previous) => previous.map((member) => {
@@ -419,7 +419,7 @@ export default function GameHub({ currentUser, groups, users, socket, onExit, on
       socket.off('grup_uyeleri_eklendi', membersAdded);
       socket.off('gruptan_atildi', gruptanAtildi);
     };
-  }, [socket, selectedGroupId, selectedChannel?.id, currentUser.username, currentUser.id, users]);
+  }, [socket, selectedGroupId, selectedChannel?.id, currentUser, users, mutedChannelIds, exitGameMode]);
 
   const createChannel = async () => {
     if (!selectedGroupId || !channelName.trim()) return;

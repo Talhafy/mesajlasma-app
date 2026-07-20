@@ -11,6 +11,7 @@ import { createSignedFileUrl } from '../services/fileStorage';
 import { clearRefreshCookie } from '../services/authTokens';
 import { getAuthenticatedUserId as getUserId } from '../utils/request';
 import { logger } from '../config/logger';
+import { attachOwnedAsset } from '../services/uploadedAssetService';
 
 const router = express.Router();
 
@@ -29,7 +30,7 @@ router.put('/username', authenticateToken, validateRequest({ body: userSchemas.u
     });
 
     res.status(200).json({ message: "Kullanıcı adı güncellendi", username: updatedUser.username });
-  } catch (error) {
+  } catch (error: any) {
     logger.error({ event: 'user.update_username_failed', err: error, userId }, 'Username update failed');
     res.status(500).json({ error: "İsim güncellenemedi." });
   }
@@ -150,6 +151,10 @@ router.delete('/account', authenticateToken, async (req: CustomRequest, res: any
         },
         select: { fileKey: true }
       });
+      const ownedAssetFiles = await tx.uploadedAsset.findMany({
+        where: { ownerId: userId },
+        select: { fileKey: true }
+      });
 
       for (const membership of memberships) {
         const conversation = membership.conversation;
@@ -178,7 +183,7 @@ router.delete('/account', authenticateToken, async (req: CustomRequest, res: any
         deletedConversationIds,
         deletedGroupIds,
         updatedGroups,
-        deletedFileKeys: [...messageFiles, ...scheduledFiles, { fileKey: account?.avatarFileKey || null }]
+        deletedFileKeys: [...messageFiles, ...scheduledFiles, ...ownedAssetFiles, { fileKey: account?.avatarFileKey || null }]
           .map((entry) => entry.fileKey)
           .filter((key): key is string => Boolean(key))
       };
@@ -254,9 +259,12 @@ router.put('/avatar', authenticateToken, validateRequest({ body: userSchemas.ava
       return res.status(404).json({ error: "Kullanıcı bulunamadı." });
     }
 
-    const updated = await prisma.user.update({
-      where: { id: userId },
-      data: { avatarFileKey: fileKey }
+    const updated = await prisma.$transaction(async (tx) => {
+      if (fileKey) await attachOwnedAsset(fileKey, userId, tx);
+      return tx.user.update({
+        where: { id: userId },
+        data: { avatarFileKey: fileKey }
+      });
     });
 
     if (previous.avatarFileKey && previous.avatarFileKey !== fileKey) {
@@ -267,12 +275,13 @@ router.put('/avatar', authenticateToken, validateRequest({ body: userSchemas.ava
       avatarFileKey: updated.avatarFileKey,
       avatarUrl: updated.avatarFileKey ? await createSignedFileUrl(updated.avatarFileKey) : null
     });
-  } catch (error) {
+  } catch (error: any) {
     logger.error({ event: 'user.avatar_update_failed', err: error, userId }, 'User avatar update failed');
     if (fileKey) {
       await deleteFileIfUnreferenced(fileKey);
     }
-    return res.status(500).json({ error: "Profil fotoğrafı güncellenemedi." });
+    const status = error.message?.includes('Yalnızca kendi yüklediğiniz dosyayı') ? 403 : 500;
+    return res.status(status).json({ error: error.message || "Profil fotoğrafı güncellenemedi." });
   }
 });
 

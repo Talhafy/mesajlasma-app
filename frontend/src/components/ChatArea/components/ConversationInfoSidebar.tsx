@@ -70,8 +70,8 @@ export default function ConversationInfoSidebar({
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '30px 20px', background: inputBg, marginBottom: '10px', boxShadow: '0 1px 3px rgba(0,0,0,0.08)' }}>
               <div 
                 onClick={() => setViewerUser({ 
-                  avatarUrl: activeConversation?.isGroup ? activeConversation.avatarUrl : (chatPartner?.avatarUrl || null), 
-                  username: activeConversation?.isGroup ? activeConversation.name : (chatPartner?.username || '') 
+                  avatarUrl: activeConversation?.isGroup ? (activeConversation.avatarUrl ?? null) : (chatPartner?.avatarUrl || null), 
+                  username: activeConversation?.isGroup ? (activeConversation.name ?? '') : (chatPartner?.username || '') 
                 })}
                 title="Profil resmini görüntüle"
                 style={{ width: '200px', height: '200px', borderRadius: '50%', background: '#f97316', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '64px', overflow: 'hidden', marginBottom: '20px', cursor: 'pointer' }}
@@ -86,7 +86,7 @@ export default function ConversationInfoSidebar({
               {!activeConversation?.isGroup && partnerStatus && <div style={{ fontSize: '14px', color: iconColor }}>{partnerStatus}</div>}
 
               {/* GRUPLAR İÇİN GRUP AYARLARI BUTONU */}
-              {activeConversation?.isGroup && (
+              {activeConversation?.isGroup && activeConversation.isActive !== false && !activeConversation.isDeleted && (
                 <button onClick={openGroupSettings} style={{ marginTop: '15px', padding: '8px 16px', borderRadius: '8px', border: `1px solid ${borderColor}`, background: panelBg, color: textColor, cursor: 'pointer', fontWeight: 600 }}>
                   ⚙️ Grup Ayarları
                 </button>

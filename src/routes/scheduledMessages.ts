@@ -6,10 +6,11 @@ import prisma from '../db';
 import { logger } from '../config/logger';
 import { authenticateToken, CustomRequest } from '../middleware/authMiddleware';
 import { validateRequest } from '../middleware/validateRequest';
-import { isConversationMember } from '../services/conversationAccess';
+import { requireActiveParticipant } from '../services/conversationAccess';
 import { deleteFileIfUnreferenced } from '../services/fileCleanup';
 import { withSignedFileUrl } from '../services/fileStorage';
 import { serializeMessage } from '../services/messageService';
+import { attachOwnedAsset } from '../services/uploadedAssetService';
 import { getAuthenticatedUserId, getRouteParam } from '../utils/request';
 import { chatSchemas } from '../validation/schemas';
 
@@ -24,7 +25,9 @@ router.post('/messages/schedule', validateRequest({ body: chatSchemas.scheduledM
   try {
     const { conversationId, clientId, content, sendAt, fileKey, fileType, fileName } = req.body;
     const senderId = getAuthenticatedUserId(req);
-    if (!(await isConversationMember(conversationId, senderId))) {
+    try {
+      await requireActiveParticipant(conversationId, senderId);
+    } catch {
       return res.status(403).json({ error: 'Bu sohbet için mesaj zamanlama yetkiniz yok.' });
     }
 
@@ -33,6 +36,7 @@ router.post('/messages/schedule', validateRequest({ body: chatSchemas.scheduledM
 
     try {
       // clientId sayesinde zamanlama isteği retry edilirse aynı mesaj ikinci kez planlanmaz.
+      if (fileKey) await attachOwnedAsset(fileKey, senderId);
       await prisma.scheduledMessage.create({
         data: {
           clientId,
@@ -64,7 +68,9 @@ router.get('/messages/scheduled/:conversationId', validateRequest({ params: chat
   try {
     const conversationId = getRouteParam(req, 'conversationId');
     const userId = getAuthenticatedUserId(req);
-    if (!(await isConversationMember(conversationId, userId))) {
+    try {
+      await requireActiveParticipant(conversationId, userId);
+    } catch {
       return res.status(403).json({ error: 'Bu sohbetin zamanlanmış mesajlarını görüntüleme yetkiniz yok.' });
     }
 
@@ -86,6 +92,11 @@ router.delete('/messages/schedule/:id', validateRequest({ params: chatSchemas.id
     const scheduled = await prisma.scheduledMessage.findUnique({ where: { id } });
     if (!scheduled) return res.status(404).json({ error: 'Zamanlanmış mesaj bulunamadı.' });
     if (scheduled.senderId !== userId) return res.status(403).json({ error: 'Bu mesajı iptal etme yetkiniz yok.' });
+    try {
+      await requireActiveParticipant(scheduled.conversationId, userId);
+    } catch {
+      return res.status(403).json({ error: 'Artık bu sohbetin aktif üyesi değilsiniz.' });
+    }
 
     await prisma.scheduledMessage.delete({ where: { id } });
     await deleteFileIfUnreferenced(scheduled.fileKey);
@@ -102,7 +113,9 @@ router.post('/messages/schedule/send-now/:id', validateRequest({ params: chatSch
     const scheduled = await prisma.scheduledMessage.findUnique({ where: { id } });
     if (!scheduled) return res.status(404).json({ error: 'Zamanlanmış mesaj bulunamadı veya zaten gönderildi.' });
     if (scheduled.senderId !== userId) return res.status(403).json({ error: 'Bu mesajı gönderme yetkiniz yok.' });
-    if (!(await isConversationMember(scheduled.conversationId, userId))) {
+    try {
+      await requireActiveParticipant(scheduled.conversationId, userId);
+    } catch {
       return res.status(403).json({ error: 'Artık bu sohbetin üyesi değilsiniz.' });
     }
 
@@ -153,7 +166,12 @@ router.post('/messages/schedule/send-now/:id', validateRequest({ params: chatSch
 
     const conversation = await prisma.conversation.findUnique({
       where: { id: scheduled.conversationId },
-      include: { participants: { select: { userId: true } } }
+      include: {
+        participants: {
+          where: { isActive: true },
+          select: { userId: true }
+        }
+      }
     });
     // Socket olayı hem conversation odasına hem de kullanıcı odalarına gider; sidebar ve açık chat aynı anda güncellenir.
     const rooms = [scheduled.conversationId, ...(conversation?.participants.map(({ userId: participantId }) => participantId) || [])];
@@ -175,12 +193,18 @@ router.put('/messages/schedule/:id', validateRequest({
     const scheduled = await prisma.scheduledMessage.findUnique({ where: { id } });
     if (!scheduled) return res.status(404).json({ error: 'Zamanlanmış mesaj bulunamadı.' });
     if (scheduled.senderId !== userId) return res.status(403).json({ error: 'Bu mesajı düzenleme yetkiniz yok.' });
+    try {
+      await requireActiveParticipant(scheduled.conversationId, userId);
+    } catch {
+      return res.status(403).json({ error: 'Artık bu sohbetin aktif üyesi değilsiniz.' });
+    }
 
     const nextContent = content !== undefined ? content.trim() : scheduled.content;
     const nextFileKey = fileKey !== undefined ? fileKey : scheduled.fileKey;
     if (!nextContent && !nextFileKey) return res.status(400).json({ error: 'Zamanlanmış mesaj tamamen boş olamaz.' });
 
     // Zamanlanmış mesaj düzenlenirken hem metin hem dosya tamamen boş hale getirilemez.
+    if (fileKey && fileKey !== scheduled.fileKey) await attachOwnedAsset(fileKey, userId);
     const updated = await prisma.scheduledMessage.update({
       where: { id },
       data: {

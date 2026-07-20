@@ -4,6 +4,7 @@ import { Server } from 'socket.io';
 import { logger } from '../config/logger';
 import prisma from '../db';
 import { verifyAccessToken } from '../services/authTokens';
+import { requireActiveParticipant } from '../services/conversationAccess';
 
 interface SocketUser {
   userId: string;
@@ -150,7 +151,7 @@ export const registerSocketHandlers = (io: Server) => {
 
     socket.on('game:voice-presence-snapshot', async (groupId: unknown) => {
       if (typeof groupId !== 'string' || !uuidPattern.test(groupId)) return;
-      const membership = await prisma.participant.findUnique({ where: { userId_conversationId: { userId: currentUser.userId, conversationId: groupId } }, select: { id: true } });
+      const membership = await requireActiveParticipant(groupId, currentUser.userId).catch(() => null);
       if (!membership) return;
       socket.emit('game:voice-presence-snapshot', {
         groupId,
@@ -168,8 +169,10 @@ export const registerSocketHandlers = (io: Server) => {
         return;
       }
       if (action !== 'join' || typeof conversationId !== 'string' || typeof channelId !== 'string' || !uuidPattern.test(conversationId) || !uuidPattern.test(channelId)) return;
+      const membership = await requireActiveParticipant(conversationId, currentUser.userId).catch(() => null);
+      if (!membership) return;
       const channel = await prisma.gameChannel.findFirst({
-        where: { id: channelId, conversationId, type: 'VOICE', conversation: { isGroup: true, participants: { some: { userId: currentUser.userId } } } },
+        where: { id: channelId, conversationId, type: 'VOICE', conversation: { isGroup: true, isDeleted: false } },
         select: { id: true }
       });
       if (!channel) return;
@@ -186,10 +189,18 @@ export const registerSocketHandlers = (io: Server) => {
       activeVoicePresence = { conversationId, channelId };
     });
 
-    socket.on('game:voice-speaking', (payload: unknown) => {
+    socket.on('game:voice-speaking', async (payload: unknown) => {
       if (!checkSocketRateLimit(socket.id, 'game:voice-speaking', 5) || !payload || typeof payload !== 'object' || !activeVoicePresence) return;
       const { channelId, isSpeaking } = payload as { channelId?: unknown; isSpeaking?: unknown };
       if (channelId !== activeVoicePresence.channelId || typeof isSpeaking !== 'boolean') return;
+      const membership = await requireActiveParticipant(
+        activeVoicePresence.conversationId,
+        currentUser.userId
+      ).catch(() => null);
+      if (!membership) {
+        leaveVoiceChannel();
+        return;
+      }
       const presence = voicePresences.get(`${activeVoicePresence.channelId}:${currentUser.userId}`);
       if (!presence || presence.isSpeaking === isSpeaking) return;
       presence.isSpeaking = isSpeaking;
@@ -230,10 +241,7 @@ export const registerSocketHandlers = (io: Server) => {
         // Yetkisiz kullanıcı odaya girerse başka kullanıcıların mesaj/eventlerini dinleyebilir.
         // Kabul/red/bitirme eventleri de konuşma üyeliği gerektirir.
         // Aksi halde kullanıcı başkasının çağrısını manipüle edebilir.
-        const membership = await prisma.participant.findUnique({
-          where: { userId_conversationId: { userId: currentUser.userId, conversationId: cleanId } },
-          select: { id: true }
-        });
+        const membership = await requireActiveParticipant(cleanId, currentUser.userId).catch(() => null);
         if (!membership) {
           logger.warn({ event: 'security.unauthorized_room_join', userId: currentUser.userId, roomId: cleanId }, 'Unauthorized room join attempt');
           acknowledge?.({ ok: false, error: 'Bu sohbet odasına katılma yetkiniz yok.' });
@@ -262,10 +270,7 @@ export const registerSocketHandlers = (io: Server) => {
       try {
         // Yazıyor bilgisi de üyelik kontrolünden geçer.
         // Böylece kullanıcı üyesi olmadığı odada "yazıyor" spam'i gönderemez.
-        const membership = await prisma.participant.findUnique({
-          where: { userId_conversationId: { userId: currentUser.userId, conversationId } },
-          select: { id: true }
-        });
+        const membership = await requireActiveParticipant(conversationId, currentUser.userId).catch(() => null);
         if (!membership) return;
         if (typeof gameChannelId === 'string') {
           const channel = await prisma.gameChannel.findFirst({ where: { id: gameChannelId, conversationId, type: 'TEXT' }, select: { id: true } });
@@ -300,10 +305,7 @@ export const registerSocketHandlers = (io: Server) => {
       if (typeof conversationId !== 'string' || typeof isRecording !== 'boolean') return;
 
       try {
-        const membership = await prisma.participant.findUnique({
-          where: { userId_conversationId: { userId: currentUser.userId, conversationId } },
-          select: { id: true }
-        });
+        const membership = await requireActiveParticipant(conversationId, currentUser.userId).catch(() => null);
         if (!membership) return;
 
         socket.to(conversationId).emit('voice_recording_changed', {
@@ -330,17 +332,17 @@ export const registerSocketHandlers = (io: Server) => {
       }
 
       try {
-        const membership = await prisma.participant.findUnique({
-          where: { userId_conversationId: { userId: currentUser.userId, conversationId: call.conversationId } },
-          select: { id: true }
-        });
+        const membership = await requireActiveParticipant(
+          call.conversationId,
+          currentUser.userId
+        ).catch(() => null);
         if (!membership) {
           acknowledge?.({ ok: false, error: 'Bu sohbet için çağrı yetkiniz yok.' });
           return;
         }
 
         const participants = await prisma.participant.findMany({
-          where: { conversationId: call.conversationId },
+          where: { conversationId: call.conversationId, isActive: true },
           select: { userId: true }
         });
         const targetUserIds = participants
@@ -396,18 +398,30 @@ export const registerSocketHandlers = (io: Server) => {
       }
 
       try {
+        const membership = await requireActiveParticipant(
+          call.conversationId,
+          currentUser.userId
+        ).catch(() => null);
+        if (!membership) {
+          acknowledge?.({ ok: false, error: 'Bu sohbet için çağrı yetkiniz yok.' });
+          return;
+        }
+
         // Davet eventinde conversation bilgisi ve katılımcılar tek sorguda alınır.
         // Kullanıcı konuşmanın üyesi değilse call:incoming hiç yayınlanmaz.
         const conversation = await prisma.conversation.findFirst({
           where: {
             id: call.conversationId,
-            participants: { some: { userId: currentUser.userId } }
+            isDeleted: false
           },
           select: {
             id: true,
             isGroup: true,
             name: true,
-            participants: { select: { userId: true } }
+            participants: {
+              where: { isActive: true },
+              select: { userId: true }
+            }
           }
         });
         if (!conversation) {

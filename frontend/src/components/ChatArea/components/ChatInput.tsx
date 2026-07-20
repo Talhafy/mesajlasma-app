@@ -52,6 +52,7 @@ interface ChatInputProps {
   handleSaveMessageEdit: () => void;
   isGroup?: boolean;
   isActiveGroupMember?: boolean;
+  isDeleted?: boolean;
 }
 
 export default function ChatInput({
@@ -62,7 +63,7 @@ export default function ChatInput({
   showAttachmentMenu, setShowAttachmentMenu, openFilePicker, fileInputRef, fileAccept, handleFileUpload,
   scheduledFileInputRef, handleScheduledFileChange, newMessage, setNewMessage, handleSend,
   handleBlockToggle, panelBg, inputBg, borderColor, textColor, iconColor, toggleVoiceRecording,
-  editingMessage, setEditingMessage, handleSaveMessageEdit, isGroup = false, isActiveGroupMember = true
+  editingMessage, setEditingMessage, handleSaveMessageEdit, isGroup = false, isActiveGroupMember = true, isDeleted = false
 }: ChatInputProps) {
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -109,11 +110,21 @@ export default function ChatInput({
     );
   }
 
+  if (isGroup && isDeleted) {
+    return (
+      <div className="input-area" style={{ display: 'flex', alignItems: 'center', width: '100%', gap: '12px', padding: '12px 20px', background: panelBg, borderTop: `1px solid ${borderColor}`, position: 'relative', justifyContent: 'center' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', padding: '10px 15px', background: isDarkMode ? '#222' : '#f5f5f5', borderRadius: '12px', border: `1px solid ${borderColor}`, color: iconColor, fontSize: '14px', fontWeight: 600 }}>
+          <span>🚫 Bu grup yönetici tarafından silinmiştir. Geçmiş mesajları okuyabilirsiniz.</span>
+        </div>
+      </div>
+    );
+  }
+
   if (isGroup && !isActiveGroupMember) {
     return (
       <div className="input-area" style={{ display: 'flex', alignItems: 'center', width: '100%', gap: '12px', padding: '12px 20px', background: panelBg, borderTop: `1px solid ${borderColor}`, position: 'relative', justifyContent: 'center' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', padding: '10px 15px', background: isDarkMode ? '#222' : '#f5f5f5', borderRadius: '12px', border: `1px solid ${borderColor}`, color: iconColor, fontSize: '14px', fontWeight: 600 }}>
-          <span>🚫 Artık bu grubun üyesi değilsiniz. Geçmiş mesajları okuyabilirsiniz.</span>
+          <span>🚫 Artık bu grubun üyesi değilsiniz, bu gruba mesaj gönderemezsiniz.</span>
         </div>
       </div>
     );

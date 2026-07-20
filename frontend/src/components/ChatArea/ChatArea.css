@@ -48,7 +48,7 @@
 }
 
 .message-bubble { 
-  max-width: 65%; 
+  max-width: 75%; 
   padding: 8px 12px; 
   border-radius: 8px; 
   font-size: 15px; 

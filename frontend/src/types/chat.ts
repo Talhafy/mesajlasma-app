@@ -50,6 +50,9 @@ export interface User {
   isBlocked?: boolean;
   blockedByOther?: boolean;
   isActive?: boolean;
+  leftAt?: string | null;
+  leftReason?: string | null;
+  joinedAt?: string | null;
 }
 
 export interface Conversation {
@@ -66,6 +69,7 @@ export interface Conversation {
   isActive?: boolean;
   leftAt?: string | null;
   disappearingDurationSeconds?: number | null;
+  isDeleted?: boolean;
   otherUser?: User | null;
   lastMessage?: Message | null;
   participants?: Array<{ user: User }>;

@@ -1,12 +1,12 @@
 //Livekit jwt koruması
 
 import express, { Response } from 'express';
-import prisma from '../db';
 import { authenticateToken, CustomRequest } from '../middleware/authMiddleware';
 import { validateRequest } from '../middleware/validateRequest';
 import { logger } from '../config/logger';
 import { chatSchemas } from '../validation/schemas';
 import { getAuthenticatedUserId as getUserId } from '../utils/request';
+import { requireActiveParticipant } from '../services/conversationAccess';
 import {
   createConversationCallToken,
   isLivekitConfigured,
@@ -33,15 +33,11 @@ router.post('/calls/token', validateRequest({ body: chatSchemas.callToken }), as
       callType: CallType;
     };
 
-    // Konuşma üyeliği DB'den doğrulanır; frontend'den gelen conversationId tek başına yeterli değildir.
-    const membership = await prisma.participant.findUnique({
-      where: { userId_conversationId: { userId, conversationId } },
-      select: {
-        user: { select: { id: true, username: true } },
-        conversation: { select: { id: true, isGroup: true, name: true } }
-      }
-    });
-
+    const membership = await requireActiveParticipant(
+      conversationId,
+      userId,
+      'Bu görüşmeye katılma yetkiniz yok.'
+    ).catch(() => null);
     if (!membership) {
       return res.status(403).json({ error: 'Bu görüşmeye katılma yetkiniz yok.' });
     }
@@ -68,7 +64,11 @@ router.post('/calls/token', validateRequest({ body: chatSchemas.callToken }), as
       callId,
       callType,
       conversationId,
-      conversation: membership.conversation
+      conversation: {
+        id: membership.conversation.id,
+        isGroup: membership.conversation.isGroup,
+        name: membership.conversation.name
+      }
     });
   } catch (error) {
     logger.error({ event: 'call.token_failed', err: error, userId: req.user?.userId, ip: req.ip }, 'LiveKit token creation failed');

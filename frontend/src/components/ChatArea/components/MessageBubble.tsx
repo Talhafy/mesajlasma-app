@@ -204,6 +204,10 @@ export default function MessageBubble({
   handleReply, handleForward, handleStar, handlePin, handleDeleteForMe, handleDeleteForEveryone,
   handleEditMessage, setMessageInfo, selectedUser
 }: MessageBubbleProps) {
+  const isReadOnlyHistory = Boolean(
+    activeConversation?.isGroup &&
+    (activeConversation.isActive === false || activeConversation.isDeleted)
+  );
   
   const [openOptionsId, setOpenOptionsId] = useState<string | null>(null);
   const [optionsPos, setOptionsPos] = useState({ top: 0, bottom: 0, left: undefined as number | undefined, right: undefined as number | undefined, isAbove: false });
@@ -230,14 +234,119 @@ export default function MessageBubble({
   const msg = item.message;
   if (!msg) return null;
 
+  if (msg.content.startsWith('[SYSTEM_LEAVE]:')) {
+    const username = msg.content.replace('[SYSTEM_LEAVE]:', '');
+    const text = username === currentUser.username ? 'Gruptan ayrıldınız.' : `${username} gruptan ayrıldı.`;
+    return (
+      <div style={{ display: 'flex', justifyContent: 'center', margin: '14px 0 4px' }}>
+        <div style={{ background: panelBg, color: iconColor, border: `1px solid ${borderColor}`, padding: '8px 13px', borderRadius: '999px', fontSize: '12.5px', fontWeight: 700, boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }}>
+          ℹ️ {text}
+        </div>
+      </div>
+    );
+  }
+
+  if (msg.content.startsWith('[SYSTEM_KICK]:')) {
+    const parts = msg.content.replace('[SYSTEM_KICK]:', '').split(':');
+    const adminUsername = parts[0];
+    const kickedUsername = parts[1];
+    const text = kickedUsername === currentUser.username 
+      ? `${adminUsername} sizi gruptan çıkardı.`
+      : `${adminUsername}, ${kickedUsername} kullanıcısını gruptan çıkardı.`;
+    return (
+      <div style={{ display: 'flex', justifyContent: 'center', margin: '14px 0 4px' }}>
+        <div style={{ background: panelBg, color: iconColor, border: `1px solid ${borderColor}`, padding: '8px 13px', borderRadius: '999px', fontSize: '12.5px', fontWeight: 700, boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }}>
+          ℹ️ {text}
+        </div>
+      </div>
+    );
+  }
+
+  if (msg.content.startsWith('[SYSTEM_ADD]:')) {
+    const parts = msg.content.replace('[SYSTEM_ADD]:', '').split(':');
+    const adminUsername = parts[0];
+    const addedUsername = parts[1];
+    let text = '';
+    if (addedUsername === currentUser.username) {
+      text = `${adminUsername} sizi ekledi.`;
+    } else if (adminUsername === currentUser.username) {
+      text = `Siz "${addedUsername}" kullanıcısını eklediniz.`;
+    } else {
+      text = `${adminUsername}, "${addedUsername}" kullanıcısını ekledi.`;
+    }
+    return (
+      <div style={{ display: 'flex', justifyContent: 'center', margin: '14px 0 4px' }}>
+        <div style={{ background: panelBg, color: iconColor, border: `1px solid ${borderColor}`, padding: '8px 13px', borderRadius: '999px', fontSize: '12.5px', fontWeight: 700, boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }}>
+          ℹ️ {text}
+        </div>
+      </div>
+    );
+  }
+
+  if (msg.content.startsWith('[SYSTEM_ADMIN_ASSIGN]:')) {
+    const newAdminUsername = msg.content.replace('[SYSTEM_ADMIN_ASSIGN]:', '');
+    const text = newAdminUsername === currentUser.username 
+      ? 'Yeni grup yöneticisi siz oldunuz.' 
+      : `Yeni grup yöneticisi: ${newAdminUsername}.`;
+    return (
+      <div style={{ display: 'flex', justifyContent: 'center', margin: '14px 0 4px' }}>
+        <div style={{ background: panelBg, color: iconColor, border: `1px solid ${borderColor}`, padding: '8px 13px', borderRadius: '999px', fontSize: '12.5px', fontWeight: 700, boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }}>
+          ℹ️ {text}
+        </div>
+      </div>
+    );
+  }
+
+  if (msg.content.startsWith('[SYSTEM_ADMIN_TRANSFER]:')) {
+    const parts = msg.content.replace('[SYSTEM_ADMIN_TRANSFER]:', '').split(':');
+    const adminUsername = parts[0];
+    const newAdminUsername = parts[1];
+    let text = '';
+    if (newAdminUsername === currentUser.username) {
+      text = `${adminUsername} sizi grup yöneticisi yaptı.`;
+    } else if (adminUsername === currentUser.username) {
+      text = `"${newAdminUsername}" kullanıcısını grup yöneticisi yaptınız.`;
+    } else {
+      text = `${adminUsername}, "${newAdminUsername}" kullanıcısını grup yöneticisi yaptı.`;
+    }
+    return (
+      <div style={{ display: 'flex', justifyContent: 'center', margin: '14px 0 4px' }}>
+        <div style={{ background: panelBg, color: iconColor, border: `1px solid ${borderColor}`, padding: '8px 13px', borderRadius: '999px', fontSize: '12.5px', fontWeight: 700, boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }}>
+          ℹ️ {text}
+        </div>
+      </div>
+    );
+  }
+
   const isMe = msg.senderId === currentUser.id;
+  const senderMember = groupMembers.find(m => m.id === msg.senderId);
+  const isSenderInactive = senderMember ? senderMember.isActive === false : (groupMembers.length > 0);
+
+  const replySenderId = msg.replyTo?.senderId;
+  const replySenderMember = replySenderId ? groupMembers.find(m => m.id === replySenderId) : null;
+  const isReplySenderInactive = replySenderMember ? replySenderMember.isActive === false : !!(replySenderId && groupMembers.length > 0);
 
   let showBlueTick = false;
   let isDoubleTick = false;
 
   if (activeConversation?.isGroup) {
-    const otherMembersCount = groupMembers.length > 0 ? groupMembers.length - 1 : 999;
-    showBlueTick = (msg.readByIds?.length || 0) >= otherMembersCount && otherMembersCount > 0;
+    const msgTime = msg.createdAt ? new Date(msg.createdAt).getTime() : Date.now();
+    const activeGroupMembers = groupMembers.filter(m => {
+      if (!m.joinedAt) return m.isActive !== false;
+      const joinedTime = new Date(m.joinedAt).getTime();
+      if (joinedTime > msgTime) return false;
+      if (m.isActive === false && m.leftAt) {
+        const leftTime = new Date(m.leftAt).getTime();
+        if (leftTime < msgTime) return false;
+      }
+      return true;
+    });
+    const otherMembersCount = activeGroupMembers.length > 0 ? activeGroupMembers.length - 1 : 0;
+    if (otherMembersCount === 0) {
+      showBlueTick = true;
+    } else {
+      showBlueTick = (msg.readByIds?.length || 0) >= otherMembersCount;
+    }
     isDoubleTick = true;
   } else {
     const otherUser = selectedUser || activeConversation?.otherUser;
@@ -385,12 +494,16 @@ export default function MessageBubble({
           }}
         >
           {!isMe && activeConversation?.isGroup && (
-            <div style={{ fontSize: '12px', fontWeight: 'bold', color: '#f97316', marginBottom: '4px' }}>{msg.sender?.username}</div>
+            <div style={{ fontSize: '12px', fontWeight: 'bold', color: isSenderInactive ? '#888' : '#f97316', marginBottom: '4px' }}>
+              {msg.sender?.username}
+            </div>
           )}
 
           {msg.replyTo && (
-            <div style={{ background: isDarkMode ? 'rgba(0,0,0,0.2)' : 'rgba(0,0,0,0.05)', padding: '6px 10px', borderRadius: '5px', marginBottom: '6px', borderLeft: '4px solid #f97316', fontSize: '12px', cursor: 'pointer' }}>
-              <strong style={{ color: '#f97316', display: 'block', marginBottom: '2px' }}>{msg.replyTo.sender?.username}</strong>
+            <div style={{ background: isDarkMode ? 'rgba(0,0,0,0.2)' : 'rgba(0,0,0,0.05)', padding: '6px 10px', borderRadius: '5px', marginBottom: '6px', borderLeft: `4px solid ${isReplySenderInactive ? '#888' : '#f97316'}`, fontSize: '12px', cursor: 'pointer' }}>
+              <strong style={{ color: isReplySenderInactive ? '#888' : '#f97316', display: 'block', marginBottom: '2px' }}>
+                {msg.replyTo.sender?.username}
+              </strong>
               <div style={{ opacity: 0.8, color: textColor, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{msg.replyTo.content}</div>
             </div>
           )}
@@ -489,22 +602,22 @@ export default function MessageBubble({
                 display: 'flex', flexDirection: 'column'
               }}>
                 <button className="msg-dropdown-btn" onClick={() => { setMessageInfo(msg); setOpenOptionsId(null); }}>ℹ️ Bilgi</button>
-                <button className="msg-dropdown-btn" onClick={() => { handleReply(msg); setOpenOptionsId(null); }}>↩️ Yanıtla</button>
+                {!isReadOnlyHistory && <button className="msg-dropdown-btn" onClick={() => { handleReply(msg); setOpenOptionsId(null); }}>↩️ Yanıtla</button>}
                 {msg.content && <button className="msg-dropdown-btn" onClick={() => handleCopyText(msg.content)}>📋 Kopyala</button>}
-                <button className="msg-dropdown-btn" onClick={() => {
+                {!isReadOnlyHistory && <button className="msg-dropdown-btn" onClick={() => {
                   toggleSelectMessage(msg.id);
                   setOpenOptionsId(null);
-                }}>☑️ Seç</button>
-                {isMe && <button className="msg-dropdown-btn" onClick={() => { handleEditMessage(msg); setOpenOptionsId(null); }}>✏️ Düzenle</button>}
+                }}>☑️ Seç</button>}
+                {!isReadOnlyHistory && isMe && <button className="msg-dropdown-btn" onClick={() => { handleEditMessage(msg); setOpenOptionsId(null); }}>✏️ Düzenle</button>}
                 <button className="msg-dropdown-btn" onClick={() => { handleForward(msg); setOpenOptionsId(null); }}>➡️ İlet</button>
-                <button className="msg-dropdown-btn" onClick={() => { handleStar(msg.id); setOpenOptionsId(null); }}>
+                {!isReadOnlyHistory && <button className="msg-dropdown-btn" onClick={() => { handleStar(msg.id); setOpenOptionsId(null); }}>
                   {msg.starredByIds?.includes(currentUser.id) ? '⭐ Yıldızı Kaldır' : '⭐ Yıldızla'}
-                </button>
-                <button className="msg-dropdown-btn" onClick={() => { handlePin(msg.id); setOpenOptionsId(null); }}>
+                </button>}
+                {!isReadOnlyHistory && <button className="msg-dropdown-btn" onClick={() => { handlePin(msg.id); setOpenOptionsId(null); }}>
                   {msg.isPinned ? '📌 Sabitlemeyi Kaldır' : '📌 Sabitle'}
-                </button>
-                <button className="msg-dropdown-btn" onClick={() => { handleDeleteForMe(msg.id); setOpenOptionsId(null); }}>🗑️ Benden Sil</button>
-                {isMe && <button className="msg-dropdown-btn danger-text" onClick={() => { handleDeleteForEveryone(msg.id); setOpenOptionsId(null); }}>⛔ Herkesten Sil</button>}
+                </button>}
+                {!isReadOnlyHistory && <button className="msg-dropdown-btn" onClick={() => { handleDeleteForMe(msg.id); setOpenOptionsId(null); }}>🗑️ Benden Sil</button>}
+                {!isReadOnlyHistory && isMe && <button className="msg-dropdown-btn danger-text" onClick={() => { handleDeleteForEveryone(msg.id); setOpenOptionsId(null); }}>⛔ Herkesten Sil</button>}
               </div>
             </>,
             document.body

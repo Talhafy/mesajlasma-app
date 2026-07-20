@@ -3,8 +3,9 @@
 import prisma from '../db';
 import { createSignedFileUrl } from './fileStorage';
 import { deleteFileIfUnreferenced } from './fileCleanup';
-import { isConversationMember } from './conversationAccess';
+import { requireActiveParticipant } from './conversationAccess';
 import { serializeMessage } from './messageService';
+import { attachOwnedAsset } from './uploadedAssetService';
 
 const withConversationAvatarUrl = async <T extends { avatarFileKey?: string | null }>(conversation: T) => ({
   ...conversation,
@@ -82,14 +83,24 @@ export const listConversations = async (userId: string) => {
         : null;
 
       let lastMessageRaw: any = conversation.messages[0];
-      if (membership.leftAt && lastMessageRaw && new Date(lastMessageRaw.createdAt) > membership.leftAt) {
+      const lastMessageCreatedAt = lastMessageRaw ? new Date(lastMessageRaw.createdAt) : null;
+      const isOutsideMembershipWindow = Boolean(
+        lastMessageCreatedAt && (
+          lastMessageCreatedAt < membership.joinedAt ||
+          (membership.leftAt && lastMessageCreatedAt > membership.leftAt)
+        )
+      );
+      if (isOutsideMembershipWindow) {
         lastMessageRaw = await prisma.message.findFirst({
           where: {
             conversationId: conversation.id,
             gameChannelId: null,
             deletions: { none: { userId } },
             ...visibleMessageWhere(),
-            createdAt: { lte: membership.leftAt }
+            createdAt: {
+              gte: membership.joinedAt,
+              ...(membership.leftAt ? { lte: membership.leftAt } : {})
+            }
           },
           orderBy: { createdAt: 'desc' },
           include: {
@@ -119,6 +130,7 @@ export const listConversations = async (userId: string) => {
         isActive: membership.isActive,
         leftAt: membership.leftAt ? membership.leftAt.toISOString() : null,
         disappearingDurationSeconds: conversation.disappearingDurationSeconds,
+        isDeleted: conversation.isDeleted,
         otherUser,
         lastMessage
       };
@@ -137,12 +149,11 @@ export const listConversations = async (userId: string) => {
  * Sohbeti sabitler veya sabitlemeyi kaldırır.
  */
 export const pinConversation = async (conversationId: string, userId: string) => {
-  const participant = await prisma.participant.findUnique({
-    where: { userId_conversationId: { userId, conversationId } }
-  });
-  if (!participant) {
-    throw new Error('Bu sohbeti sabitleme yetkiniz yok.');
-  }
+  const participant = await requireActiveParticipant(
+    conversationId,
+    userId,
+    'Bu sohbeti sabitleme yetkiniz yok.'
+  );
 
   const updated = await prisma.participant.update({
     where: { id: participant.id },
@@ -156,12 +167,11 @@ export const pinConversation = async (conversationId: string, userId: string) =>
  * Sohbeti arşivler veya arşivden kaldırır.
  */
 export const archiveConversation = async (conversationId: string, userId: string) => {
-  const participant = await prisma.participant.findUnique({
-    where: { userId_conversationId: { userId, conversationId } }
-  });
-  if (!participant) {
-    throw new Error('Bu sohbeti arşivleme yetkiniz yok.');
-  }
+  const participant = await requireActiveParticipant(
+    conversationId,
+    userId,
+    'Bu sohbeti arşivleme yetkiniz yok.'
+  );
 
   const updated = await prisma.participant.update({
     where: { id: participant.id },
@@ -175,12 +185,11 @@ export const archiveConversation = async (conversationId: string, userId: string
  * Sohbeti sessize alır veya sessizden çıkarır.
  */
 export const muteConversation = async (conversationId: string, userId: string) => {
-  const participant = await prisma.participant.findUnique({
-    where: { userId_conversationId: { userId, conversationId } }
-  });
-  if (!participant) {
-    throw new Error('Bu sohbeti sessize alma yetkiniz yok.');
-  }
+  const participant = await requireActiveParticipant(
+    conversationId,
+    userId,
+    'Bu sohbeti sessize alma yetkiniz yok.'
+  );
 
   const updated = await prisma.participant.update({
     where: { id: participant.id },
@@ -194,9 +203,11 @@ export const muteConversation = async (conversationId: string, userId: string) =
  * Kaybolan mesaj modunu günceller.
  */
 export const updateDisappearingMode = async (conversationId: string, userId: string, durationSeconds: number | null, io: any) => {
-  if (!(await isConversationMember(conversationId, userId))) {
-    throw new Error('Bu sohbetin kaybolan mesaj modunu değiştirme yetkiniz yok.');
-  }
+  await requireActiveParticipant(
+    conversationId,
+    userId,
+    'Bu sohbetin kaybolan mesaj modunu değiştirme yetkiniz yok.'
+  );
 
   const updated = await prisma.conversation.update({
     where: { id: conversationId },
@@ -227,9 +238,10 @@ export const createDirectConversation = async (currentUserId: string, targetUser
   let conversation = await prisma.conversation.findFirst({
     where: {
       isGroup: false,
+      isDeleted: false,
       AND: [
-        { participants: { some: { userId: currentUserId } } },
-        { participants: { some: { userId: targetUserId } } }
+        { participants: { some: { userId: currentUserId, isActive: true } } },
+        { participants: { some: { userId: targetUserId, isActive: true } } }
       ]
     }
   });
@@ -311,7 +323,11 @@ export const listGroupConversations = async (userId: string) => {
   const myGroups = await prisma.participant.findMany({
     where: {
       userId,
-      conversation: { isGroup: true }
+      isActive: true,
+      conversation: {
+        isGroup: true,
+        isDeleted: false
+      }
     },
     include: { conversation: true }
   });
@@ -335,9 +351,11 @@ export const listGroupConversations = async (userId: string) => {
  * Grubun katılımcı listesini ve engelleme durumlarını döner.
  */
 export const listGroupParticipants = async (groupId: string, userId: string) => {
-  if (!(await isConversationMember(groupId, userId))) {
-    throw new Error('Bu grubun üyelerini görüntüleme yetkiniz yok.');
-  }
+  await requireActiveParticipant(
+    groupId,
+    userId,
+    'Bu grubun üyelerini görüntüleme yetkiniz yok.'
+  );
 
   const participants = await prisma.participant.findMany({
     where: { conversationId: groupId },
@@ -350,16 +368,50 @@ export const listGroupParticipants = async (groupId: string, userId: string) => 
   });
   const blockedIds = new Set(blockedRows.map((r) => r.blockedId));
 
+  // Fetch system messages to determine leftReason
+  const systemMessages = await prisma.message.findMany({
+    where: {
+      conversationId: groupId,
+      content: {
+        startsWith: '[SYSTEM_'
+      }
+    },
+    select: {
+      content: true
+    },
+    orderBy: {
+      createdAt: 'desc'
+    }
+  });
+
   return Promise.all(
-    participants.map(async (p: any) => ({
-      id: p.user.id,
-      username: p.user.username,
-      email: p.user.email,
-      lastSeenAt: p.user.lastSeenAt,
-      avatarUrl: p.user.avatarFileKey ? await createSignedFileUrl(p.user.avatarFileKey) : null,
-      isBlocked: blockedIds.has(p.user.id),
-      isActive: p.isActive
-    }))
+    participants.map(async (p: any) => {
+      let leftReason: string | null = null;
+      if (!p.isActive) {
+        const matchingMsg = systemMessages.find(msg => {
+          if (msg.content.startsWith(`[SYSTEM_LEAVE]:${p.user.username}`)) return true;
+          if (msg.content.startsWith('[SYSTEM_KICK]:')) {
+            const parts = msg.content.split(':');
+            return parts[2] === p.user.username;
+          }
+          return false;
+        });
+        leftReason = (matchingMsg && matchingMsg.content.startsWith('[SYSTEM_KICK]:')) ? 'KICK' : 'LEAVE';
+      }
+
+      return {
+        id: p.user.id,
+        username: p.user.username,
+        email: p.user.email,
+        lastSeenAt: p.user.lastSeenAt,
+        avatarUrl: p.user.avatarFileKey ? await createSignedFileUrl(p.user.avatarFileKey) : null,
+        isBlocked: blockedIds.has(p.user.id),
+        isActive: p.isActive,
+        leftAt: p.leftAt ? p.leftAt.toISOString() : null,
+        leftReason,
+        joinedAt: p.joinedAt ? p.joinedAt.toISOString() : null
+      };
+    })
   );
 };
 
@@ -367,6 +419,11 @@ export const listGroupParticipants = async (groupId: string, userId: string) => 
  * Grup adını günceller.
  */
 export const updateGroupName = async (groupId: string, userId: string, newName: string) => {
+  await requireActiveParticipant(
+    groupId,
+    userId,
+    'Grup adını değiştirmek için aktif üye olmalısınız.'
+  );
   const group = await prisma.conversation.findUnique({ where: { id: groupId } });
   if (!group) throw new Error('Grup bulunamadı.');
   if (!group.isGroup || group.adminId !== userId) {
@@ -383,15 +440,23 @@ export const updateGroupName = async (groupId: string, userId: string, newName: 
  * Grup resmini (avatar) günceller ve eskisini siler.
  */
 export const updateGroupAvatar = async (groupId: string, userId: string, fileKey: string | null, io: any) => {
+  await requireActiveParticipant(
+    groupId,
+    userId,
+    'Grup resmini değiştirmek için aktif üye olmalısınız.'
+  );
   const group = await prisma.conversation.findUnique({ where: { id: groupId } });
   if (!group) throw new Error('Grup bulunamadı.');
   if (!group.isGroup || group.adminId !== userId) {
     throw new Error('Grup resmini yalnızca yönetici değiştirebilir.');
   }
 
-  const updatedGroup = await prisma.conversation.update({
-    where: { id: groupId },
-    data: { avatarFileKey: fileKey }
+  const updatedGroup = await prisma.$transaction(async (tx) => {
+    if (fileKey) await attachOwnedAsset(fileKey, userId, tx);
+    return tx.conversation.update({
+      where: { id: groupId },
+      data: { avatarFileKey: fileKey }
+    });
   });
 
   if (group.avatarFileKey && group.avatarFileKey !== fileKey) {
@@ -420,6 +485,11 @@ export const updateGroupAvatar = async (groupId: string, userId: string, fileKey
  * Gruptan üye çıkarır, kendi çıkmak isteyen üyeyi gruptan çıkarır veya grubu komple temizler.
  */
 export const removeGroupParticipant = async (groupId: string, participantId: string, adminId: string, io: any) => {
+  await requireActiveParticipant(
+    groupId,
+    adminId,
+    'Bu grupta üye çıkarma veya ayrılma yetkiniz yok.'
+  );
   const group = await prisma.conversation.findUnique({ where: { id: groupId } });
   if (!group) throw new Error('Grup bulunamadı.');
 
@@ -428,18 +498,46 @@ export const removeGroupParticipant = async (groupId: string, participantId: str
     throw new Error('Sadece grup yöneticisi kişi çıkarabilir!');
   }
 
-  await prisma.$transaction(async (tx) => {
-    // Katılımcıyı tamamen silmek yerine pasife çekiyoruz ve leftAt zamanını kaydediyoruz
-    await (tx.participant.update as any)({
-      where: { userId_conversationId: { userId: participantId, conversationId: groupId } },
-      data: { isActive: false, leftAt: new Date() }
-    });
-    await tx.scheduledMessage.deleteMany({
-      where: { conversationId: groupId, senderId: participantId }
-    });
+  const adminUser = await prisma.user.findUnique({ where: { id: adminId } });
+  const participantUser = await prisma.user.findUnique({ where: { id: participantId } });
+  if (!adminUser || !participantUser) throw new Error('Kullanıcı bulunamadı.');
+  await requireActiveParticipant(
+    groupId,
+    participantId,
+    'Çıkarılacak kullanıcı grubun aktif bir üyesi değil.'
+  );
+
+  const isSelf = participantId === adminId;
+  const systemContent = isSelf 
+    ? `[SYSTEM_LEAVE]:${participantUser.username}`
+    : `[SYSTEM_KICK]:${adminUser.username}:${participantUser.username}`;
+
+  // Katılımcıyı tamamen silmek yerine pasife çekiyoruz ve leftAt zamanını kaydediyoruz
+  await (prisma.participant.update as any)({
+    where: { userId_conversationId: { userId: participantId, conversationId: groupId } },
+    data: { isActive: false, leftAt: new Date() }
+  });
+  await prisma.scheduledMessage.deleteMany({
+    where: { conversationId: groupId, senderId: participantId }
+  });
+  // Create the system message in the database
+  const systemMessage = await prisma.message.create({
+    data: {
+      content: systemContent,
+      senderId: adminId,
+      conversationId: groupId,
+    },
+    include: {
+      sender: { select: { username: true } },
+      reads: true,
+      stars: true,
+      deletions: true
+    }
   });
 
-  if (io) {
+  if (io && systemMessage) {
+    const serialized = await serializeMessage(systemMessage);
+    io.to(groupId).emit('yeni_mesaj_geldi', serialized);
     io.to(groupId).emit('gruptan_atildi', { groupId, removedUserId: participantId, removedById: adminId });
     io.in(participantId).socketsLeave(groupId);
   }
@@ -450,29 +548,11 @@ export const removeGroupParticipant = async (groupId: string, participantId: str
   });
 
   if (remainingParticipants.length === 0) {
-    // Katılımcı kalmadıysa grubu ve onunla ilişkili dosyaları temizle
-    const messageFiles = await prisma.message.findMany({
-      where: { conversationId: groupId, fileKey: { not: null } },
-      select: { fileKey: true }
+    // Katılımcı kalmadıysa grubu silmiyoruz (salt-okunur geçmiş kalsın), sadece adminId'yi null yapıyoruz
+    await prisma.conversation.update({
+      where: { id: groupId },
+      data: { adminId: null }
     });
-    const scheduledFiles = await prisma.scheduledMessage.findMany({
-      where: { conversationId: groupId, fileKey: { not: null } },
-      select: { fileKey: true }
-    });
-
-    await prisma.conversation.delete({ where: { id: groupId } });
-
-    const deletedFileKeys = [...messageFiles, ...scheduledFiles, { fileKey: group.avatarFileKey }]
-      .map((entry) => entry.fileKey)
-      .filter((key): key is string => Boolean(key));
-
-    for (const fileKey of [...new Set(deletedFileKeys)]) {
-      await deleteFileIfUnreferenced(fileKey);
-    }
-
-    if (io) {
-      io.to(groupId).emit('grup_silindi', { groupId });
-    }
   } else if (group.adminId === participantId) {
     // Ayrılan kişi yöneticisiyse sıradaki aktif yöneticiyi belirle
     let newAdminId: string | null = null;
@@ -505,6 +585,28 @@ export const removeGroupParticipant = async (groupId: string, participantId: str
       }
     });
 
+    const newAdminUser = newAdminId ? await prisma.user.findUnique({ where: { id: newAdminId } }) : null;
+    if (newAdminUser) {
+      const systemAdminChangeContent = `[SYSTEM_ADMIN_ASSIGN]:${newAdminUser.username}`;
+      const changeMsg = await prisma.message.create({
+        data: {
+          content: systemAdminChangeContent,
+          senderId: newAdminId!,
+          conversationId: groupId,
+        },
+        include: {
+          sender: { select: { username: true } },
+          reads: true,
+          stars: true,
+          deletions: true
+        }
+      });
+      if (io) {
+        const serialized = await serializeMessage(changeMsg);
+        io.to(groupId).emit('yeni_mesaj_geldi', serialized);
+      }
+    }
+
     if (io) {
       io.to(groupId).emit('grup_yonetici_degisti', { groupId, newAdminId });
     }
@@ -517,6 +619,11 @@ export const removeGroupParticipant = async (groupId: string, participantId: str
  * Gruba yeni üyeler ekler.
  */
 export const addGroupParticipants = async (groupId: string, participantIds: string[], adminId: string, io: any) => {
+  await requireActiveParticipant(
+    groupId,
+    adminId,
+    'Bu gruba üye ekleme yetkiniz yok.'
+  );
   const uniqueUserIds = [...new Set(participantIds)];
   const existingUserCount = await prisma.user.count({ where: { id: { in: uniqueUserIds } } });
   if (existingUserCount !== uniqueUserIds.length) {
@@ -565,7 +672,10 @@ export const addGroupParticipants = async (groupId: string, participantIds: stri
       lastSeenAt: p.user.lastSeenAt,
       avatarUrl: p.user.avatarFileKey ? await createSignedFileUrl(p.user.avatarFileKey) : null,
       isBlocked: blockedIds.has(p.user.id),
-      isActive: p.isActive
+      isActive: p.isActive,
+      leftAt: p.leftAt ? p.leftAt.toISOString() : null,
+      leftReason: null,
+      joinedAt: p.joinedAt ? p.joinedAt.toISOString() : null
     }))
   );
 
@@ -579,11 +689,43 @@ export const addGroupParticipants = async (groupId: string, participantIds: stri
     leftAt: null
   };
 
+  const adminUser = await prisma.user.findUnique({ where: { id: adminId } });
+  if (!adminUser) throw new Error('Yönetici bulunamadı.');
+
+  // Create system messages for each added user
+  const systemMessages: any[] = [];
+  for (const participant of newParticipants) {
+    const systemContent = `[SYSTEM_ADD]:${adminUser.username}:${participant.user.username}`;
+    const msg = await prisma.message.create({
+      data: {
+        content: systemContent,
+        senderId: adminId,
+        conversationId: groupId,
+      },
+      include: {
+        sender: { select: { username: true } },
+        reads: true,
+        stars: true,
+        deletions: true
+      }
+    });
+    systemMessages.push(msg);
+  }
+
   if (io) {
+    // 1. Emit the system messages to the group first so existing members receive them
+    for (const msg of systemMessages) {
+      const serialized = await serializeMessage(msg);
+      io.to(groupId).emit('yeni_mesaj_geldi', serialized);
+    }
+
+    // 2. Make the added users join the socket room and emit grup_olusturuldu
     uniqueUserIds.forEach((userId) => {
       io.to(userId).emit('grup_olusturuldu', resultGroup);
       io.in(userId).socketsJoin(groupId);
     });
+
+    // 3. Emit grup_uyeleri_eklendi to the group
     io.to(groupId).emit('grup_uyeleri_eklendi', { groupId, newMembers: serializedMembers });
   }
 
@@ -594,14 +736,21 @@ export const addGroupParticipants = async (groupId: string, participantIds: stri
  * Grup yöneticiliğini (adminlik) devreder.
  */
 export const transferGroupAdmin = async (groupId: string, newAdminId: string, adminId: string, io: any) => {
+  await requireActiveParticipant(
+    groupId,
+    adminId,
+    'Yöneticiliği devretmek için aktif üye olmalısınız.'
+  );
   const group = await prisma.conversation.findUnique({ where: { id: groupId } });
   if (!group) throw new Error('Grup bulunamadı.');
   if (group.adminId !== adminId) {
     throw new Error('Sadece kurucu yetki devredebilir.');
   }
-  if (!(await isConversationMember(groupId, newAdminId))) {
-    throw new Error('Yeni yönetici grubun üyesi olmalıdır.');
-  }
+  await requireActiveParticipant(
+    groupId,
+    newAdminId,
+    'Yeni yönetici grubun aktif bir üyesi olmalıdır.'
+  );
 
   const historyList = group.adminHistory ? group.adminHistory.split(',').filter(id => id !== adminId) : [];
   historyList.push(adminId);
@@ -615,6 +764,29 @@ export const transferGroupAdmin = async (groupId: string, newAdminId: string, ad
     }
   });
 
+  const adminUser = await prisma.user.findUnique({ where: { id: adminId } });
+  const newAdminUser = await prisma.user.findUnique({ where: { id: newAdminId } });
+  if (adminUser && newAdminUser) {
+    const systemContent = `[SYSTEM_ADMIN_TRANSFER]:${adminUser.username}:${newAdminUser.username}`;
+    const changeMsg = await prisma.message.create({
+      data: {
+        content: systemContent,
+        senderId: adminId,
+        conversationId: groupId,
+      },
+      include: {
+        sender: { select: { username: true } },
+        reads: true,
+        stars: true,
+        deletions: true
+      }
+    });
+    if (io) {
+      const serialized = await serializeMessage(changeMsg);
+      io.to(groupId).emit('yeni_mesaj_geldi', serialized);
+    }
+  }
+
   if (io) {
     io.to(groupId).emit('grup_yonetici_degisti', { groupId, newAdminId });
   }
@@ -626,25 +798,29 @@ export const transferGroupAdmin = async (groupId: string, newAdminId: string, ad
  * Grubu ve onunla ilişkili tüm mesaj, dosya ve verileri siler (Yalnızca Admin).
  */
 export const deleteGroup = async (groupId: string, adminId: string, io: any) => {
-  const deletedFileKeys = await prisma.$transaction(async (tx) => {
+  await requireActiveParticipant(
+    groupId,
+    adminId,
+    'Grubu silmek için aktif üye olmalısınız.'
+  );
+  const result = await prisma.$transaction(async (tx) => {
     const group = await tx.conversation.findUnique({ where: { id: groupId } });
     if (!group?.isGroup || group.adminId !== adminId) return null;
 
-    const messageFiles = await tx.message.findMany({ where: { conversationId: groupId, fileKey: { not: null } }, select: { fileKey: true } });
-    const scheduledFiles = await tx.scheduledMessage.findMany({ where: { conversationId: groupId, fileKey: { not: null } }, select: { fileKey: true } });
+    // Silinmiş gruba ait zamanlanmış mesajları temizle
+    await tx.scheduledMessage.deleteMany({ where: { conversationId: groupId } });
 
-    await tx.conversation.delete({ where: { id: groupId } });
-    return [...messageFiles, ...scheduledFiles, { fileKey: group.avatarFileKey }]
-      .map((entry) => entry.fileKey)
-      .filter((key): key is string => Boolean(key));
+    // Grubu silindi olarak işaretle ve admin'i null yap
+    await tx.conversation.update({
+      where: { id: groupId },
+      data: { isDeleted: true, adminId: null }
+    });
+
+    return true;
   });
 
-  if (!deletedFileKeys) {
+  if (!result) {
     throw new Error("Grubu yalnızca yönetici silebilir.");
-  }
-
-  for (const fileKey of [...new Set(deletedFileKeys)]) {
-    await deleteFileIfUnreferenced(fileKey);
   }
 
   if (io) {
@@ -652,4 +828,76 @@ export const deleteGroup = async (groupId: string, adminId: string, io: any) => 
   }
 
   return { message: "Grup başarıyla silindi." };
+};
+
+export const deleteConversationHistory = async (conversationId: string, userId: string, io: any = null) => {
+  const group = await prisma.conversation.findUnique({ where: { id: conversationId } });
+  
+  if (group && group.isGroup && group.adminId === userId) {
+    // Aktif kalan diğer katılımcıları bulalım
+    const remainingParticipants = await prisma.participant.findMany({
+      where: { conversationId, userId: { not: userId }, isActive: true }
+    });
+
+    let newAdminId: string | null = null;
+    if (remainingParticipants.length > 0) {
+      const historyList = group.adminHistory ? group.adminHistory.split(',') : [];
+      const remainingIds = new Set(remainingParticipants.map(p => p.userId));
+
+      for (let i = historyList.length - 1; i >= 0; i--) {
+        const historicalId = historyList[i];
+        if (remainingIds.has(historicalId)) {
+          newAdminId = historicalId;
+          break;
+        }
+      }
+
+      if (!newAdminId) {
+        const sorted = [...remainingParticipants].sort((a, b) => new Date(a.joinedAt).getTime() - new Date(b.joinedAt).getTime());
+        newAdminId = sorted[0].userId;
+      }
+    }
+
+    const updatedHistory = group.adminHistory 
+      ? group.adminHistory.split(',').filter(id => id !== userId && id !== newAdminId).join(',') 
+      : "";
+
+    await prisma.conversation.update({
+      where: { id: conversationId },
+      data: {
+        adminId: newAdminId,
+        adminHistory: updatedHistory
+      }
+    });
+
+    if (io && newAdminId) {
+      io.to(conversationId).emit('grup_yonetici_degisti', { groupId: conversationId, newAdminId });
+    }
+  }
+
+  await prisma.participant.delete({
+    where: {
+      userId_conversationId: {
+        userId,
+        conversationId
+      }
+    }
+  }).catch(() => undefined);
+
+  // Eğer grupta veya sohbette hiç katılımcı kalmadıysa, sohbeti tamamen temizleyelim
+  const remainingCount = await prisma.participant.count({
+    where: { conversationId }
+  });
+
+  if (remainingCount === 0) {
+    await prisma.conversation.delete({
+      where: { id: conversationId }
+    }).catch(() => undefined);
+  }
+
+  if (io) {
+    io.in(userId).socketsLeave(conversationId);
+  }
+
+  return { message: "Sohbet başarıyla temizlendi." };
 };

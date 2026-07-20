@@ -118,9 +118,9 @@ body.dark-theme input:checked + .slider { background-color: #f97316; }
   animation: modalFadeIn 0.3s ease;
 }
 
-/* Sol Panel (Sidebar) */
 .settings-sidebar { width: 240px; background: #f0f2f5; border-right: 1px solid #d1d7db; display: flex; flex-direction: column; }
 .settings-sidebar-header { padding: 24px 20px; font-size: 20px; font-weight: bold; color: #111b21; }
+.settings-sidebar-tabs { display: flex; flex-direction: column; gap: 5px; padding: 0 10px; flex: 1; }
 .settings-sidebar-footer { padding: 20px 15px; }
 
 .settings-tab-btn {
@@ -646,4 +646,173 @@ body.dark-theme .confirm-btn-cancel {
 body.dark-theme .confirm-btn-cancel:hover {
   background: #2a3942;
   color: #e9edef;
+}
+
+/* =========================================
+   ⚡ MOBİL VE TABLET UYUMU (RESPONSIVE OVERRIDES)
+   ========================================= */
+@media screen and (max-width: 768px) {
+  .settings-layout-container {
+    width: 95% !important;
+    max-width: 480px !important;
+    height: 90vh !important;
+    height: 90dvh !important;
+    flex-direction: column !important;
+  }
+  .settings-sidebar {
+    width: 100% !important;
+    border-right: none !important;
+    border-bottom: 1px solid var(--border-color) !important;
+    padding-bottom: 5px !important;
+  }
+  .settings-sidebar-header {
+    padding: 16px 20px 8px !important;
+    font-size: 18px !important;
+    text-align: center !important;
+  }
+  .settings-sidebar-tabs {
+    flex-direction: row !important;
+    overflow-x: auto !important;
+    padding: 0 10px 8px 10px !important;
+    gap: 6px !important;
+    flex: none !important;
+  }
+  .settings-tab-btn {
+    padding: 8px 12px !important;
+    font-size: 13.5px !important;
+    white-space: nowrap !important;
+    justify-content: center !important;
+  }
+  .settings-sidebar-footer {
+    padding: 5px 15px 10px 15px !important;
+  }
+  .settings-logout-btn {
+    padding: 8px !important;
+    font-size: 13.5px !important;
+  }
+  .settings-content {
+    padding: 20px !important;
+  }
+  .settings-title {
+    font-size: 20px !important;
+    margin-bottom: 15px !important;
+  }
+  .settings-avatar-row {
+    gap: 15px !important;
+    margin-bottom: 20px !important;
+  }
+  .settings-avatar {
+    width: 60px !important;
+    height: 60px !important;
+    font-size: 24px !important;
+  }
+  .settings-username {
+    font-size: 18px !important;
+  }
+  .cropper-container {
+    max-width: 95% !important;
+  }
+}
+
+/* =========================================
+   🚪 GRUPTAN ÇIKIŞ ONAY PENCERESİ (EXIT CONFIRM DIALOG)
+   ========================================= */
+.exit-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 110000;
+  background: rgba(0,0,0,0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(3px);
+  animation: modalFadeIn 0.25s ease;
+}
+.exit-confirm-content {
+  background: white;
+  color: #111b21;
+  padding: 24px;
+  border-radius: 12px;
+  width: 360px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  animation: modalFadeIn 0.25s ease;
+}
+body.dark-theme .exit-confirm-content {
+  background: #1f2c34;
+  color: #e9edef;
+}
+.exit-confirm-btn-danger {
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: none;
+  background: #e53935;
+  color: white;
+  font-weight: bold;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.1s;
+}
+.exit-confirm-btn-danger:hover {
+  background: #d32f2f;
+}
+.exit-confirm-btn-danger:active {
+  transform: scale(0.98);
+}
+.exit-confirm-btn-green {
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: none;
+  background: #25d366;
+  color: white;
+  font-weight: bold;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.1s;
+}
+.exit-confirm-btn-green:hover {
+  background: #20ba59;
+}
+.exit-confirm-btn-green:active {
+  transform: scale(0.98);
+}
+.exit-confirm-btn-outline {
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid #ddd;
+  background: transparent;
+  color: #111b21;
+  font-weight: bold;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+body.dark-theme .exit-confirm-btn-outline {
+  border-color: #2a3942;
+  color: #e9edef;
+}
+.exit-confirm-btn-outline:hover {
+  background: rgba(0,0,0,0.05);
+}
+body.dark-theme .exit-confirm-btn-outline:hover {
+  background: rgba(255,255,255,0.05);
+}
+.exit-confirm-btn-secondary {
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: none;
+  background: #f0f2f5;
+  color: #111b21;
+  font-weight: bold;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+body.dark-theme .exit-confirm-btn-secondary {
+  background: #2a3942;
+  color: #e9edef;
+}
+.exit-confirm-btn-secondary:hover {
+  background: #e1e3e6;
+}
+body.dark-theme .exit-confirm-btn-secondary:hover {
+  background: #374955;
 }

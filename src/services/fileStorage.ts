@@ -1,4 +1,5 @@
 import {
+  CopyObjectCommand,
   DeleteObjectCommand,
   GetObjectCommand,
   PutObjectCommand,
@@ -94,6 +95,24 @@ export const deletePrivateFile = async (fileKey: string) => {
     await s3.send(new DeleteObjectCommand({ Bucket: bucketName, Key: fileKey }));
   } catch (error) {
     logger.error({ event: 'storage.r2_delete_failed', err: error, fileKey }, 'R2 object deletion failed');
+    throw error;
+  }
+};
+
+// Forwarded media gets a distinct object key. This preserves asset ownership and avoids allowing a
+// user to attach another user's uploaded object directly.
+export const copyPrivateFile = async (sourceFileKey: string, originalName: string) => {
+  const extension = path.extname(originalName).toLowerCase().slice(0, 12);
+  const fileKey = `${randomUUID()}${extension}`;
+  try {
+    await s3.send(new CopyObjectCommand({
+      Bucket: bucketName,
+      Key: fileKey,
+      CopySource: `${bucketName}/${encodeURIComponent(sourceFileKey).replace(/%2F/g, '/')}`
+    }));
+    return fileKey;
+  } catch (error) {
+    logger.error({ event: 'storage.r2_copy_failed', err: error, sourceFileKey, fileKey }, 'R2 object copy failed');
     throw error;
   }
 };

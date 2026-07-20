@@ -4,7 +4,11 @@ import { Prisma } from '@prisma/client';
 import prisma from '../db';
 import { withSignedFileUrl } from './fileStorage';
 import { deleteFileIfUnreferenced } from './fileCleanup';
-import { isConversationMember } from './conversationAccess';
+import { attachOwnedAsset, cloneAssetForOwner } from './uploadedAssetService';
+import {
+  requireActiveParticipant,
+  requireHistoryParticipant
+} from './conversationAccess';
 
 // Arama koşulu (expiresAt null veya gelecekte olan mesajlar)
 const visibleMessageWhere = () => ({
@@ -13,6 +17,83 @@ const visibleMessageWhere = () => ({
     { expiresAt: { gt: new Date() } }
   ]
 });
+
+const getActiveMessageWindows = (userId: string) => (
+  prisma.participant.findMany({
+    where: {
+      userId,
+      isActive: true,
+      conversation: { isDeleted: false }
+    },
+    select: {
+      conversationId: true,
+      joinedAt: true
+    }
+  })
+);
+
+const requireActiveMessageAccess = async (
+  message: { conversationId: string; createdAt: Date },
+  userId: string,
+  errorMessage: string
+) => {
+  const membership = await requireActiveParticipant(
+    message.conversationId,
+    userId,
+    errorMessage
+  );
+  if (message.createdAt < membership.joinedAt) {
+    throw new Error(errorMessage);
+  }
+  return membership;
+};
+
+const resolveMessageAsset = async (input: {
+  fileKey?: string | null;
+  fileName?: string | null;
+  isForwarded?: boolean;
+  senderId: string;
+}) => {
+  if (!input.fileKey) return null;
+
+  if (!input.isForwarded) {
+    await attachOwnedAsset(input.fileKey, input.senderId);
+    return input.fileKey;
+  }
+
+  const sourceMessage = await prisma.message.findFirst({
+    where: { fileKey: input.fileKey, ...visibleMessageWhere() },
+    include: {
+      conversation: {
+        select: {
+          isDeleted: true,
+          participants: {
+            where: { userId: input.senderId, isActive: true },
+            select: { joinedAt: true }
+          }
+        }
+      }
+    }
+  });
+  const membership = sourceMessage?.conversation.participants[0];
+  if (!sourceMessage || sourceMessage.conversation.isDeleted || !membership || sourceMessage.createdAt < membership.joinedAt) {
+    throw new Error('İletilecek dosyaya erişim yetkiniz yok.');
+  }
+
+  const sourceAsset = await prisma.uploadedAsset.findUnique({ where: { fileKey: input.fileKey } });
+  if (!sourceAsset || sourceAsset.status === 'REJECTED') {
+    throw new Error('İletilecek dosya kullanılamıyor.');
+  }
+
+  const copiedFileKey = await cloneAssetForOwner({
+    sourceFileKey: input.fileKey,
+    sourceAsset,
+    ownerId: input.senderId,
+    originalName: input.fileName || sourceMessage.fileName || input.fileKey
+  });
+  await attachOwnedAsset(copiedFileKey, input.senderId);
+  return copiedFileKey;
+};
 
 export type MessageWithReads = Prisma.MessageGetPayload<{
   include: {
@@ -76,11 +157,20 @@ export const sendMessage = async (
 ) => {
   const { conversationId, clientId, content, replyToId, isForwarded, fileKey, fileType, fileName, gameChannelId } = payload;
 
+  const membership = await requireActiveParticipant(
+    conversationId,
+    senderId,
+    'Bu sohbete mesaj gönderme yetkiniz yok.'
+  );
+
   const conversation = await prisma.conversation.findUnique({
     where: { id: conversationId },
     include: { participants: true }
   });
   if (!conversation) throw new Error("Sohbet bulunamadı.");
+  if (conversation.isDeleted) {
+    throw new Error("Bu grup silinmiştir. Yeni mesaj gönderilemez.");
+  }
   if (!conversation.participants.some((participant: any) => participant.userId === senderId && participant.isActive)) {
     throw new Error("Bu sohbete mesaj gönderme yetkiniz yok.");
   }
@@ -118,11 +208,18 @@ export const sendMessage = async (
   // Yanıtlanan mesaj doğrulaması
   if (replyToId) {
     const repliedMessage = await prisma.message.findFirst({
-      where: { id: String(replyToId), conversationId, gameChannelId: gameChannelId || null },
+      where: {
+        id: String(replyToId),
+        conversationId,
+        gameChannelId: gameChannelId || null,
+        createdAt: { gte: membership.joinedAt }
+      },
       select: { id: true }
     });
     if (!repliedMessage) throw new Error("Yanıtlanan mesaj bu sohbete ait değil.");
   }
+
+  const resolvedFileKey = await resolveMessageAsset({ fileKey, fileName, isForwarded, senderId });
 
   let savedMessage;
   try {
@@ -135,7 +232,7 @@ export const sendMessage = async (
         gameChannelId: gameChannelId || null,
         replyToId: replyToId || null,
         isForwarded: isForwarded || false,
-        fileKey: fileKey || null,
+        fileKey: resolvedFileKey,
         fileType: fileType || null,
         fileName: fileName || null,
         expiresAt: conversation.disappearingDurationSeconds
@@ -159,6 +256,7 @@ export const sendMessage = async (
   } catch (error) {
     // Idempotency (clientId unique key çakışması) kontrolü
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+      if (resolvedFileKey) await deleteFileIfUnreferenced(resolvedFileKey);
       const existingMessage = await prisma.message.findUnique({
         where: { senderId_clientId: { senderId, clientId } },
         include: {
@@ -173,6 +271,7 @@ export const sendMessage = async (
       if (!existingMessage) throw error;
       return serializeMessage(existingMessage);
     }
+    if (resolvedFileKey) await deleteFileIfUnreferenced(resolvedFileKey);
     throw error;
   }
 
@@ -191,24 +290,22 @@ export const sendMessage = async (
  * Geçmiş mesajları sayfalanmış şekilde döner.
  */
 export const fetchMessages = async (conversationId: string, userId: string, cursor?: string) => {
-  const participant: any = await prisma.participant.findUnique({
-    where: { userId_conversationId: { userId, conversationId } },
-    select: { leftAt: true } as any
-  });
-  if (!participant) {
-    throw new Error("Bu sohbetin mesajlarını görüntüleme yetkiniz yok.");
-  }
+  const participant = await requireHistoryParticipant(
+    conversationId,
+    userId,
+    'Bu sohbetin mesajlarını görüntüleme yetkiniz yok.'
+  );
 
   const whereClause: any = {
     conversationId,
     gameChannelId: null,
     deletions: { none: { userId } },
-    ...visibleMessageWhere()
+    ...visibleMessageWhere(),
+    createdAt: {
+      gte: participant.joinedAt,
+      ...(participant.leftAt ? { lte: participant.leftAt } : {})
+    }
   };
-
-  if (participant.leftAt) {
-    whereClause.createdAt = { lte: participant.leftAt };
-  }
 
   const messages = await prisma.message.findMany({
     where: whereClause,
@@ -232,15 +329,23 @@ export const fetchMessages = async (conversationId: string, userId: string, curs
  * Kullanıcının katıldığı konuşmalardaki mesajları arar.
  */
 export const searchMessages = async (userId: string, searchTerm: string) => {
+  const memberships = await getActiveMessageWindows(userId);
+  if (memberships.length === 0) return [];
+
   const messages = await prisma.message.findMany({
     where: {
       gameChannelId: null,
       content: { contains: searchTerm.trim(), mode: 'insensitive' },
       deletions: { none: { userId } },
-      ...visibleMessageWhere(),
-      conversation: {
-        participants: { some: { userId } }
-      }
+      AND: [
+        visibleMessageWhere(),
+        {
+          OR: memberships.map(({ conversationId, joinedAt }) => ({
+            conversationId,
+            createdAt: { gte: joinedAt }
+          }))
+        }
+      ]
     },
     include: {
       sender: { select: { username: true } },
@@ -249,7 +354,10 @@ export const searchMessages = async (userId: string, searchTerm: string) => {
       deletions: { select: { userId: true } },
       conversation: {
         include: {
-          participants: { include: { user: { select: { id: true, username: true, email: true } } } }
+          participants: {
+            where: { isActive: true },
+            include: { user: { select: { id: true, username: true, email: true } } }
+          }
         }
       }
     },
@@ -264,15 +372,23 @@ export const searchMessages = async (userId: string, searchTerm: string) => {
  * Kullanıcının yıldızlı mesajlarını döner.
  */
 export const fetchStarredMessages = async (userId: string) => {
+  const memberships = await getActiveMessageWindows(userId);
+  if (memberships.length === 0) return [];
+
   const messages = await prisma.message.findMany({
     where: {
       gameChannelId: null,
       stars: { some: { userId } },
       deletions: { none: { userId } },
-      ...visibleMessageWhere(),
-      conversation: {
-        participants: { some: { userId } }
-      }
+      AND: [
+        visibleMessageWhere(),
+        {
+          OR: memberships.map(({ conversationId, joinedAt }) => ({
+            conversationId,
+            createdAt: { gte: joinedAt }
+          }))
+        }
+      ]
     },
     include: {
       sender: { select: { username: true } },
@@ -281,7 +397,10 @@ export const fetchStarredMessages = async (userId: string) => {
       deletions: { select: { userId: true } },
       conversation: {
         include: {
-          participants: { include: { user: { select: { id: true, username: true, email: true } } } }
+          participants: {
+            where: { isActive: true },
+            include: { user: { select: { id: true, username: true, email: true } } }
+          }
         }
       }
     },
@@ -301,9 +420,11 @@ export const editMessage = async (messageId: string, userId: string, content: st
   if (message.senderId !== userId) {
     throw new Error("Yalnızca kendi mesajınızı düzenleyebilirsiniz.");
   }
-  if (!(await isConversationMember(message.conversationId, userId))) {
-    throw new Error("Bu sohbetin üyesi değilsiniz.");
-  }
+  await requireActiveMessageAccess(
+    message,
+    userId,
+    'Bu sohbetin aktif üyesi değilsiniz.'
+  );
 
   const updatedMessageRecord = await prisma.message.update({
     where: { id: messageId },
@@ -336,9 +457,11 @@ export const editMessage = async (messageId: string, userId: string, content: st
  * Sohbetteki paylaşılan medyaları ve bağlantıları getirir.
  */
 export const fetchConversationMedia = async (conversationId: string, userId: string) => {
-  if (!(await isConversationMember(conversationId, userId))) {
-    throw new Error('Bu sohbetin medya bilgilerini görme yetkiniz yok.');
-  }
+  const membership = await requireActiveParticipant(
+    conversationId,
+    userId,
+    'Bu sohbetin medya bilgilerini görme yetkiniz yok.'
+  );
 
   const records = await prisma.message.findMany({
     where: {
@@ -347,6 +470,7 @@ export const fetchConversationMedia = async (conversationId: string, userId: str
       deletions: { none: { userId } },
       AND: [
         visibleMessageWhere(),
+        { createdAt: { gte: membership.joinedAt } },
         {
           OR: [
             { fileKey: { not: null } },
@@ -380,9 +504,11 @@ export const fetchConversationMedia = async (conversationId: string, userId: str
 export const pinMessage = async (messageId: string, userId: string, io: any) => {
   const message = await prisma.message.findUnique({ where: { id: messageId } });
   if (!message) throw new Error("Mesaj bulunamadı.");
-  if (!(await isConversationMember(message.conversationId, userId))) {
-    throw new Error("Bu mesajı sabitleme yetkiniz yok.");
-  }
+  await requireActiveMessageAccess(
+    message,
+    userId,
+    'Bu mesajı sabitleme yetkiniz yok.'
+  );
 
   const updatedMessage = await prisma.message.update({
     where: { id: messageId },
@@ -411,9 +537,11 @@ export const pinMessage = async (messageId: string, userId: string, io: any) => 
 export const starMessage = async (messageId: string, userId: string, io: any) => {
   const message = await prisma.message.findUnique({ where: { id: messageId } });
   if (!message) throw new Error("Mesaj bulunamadı.");
-  if (!(await isConversationMember(message.conversationId, userId))) {
-    throw new Error("Bu mesajı yıldızlama yetkiniz yok.");
-  }
+  await requireActiveMessageAccess(
+    message,
+    userId,
+    'Bu mesajı yıldızlama yetkiniz yok.'
+  );
 
   const existingStar = await prisma.messageStar.findUnique({
     where: { messageId_userId: { messageId, userId } }
@@ -456,9 +584,11 @@ export const starMessage = async (messageId: string, userId: string, io: any) =>
 export const deleteMessage = async (messageId: string, userId: string, forEveryone: boolean, io: any) => {
   const message = await prisma.message.findUnique({ where: { id: messageId } });
   if (!message) throw new Error("Mesaj bulunamadı.");
-  if (!(await isConversationMember(message.conversationId, userId))) {
-    throw new Error("Bu mesajı silme yetkiniz yok.");
-  }
+  await requireActiveMessageAccess(
+    message,
+    userId,
+    'Bu mesajı silme yetkiniz yok.'
+  );
 
   if (forEveryone) {
     if (message.senderId !== userId) {
@@ -528,13 +658,11 @@ export const markAsRead = async (
   io?: any,
   gameChannelId?: string | null
 ) => {
-  const membership = await prisma.participant.findUnique({
-    where: { userId_conversationId: { userId, conversationId } },
-    select: { joinedAt: true }
-  });
-  if (!membership) {
-    throw new Error("Bu sohbet odasına erişim yetkiniz yok.");
-  }
+  const membership = await requireActiveParticipant(
+    conversationId,
+    userId,
+    'Bu sohbet odasına erişim yetkiniz yok.'
+  );
 
   let lastReadMessage = null;
   if (lastReadMessageId) {
@@ -544,6 +672,9 @@ export const markAsRead = async (
     });
     if (!lastReadMessage) {
       throw new Error("Belirtilen son okunan mesaj bu sohbete ait değil.");
+    }
+    if (lastReadMessage.createdAt < membership.joinedAt) {
+      throw new Error("Belirtilen son okunan mesaj üyelik döneminizin dışında.");
     }
   }
 
@@ -592,7 +723,11 @@ export const markAsRead = async (
  */
 export const getUnreadCounts = async (userId: string) => {
   const myParticipants = await prisma.participant.findMany({
-    where: { userId },
+    where: {
+      userId,
+      isActive: true,
+      conversation: { isDeleted: false }
+    },
     select: {
       conversationId: true,
       joinedAt: true,
@@ -618,6 +753,11 @@ export const getUnreadCounts = async (userId: string) => {
           gameChannelId: null,
           senderId: { not: userId },
           createdAt: { gte: p.joinedAt },
+          content: {
+            not: {
+              startsWith: '[SYSTEM_'
+            }
+          },
           ...visibleMessageWhere(),
           reads: {
             none: { userId }
