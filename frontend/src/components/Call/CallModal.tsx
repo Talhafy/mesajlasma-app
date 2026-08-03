@@ -1,3 +1,18 @@
+/**
+ * ============================================================================
+ * LIVEKIT WEBRTC SESLİ VE GÖRÜNTÜLÜ ARAMA MODALI (CallModal Component)
+ * ============================================================================
+ * 
+ * Bu bileşen, LiveKit WebRTC altyapısını kullanarak kullanıcılar arasında birebir
+ * veya grup halinde gerçek zamanlı sesli ve görüntülü görüşme yapmayı sağlar.
+ * 
+ * TEKNİK YAPILANDIRMA:
+ * 1. LiveKitRoom          -> WebRTC soket bağlantısını ve medya akışlarını (Audio/Video Tracks) başlatır.
+ * 2. RoomAudioRenderer    -> Karşı tarafın ses akışını (Remote Audio Track) otomatik hoparlöre yönlendirir.
+ * 3. VideoConference      -> Katılımcıların kamera görüntülerini ızgara (grid) şeklinde ekrana yerleştirir.
+ * 4. useParticipants      -> Odadaki katılımcıları ve bağlantı durumunu anlık takip eder.
+ */
+
 import {
   LiveKitRoom,
   RoomAudioRenderer,
@@ -10,6 +25,7 @@ import './CallModal.css';
 
 export type CallType = 'audio' | 'video';
 
+/** Aktif Arama Detay Arayüzü */
 export interface ActiveCall {
   conversationId: string;
   callId: string;
@@ -32,8 +48,13 @@ interface CallSessionContentProps {
   onClose: () => void;
 }
 
+/**
+ * ARAMA İÇERİK VE KONTROL EKRANI (Call Session Content)
+ * Katılımcı durumuna göre bekliyor veya görüşme devam ediyor arayüzü sunar.
+ */
 function CallSessionContent({ title, isVideoCall, onClose }: CallSessionContentProps) {
   const participants = useParticipants();
+  // Kendimiz dışındaki uzak katılımcı var mı kontrolü
   const hasRemoteParticipant = participants.some((participant) => !participant.isLocal);
   const avatarLetter = title?.[0]?.toUpperCase() || '?';
   const isWaitingVideoCall = isVideoCall && !hasRemoteParticipant;
@@ -44,8 +65,10 @@ function CallSessionContent({ title, isVideoCall, onClose }: CallSessionContentP
 
   return (
     <div className={`call-session-shell ${isWaitingVideoCall ? 'waiting-video' : ''}`}>
+      {/* Sesli aramada veya henüz görüntülü arama açılmadığında ses işleyicisi */}
       {(!isVideoCall || !hasRemoteParticipant) && <RoomAudioRenderer />}
 
+      {/* Görüntülü Arama Bağlandıysa Video Grid Göster */}
       {isVideoCall && hasRemoteParticipant ? (
         <div className="call-video-shell">
           <div className="call-video-stage">
@@ -76,6 +99,7 @@ function CallSessionContent({ title, isVideoCall, onClose }: CallSessionContentP
           </div>
         </div>
       ) : (
+        /* Sesli Arama veya Karşı Taraf Bekleniyor Ekranı */
         <div className="call-prompt-card">
           <div className="call-top-icons">
             <span>{isVideoCall ? '◖' : '◐'}</span>
@@ -105,6 +129,9 @@ function CallSessionContent({ title, isVideoCall, onClose }: CallSessionContentP
   );
 }
 
+/**
+ * LIVEKIT ROOM SARMALAYICI BİLEŞENİ (Main Call Modal Entry)
+ */
 export default function CallModal({ call, title, onClose }: CallModalProps) {
   const isVideoCall = call.callType === 'video';
 

@@ -1,4 +1,21 @@
-//jwt ve refresh token sistemi
+/**
+ * ============================================================================
+ * KİMLİK DOĞRULAMA VE OTURUM ROTALARI (Authentication & Session Routes)
+ * ============================================================================
+ * 
+ * Bu dosya, kullanıcı kaydı, girişi, oturum yenileme (Refresh Token Rotation),
+ * tekli çıkış ve tüm cihazlardan toplu çıkış süreçlerini yönetir.
+ * 
+ * GÜVENLİK İLKELERİ:
+ * 1. Çift Token Modeli (Dual-Token System):
+ *    - Access Token: 15 dakika ömürlü, Authorization Header'da taşınır.
+ *    - Refresh Token: 7 gün ömürlü, yalnızca HttpOnly & Secure çerezde taşınır.
+ * 2. Token Hırsızlığı Tespiti (Refresh Token Reuse Detection):
+ *    - Kullanılmış bir Refresh Token tekrar sunucuya gelirse, sistem bunun çalındığını
+ *      anlar ve kullanıcının tüm cihazlardaki oturumlarını anında iptal eder.
+ * 3. Zamanlama Saldırısı Koruması (Timing Attack Prevention):
+ *    - Olmayan kullanıcı adı denemelerinde rastgele gecikmeler eklenir.
+ */
 
 import express, { NextFunction, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
@@ -18,11 +35,10 @@ import {
   readRefreshToken,
   setRefreshCookie
 } from '../services/authTokens';
+import { disconnectUserSockets } from '../socket/sessionControl';
 
 const router = express.Router();
 
-// Auth loglarında aynı alanları tekrar tekrar elle yazmamak için ortak bağlam üretiyoruz.
-// requestId sayesinde login/refresh/logout akışları HTTP request loglarıyla Kibana'da eşleştirilebilir.
 const getRequestId = (req: Request) => (req as Request & { id?: string }).id;
 const authLogContext = (req: Request, extra: Record<string, unknown> = {}) => ({
   requestId: getRequestId(req),
@@ -32,21 +48,26 @@ const authLogContext = (req: Request, extra: Record<string, unknown> = {}) => ({
   ...extra
 });
 
+/**
+ * CSRF VE GÜVENİLİR ORIGIN KONTROLÜ
+ * HttpOnly çerez taşıyan kritik uç noktalarda istek kaynağını (Origin) doğrular.
+ */
 const requireTrustedOrigin = (req: Request, res: Response, next: NextFunction) => {
   const origin = req.headers.origin;
-  // Refresh token HttpOnly cookie ile taşındığı için tarayıcı otomatik cookie gönderir.
-  // Bu endpointlerde origin kontrolü yaparak CSRF riskini azaltıyoruz.
-  // HttpOnly cookie kullanan durum değiştiren endpoint'lerde CSRF kaynağı kontrol edilir.
   if (origin && origin !== clientOrigin) {
     logger.warn(authLogContext(req, {
       event: 'security.untrusted_origin',
       origin
     }), 'Untrusted request origin');
-    return res.status(403).json({ error: 'İsteğin kaynağına izin verilmiyor.' });
+    return res.status(403).json({ error: 'İsteğin kaynağına izin verilmiyor.', code: 'FORBIDDEN' });
   }
   next();
 };
 
+/**
+ * HASSAS VERİLERDEN ARINDIRILMIŞ KULLANICI NESNESİ ÜRETİCİ
+ * Şifre hash'i veya oturum detayları response'a asla eklenmez.
+ */
 const publicUser = async (user: {
   id: string;
   username: string;
@@ -55,8 +76,6 @@ const publicUser = async (user: {
   lastSeenAt: Date;
   avatarFileKey: string | null;
 }) => ({
-  // Şifre hash'i, refresh session bilgisi veya hassas alanlar response'a asla eklenmez.
-  // Avatar varsa frontend'in doğrudan açabilmesi için anlık signed URL üretilir.
   id: user.id,
   username: user.username,
   email: user.email,
@@ -66,6 +85,9 @@ const publicUser = async (user: {
   avatarUrl: user.avatarFileKey ? await createSignedFileUrl(user.avatarFileKey) : null
 });
 
+/**
+ * POST /api/v1/register -> Yeni Kullanıcı Kaydı
+ */
 router.post('/register', requireTrustedOrigin, validateRequest({ body: authSchemas.register }), async (req, res) => {
   try {
     const { username, email, password } = req.body;
@@ -89,10 +111,13 @@ router.post('/register', requireTrustedOrigin, validateRequest({ body: authSchem
       event: 'auth.register_failed',
       err: error
     }), 'Register failed');
-    return res.status(400).json({ error: 'Kullanıcı adı veya e-posta zaten kullanılıyor.' });
+    return res.status(400).json({ error: 'Kullanıcı adı veya e-posta zaten kullanılıyor.', code: 'BAD_REQUEST' });
   }
 });
 
+/**
+ * POST /api/v1/login -> Kullanıcı Girişi ve Oturum Açma
+ */
 router.post('/login', requireTrustedOrigin, validateRequest({ body: authSchemas.login }), async (req, res) => {
   try {
     const { identifier, password } = req.body;
@@ -101,7 +126,7 @@ router.post('/login', requireTrustedOrigin, validateRequest({ body: authSchemas.
     });
 
     if (!user) {
-      // Zamanlama analizini (timing attack) zorlaştırmak için sabit/rastgele gecikme
+      // Timing Attack önleme: kullanıcı olmasa bile rastgele gecikme ekliyoruz
       const fakeDelay = 200 + Math.floor(Math.random() * 300);
       await new Promise((resolve) => setTimeout(resolve, fakeDelay));
 
@@ -109,11 +134,10 @@ router.post('/login', requireTrustedOrigin, validateRequest({ body: authSchemas.
         event: 'auth.login_failed',
         reason: 'user_not_found'
       }), 'Login failed');
-      return res.status(401).json({ error: 'Giriş bilgileri veya şifre hatalı.' });
+      return res.status(401).json({ error: 'Giriş bilgileri veya şifre hatalı.', code: 'INVALID_CREDENTIALS' });
     }
 
-    // Hatalı giriş denemesi varsa progresif gecikme (exponential backoff) uygula (1s, 2s, 4s, 8s, maks 10s).
-    // Bu sayede saldırganın hesabı kilitleyerek DoS yapması engellenirken kaba kuvvet hız limiti sağlanır.
+    // Üst üste hatalı denemelerde progresif gecikme (Exponential Backoff)
     if (user.failedLoginAttempts > 0) {
       const delayMs = Math.min(1000 * Math.pow(2, user.failedLoginAttempts - 1), 10000);
       await new Promise((resolve) => setTimeout(resolve, delayMs));
@@ -122,12 +146,9 @@ router.post('/login', requireTrustedOrigin, validateRequest({ body: authSchemas.
     const isMatch = await bcrypt.compare(password, user.password_hash);
     if (!isMatch) {
       const nextAttempts = user.failedLoginAttempts + 1;
-
       await prisma.user.update({
         where: { id: user.id },
-        data: {
-          failedLoginAttempts: nextAttempts
-        }
+        data: { failedLoginAttempts: nextAttempts }
       });
 
       logger.warn(authLogContext(req, {
@@ -137,9 +158,10 @@ router.post('/login', requireTrustedOrigin, validateRequest({ body: authSchemas.
         failedAttempts: nextAttempts
       }), 'Login failed');
 
-      return res.status(401).json({ error: 'Giriş bilgileri veya şifre hatalı.' });
+      return res.status(401).json({ error: 'Giriş bilgileri veya şifre hatalı.', code: 'INVALID_CREDENTIALS' });
     }
 
+    // Yeni Refresh Token ve Access Token üretiyoruz
     const refreshToken = createRefreshToken();
     const refreshExpiresAt = getRefreshExpiry();
 
@@ -156,9 +178,7 @@ router.post('/login', requireTrustedOrigin, validateRequest({ body: authSchemas.
       });
       await tx.user.update({
         where: { id: user.id },
-        data: {
-          failedLoginAttempts: 0
-        }
+        data: { failedLoginAttempts: 0 }
       });
     });
 
@@ -178,22 +198,23 @@ router.post('/login', requireTrustedOrigin, validateRequest({ body: authSchemas.
       event: 'auth.login_error',
       err: error
     }), 'Login server error');
-    return res.status(500).json({ error: 'Giriş işlemi sırasında sunucu hatası oluştu.' });
+    return res.status(500).json({ error: 'Giriş işlemi sırasında sunucu hatası oluştu.', code: 'INTERNAL_ERROR' });
   }
 });
 
+/**
+ * POST /api/v1/refresh -> Access Token Yenileme (Refresh Token Rotation)
+ */
 router.post('/refresh', requireTrustedOrigin, async (req, res) => {
   try {
     const presentedToken = readRefreshToken(req.headers.cookie);
     if (!presentedToken) {
       logger.warn(authLogContext(req, { event: 'auth.refresh_missing' }), 'Refresh token missing');
       clearRefreshCookie(res);
-      return res.status(401).json({ error: 'Refresh oturumu bulunamadı.' });
+      return res.status(401).json({ error: 'Refresh oturumu bulunamadı.', code: 'UNAUTHORIZED' });
     }
 
     const tokenHash = hashRefreshToken(presentedToken);
-    // Refresh token'ın ham değeri veritabanında tutulmaz; yalnızca HMAC/hash karşılığı aranır.
-    // Cookie çalınmadığı sürece DB sızıntısı tek başına oturum açmaya yetmez.
     const session = await prisma.refreshSession.findUnique({
       where: { tokenHash },
       include: { user: true }
@@ -202,10 +223,10 @@ router.post('/refresh', requireTrustedOrigin, async (req, res) => {
     if (!session) {
       logger.warn(authLogContext(req, { event: 'auth.refresh_invalid' }), 'Refresh session invalid');
       clearRefreshCookie(res);
-      return res.status(401).json({ error: 'Refresh oturumu geçersiz.' });
+      return res.status(401).json({ error: 'Refresh oturumu geçersiz.', code: 'UNAUTHORIZED' });
     }
 
-    // Daha önce döndürülmüş token'ın yeniden kullanılması token hırsızlığı göstergesidir.
+    // TEKRAR KULLANIM TESPİTİ (Reuse Detection): İptal edilmiş token tekrar kullanılırsa tüm oturumlar kapatılır
     if (session.revokedAt) {
       logger.warn(authLogContext(req, {
         event: 'auth.refresh_reuse_detected',
@@ -215,8 +236,9 @@ router.post('/refresh', requireTrustedOrigin, async (req, res) => {
         where: { userId: session.userId, revokedAt: null },
         data: { revokedAt: new Date() }
       });
+      disconnectUserSockets(req.app.get('io'), session.userId, 'refresh_token_reuse');
       clearRefreshCookie(res);
-      return res.status(401).json({ error: 'Refresh token tekrar kullanımı algılandı. Tüm oturumlar kapatıldı.' });
+      return res.status(401).json({ error: 'Refresh token tekrar kullanımı algılandı. Tüm oturumlar kapatıldı.', code: 'UNAUTHORIZED' });
     }
 
     if (session.expiresAt <= new Date()) {
@@ -229,13 +251,11 @@ router.post('/refresh', requireTrustedOrigin, async (req, res) => {
         data: { revokedAt: new Date() }
       });
       clearRefreshCookie(res);
-      return res.status(401).json({ error: 'Refresh oturumunun süresi doldu.' });
+      return res.status(401).json({ error: 'Refresh oturumunun süresi doldu.', code: 'UNAUTHORIZED' });
     }
 
+    // Refresh Rotation: Eski token iptal edilir, yeni token üretilir
     const nextRefreshToken = createRefreshToken();
-    // Refresh rotation: kullanılan refresh token hemen iptal edilir ve yerine yeni token üretilir.
-    // Böylece eski token tekrar gelirse reuse detection ile şüpheli oturumları kapatabiliriz.
-    // Eski token'ı iptal etme ve yenisini oluşturma tek transaction'da gerçekleşir.
     const rotated = await prisma.$transaction(async (tx) => {
       const revoked = await tx.refreshSession.updateMany({
         where: { id: session.id, revokedAt: null, expiresAt: { gt: new Date() } },
@@ -258,7 +278,7 @@ router.post('/refresh', requireTrustedOrigin, async (req, res) => {
         event: 'auth.refresh_conflict',
         userId: session.userId
       }), 'Refresh rotation conflict');
-      return res.status(409).json({ error: 'Refresh oturumu başka bir istek tarafından yenilendi. İsteği tekrar deneyin.' });
+      return res.status(409).json({ error: 'Refresh oturumu başka bir istek tarafından yenilendi. İsteği tekrar deneyin.', code: 'CONFLICT' });
     }
 
     setRefreshCookie(res, nextRefreshToken, session.expiresAt);
@@ -277,10 +297,13 @@ router.post('/refresh', requireTrustedOrigin, async (req, res) => {
       err: error
     }), 'Refresh server error');
     clearRefreshCookie(res);
-    return res.status(500).json({ error: 'Refresh işlemi sırasında sunucu hatası oluştu.' });
+    return res.status(500).json({ error: 'Refresh işlemi sırasında sunucu hatası oluştu.', code: 'INTERNAL_ERROR' });
   }
 });
 
+/**
+ * POST /api/v1/logout -> Tekli Oturum Çıkışı
+ */
 router.post('/logout', requireTrustedOrigin, async (req, res) => {
   try {
     const refreshToken = readRefreshToken(req.headers.cookie);
@@ -298,17 +321,21 @@ router.post('/logout', requireTrustedOrigin, async (req, res) => {
       event: 'auth.logout_error',
       err: error
     }), 'Logout failed');
-    return res.status(500).json({ error: 'Çıkış işlemi tamamlanamadı.' });
+    return res.status(500).json({ error: 'Çıkış işlemi tamamlanamadı.', code: 'INTERNAL_ERROR' });
   }
 });
 
+/**
+ * POST /api/v1/logout-all -> Tüm Cihazlardan Çıkış Yapma
+ */
 router.post('/logout-all', requireTrustedOrigin, authenticateToken, async (req: CustomRequest, res) => {
   try {
-    if (!req.user) return res.status(401).json({ error: 'Kimliği doğrulanmış kullanıcı bulunamadı.' });
+    if (!req.user) return res.status(401).json({ error: 'Kimliği doğrulanmış kullanıcı bulunamadı.', code: 'UNAUTHORIZED' });
     await prisma.refreshSession.updateMany({
       where: { userId: req.user.userId, revokedAt: null },
       data: { revokedAt: new Date() }
     });
+    disconnectUserSockets(req.app.get('io'), req.user.userId, 'logout_all');
     clearRefreshCookie(res);
     logger.info(authLogContext(req, {
       event: 'auth.logout_all_success',
@@ -321,7 +348,7 @@ router.post('/logout-all', requireTrustedOrigin, authenticateToken, async (req: 
       userId: req.user?.userId,
       err: error
     }), 'Logout all failed');
-    return res.status(500).json({ error: 'Tüm oturumlardan çıkış yapılamadı.' });
+    return res.status(500).json({ error: 'Tüm oturumlardan çıkış yapılamadı.', code: 'INTERNAL_ERROR' });
   }
 });
 

@@ -675,7 +675,16 @@ export default function App() {
     // Yeni access token geldiğinde bağlı socket'i yeniden başlatmayız; token sonraki bağlantıda kullanılır.
     const unsubscribeToken = subscribeAccessToken((nextToken) => {
       newSocket.auth = { token: nextToken };
-      if (nextToken && !newSocket.connected && isSocketActiveRef.current) void reconnectSocketIfActive();
+      if (!nextToken) {
+        newSocket.disconnect();
+        return;
+      }
+      if (newSocket.connected) {
+        newSocket.disconnect();
+        newSocket.connect();
+      } else if (isSocketActiveRef.current) {
+        void reconnectSocketIfActive();
+      }
     });
 
     newSocket.on('connect', () => {
@@ -729,6 +738,11 @@ export default function App() {
         newSocket.auth = { token: accessToken };
         newSocket.connect();
       }).catch(() => undefined);
+    });
+
+    newSocket.on('auth:session-revoked', () => {
+      setAccessToken(null);
+      newSocket.disconnect();
     });
 
     newSocket.off('yeni_mesaj_geldi'); newSocket.off('mesajlar_okundu');
@@ -1146,7 +1160,7 @@ export default function App() {
       const response = await api.put(`/conversations/${conversationId}/mute`);
       setConversationList(prev => prev.map(conversation => conversation.id === conversationId ? { ...conversation, isMuted: response.data.isMuted } : conversation));
       setActiveConversation(prev => prev?.id === conversationId ? { ...prev, isMuted: response.data.isMuted } : prev);
-    } catch { alert('Sohbet sessize alma durumu gÃ¼ncellenemedi.'); }
+    } catch { alert('Sohbet sessize alma durumu güncellenemedi.'); }
   };
 
   const handleSetDisappearingMode = async (conversationId: string, durationSeconds: number | null) => {

@@ -12,6 +12,7 @@ import { clearRefreshCookie } from '../services/authTokens';
 import { getAuthenticatedUserId as getUserId } from '../utils/request';
 import { logger } from '../config/logger';
 import { attachOwnedAsset } from '../services/uploadedAssetService';
+import { respondWithError } from '../errors/AppError';
 
 const router = express.Router();
 
@@ -280,8 +281,7 @@ router.put('/avatar', authenticateToken, validateRequest({ body: userSchemas.ava
     if (fileKey) {
       await deleteFileIfUnreferenced(fileKey);
     }
-    const status = error.message?.includes('Yalnızca kendi yüklediğiniz dosyayı') ? 403 : 500;
-    return res.status(status).json({ error: error.message || "Profil fotoğrafı güncellenemedi." });
+    return respondWithError(res, error, 'Profil fotoğrafı güncellenemedi.');
   }
 });
 

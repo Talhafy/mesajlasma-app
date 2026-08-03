@@ -49,6 +49,9 @@ const resolveLogFileName = () => {
 
 // Ortam değişkenlerini tek noktada doğrular; hatalı ayarda sunucu yarım çalışmaz.
 export const nodeEnv = process.env.NODE_ENV || 'development';
+// Birden fazla API instance'ında Socket.IO odaları, presence ve rate-limit durumu Redis'te ortak tutulur.
+// Development/test ortamı Redis olmadan çalışabilir; production'da sessiz bellek fallback'i tutarsız veri üretir.
+export const redisUrl = process.env.REDIS_URL || '';
 // Frontend adresi CORS ve CSRF origin kontrollerinde kullanılır; production'da mutlaka gerçek domain olmalı.
 export const clientOrigin = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
 export const port = Number(process.env.PORT || 3000);
@@ -78,6 +81,15 @@ export const uploadedAssetTtlHours = parseIntegerInRange('UPLOADED_ASSET_TTL_HOU
 export const malwareScanEnabled = parseBoolean('MALWARE_SCAN_ENABLED', nodeEnv === 'production');
 export const clamavBinary = process.env.CLAMAV_BINARY || 'clamscan';
 export const malwareScanTimeoutMs = parseIntegerInRange('MALWARE_SCAN_TIMEOUT_MS', 60_000, 5_000, 5 * 60_000);
+
+export const dbPoolMax = parseIntegerInRange('DB_POOL_MAX', 20, 2, 100);
+export const dbPoolIdleTimeoutMs = parseIntegerInRange('DB_POOL_IDLE_TIMEOUT_MS', 30_000, 1_000, 300_000);
+export const dbPoolConnectionTimeoutMs = parseIntegerInRange('DB_POOL_CONNECTION_TIMEOUT_MS', 5_000, 500, 60_000);
+export const dbStatementTimeoutMs = parseIntegerInRange('DB_STATEMENT_TIMEOUT_MS', 10_000, 1_000, 120_000);
+
+if (nodeEnv === 'production' && !redisUrl) {
+  throw new Error('Production ölçeklenebilir Socket.IO için REDIS_URL tanımlanmalıdır.');
+}
 
 if (!Number.isInteger(port) || port <= 0 || port > 65535) {
   throw new Error('PORT geçerli bir port numarası olmalıdır.');

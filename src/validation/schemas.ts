@@ -76,8 +76,15 @@ export const chatSchemas = {
   // directConversation sadece hedef kullanıcı id'si alır; gönderen kullanıcı JWT'den çıkarılır.
   directConversation: z.object({ targetUserId: uuid }).strict(),
   message: messageBody,
+  conversationMessagesQuery: z.object({
+    cursor: uuid.optional(),
+    limit: z.coerce.number().int().min(1).max(100).optional()
+  }),
+  paginationQuery: z.object({
+    cursor: uuid.optional(),
+    limit: z.coerce.number().int().min(1).max(100).optional()
+  }),
   conversationParams: z.object({ conversationId: uuid }),
-  conversationMessagesQuery: z.object({ cursor: uuid.optional() }),
   group: z.object({
     name: z.string().trim().min(1).max(100),
     participantIds: z.array(uuid).min(1).max(100)

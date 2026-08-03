@@ -5,10 +5,24 @@ import { logger } from '../config/logger';
 import prisma from '../db';
 import { verifyAccessToken } from '../services/authTokens';
 import { requireActiveParticipant } from '../services/conversationAccess';
+import {
+  checkDistributedSocketRateLimit,
+  getOnlineUserIds,
+  getConversationVoicePresences,
+  joinVoicePresence,
+  leaveVoicePresence,
+  markUserOfflineIfDisconnected,
+  markUserOnline,
+  presenceTtlMs,
+  setVoiceSpeaking,
+  touchVoicePresence,
+  touchUserPresence
+} from './realtimeState';
 
 interface SocketUser {
   userId: string;
   username: string;
+  accessTokenExpiresAt: number;
 }
 
 type CallType = 'audio' | 'video';
@@ -24,9 +38,6 @@ interface CallSignalPayload {
 // Bir kullanıcının birden fazla sekmesi olabilir.
 // Map değeri Set olduğu için aynı userId'ye ait bütün socket bağlantılarını takip ederiz.
 // Kullanıcı ancak son sekmesi de kapanınca çevrimdışı kabul edilir.
-const onlineSockets = new Map<string, Set<string>>();
-type VoicePresence = { conversationId: string; channelId: string; userId: string; username: string; isSpeaking: boolean; socketIds: Set<string> };
-const voicePresences = new Map<string, VoicePresence>();
 // Socket ömrü access token refresh'e değil gerçek kullanıcı aktivitesine bağlıdır.
 // Frontend mouse/klavye gibi aktivitelerde client_activity gönderir; uzun inaktivitede socket kapatılır.
 const SOCKET_INACTIVITY_TIMEOUT_MS = 3 * 60 * 60 * 1000;
@@ -53,28 +64,6 @@ const parseCallPayload = (payload: unknown): { conversationId: string; callId: s
 
 // Her soket bağlantısı için event başına son istek zamanlarını takip ederiz.
 // Bu sayede spam botları veya manipüle edilmiş client'ların sunucuyu/odaları yormasını engelleriz.
-const socketEventTimestamps = new Map<string, Record<string, number[]>>();
-
-const checkSocketRateLimit = (socketId: string, eventName: string, maxPerSecond: number): boolean => {
-  const now = Date.now();
-  let userEvents = socketEventTimestamps.get(socketId);
-  if (!userEvents) {
-    userEvents = {};
-    socketEventTimestamps.set(socketId, userEvents);
-  }
-
-  const timestamps = userEvents[eventName] || [];
-  const validTimestamps = timestamps.filter((ts) => now - ts < 1000);
-
-  if (validTimestamps.length >= maxPerSecond) {
-    return false;
-  }
-
-  validTimestamps.push(now);
-  userEvents[eventName] = validTimestamps;
-  return true;
-};
-
 export const registerSocketHandlers = (io: Server) => {
   // Socket handshake HTTP route'lardan geçmez; bu yüzden JWT doğrulaması burada ayrıca yapılır.
   // Refresh token socket için kabul edilmez, sadece kısa ömürlü access token kullanılabilir.
@@ -93,7 +82,8 @@ export const registerSocketHandlers = (io: Server) => {
 
       socket.data.user = {
         userId: decoded.userId,
-        username: decoded.username
+        username: decoded.username,
+        accessTokenExpiresAt: decoded.exp * 1000
       } satisfies SocketUser;
       next();
     } catch {
@@ -101,18 +91,19 @@ export const registerSocketHandlers = (io: Server) => {
     }
   });
 
-  io.on('connection', (socket) => {
+  io.on('connection', async (socket) => {
     const currentUser = socket.data.user as SocketUser;
     let activeVoicePresence: { conversationId: string; channelId: string } | null = null;
 
-    const leaveVoiceChannel = () => {
+    const leaveVoiceChannel = async () => {
       if (!activeVoicePresence) return;
       const { conversationId, channelId } = activeVoicePresence;
-      const key = `${channelId}:${currentUser.userId}`;
-      const presence = voicePresences.get(key);
-      presence?.socketIds.delete(socket.id);
-      if (!presence || presence.socketIds.size === 0) {
-        voicePresences.delete(key);
+      const userLeftChannel = await leaveVoicePresence(socket.id, {
+        conversationId,
+        channelId,
+        userId: currentUser.userId
+      });
+      if (userLeftChannel) {
         socket.to(conversationId).emit('game:voice-presence-left', { conversationId, channelId, userId: currentUser.userId });
       }
       activeVoicePresence = null;
@@ -122,17 +113,27 @@ export const registerSocketHandlers = (io: Server) => {
     // Kullanıcı aynı hesabı iki sekmede açtıysa bir sekmenin inactive olması diğerini kapatmaz.
     // Socket yaşam süresi access token yenilemesine değil, gerçek kullanıcı aktivitesine bağlıdır.
     let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
+    const remainingSessionMs = () => Math.max(0, Math.min(
+      SOCKET_INACTIVITY_TIMEOUT_MS,
+      currentUser.accessTokenExpiresAt - Date.now()
+    ));
     const resetInactivityTimer = () => {
       if (inactivityTimer) clearTimeout(inactivityTimer);
-      inactivityTimer = setTimeout(() => {
+      const timeoutMs = remainingSessionMs();
+      if (timeoutMs <= 0) {
+        socket.emit('auth:expired');
         socket.disconnect(true);
-      }, SOCKET_INACTIVITY_TIMEOUT_MS);
+        return;
+      }
+      inactivityTimer = setTimeout(() => {
+        if (Date.now() >= currentUser.accessTokenExpiresAt) socket.emit('auth:expired');
+        socket.disconnect(true);
+      }, timeoutMs);
+      void touchUserPresence(currentUser.userId, Math.min(presenceTtlMs, timeoutMs));
+      if (activeVoicePresence) void touchVoicePresence(socket.id, Math.min(presenceTtlMs, timeoutMs));
     };
     resetInactivityTimer();
 
-    const userSockets = onlineSockets.get(currentUser.userId) || new Set<string>();
-    userSockets.add(socket.id);
-    onlineSockets.set(currentUser.userId, userSockets);
     // Her kullanıcı kendi userId odasına alınır.
     // Sidebar yenilemeleri, çağrı davetleri ve kişisel bildirimler bu odaya gönderilebilir.
     void socket.join(currentUser.userId);
@@ -140,8 +141,11 @@ export const registerSocketHandlers = (io: Server) => {
     logger.info({ event: 'socket.connected', userId: currentUser.userId, socketId: socket.id }, 'Socket connected');
     // Yeni bağlanan client mevcut online kullanıcıları tek seferde alır.
     // Sonraki değişiklikler presence_changed eventleriyle akar.
-    socket.emit('presence_snapshot', { onlineUserIds: [...onlineSockets.keys()] });
-    socket.broadcast.emit('presence_changed', { userId: currentUser.userId, isOnline: true, lastSeenAt: null });
+    const becameOnline = await markUserOnline(currentUser.userId, socket.id, remainingSessionMs());
+    socket.emit('presence_snapshot', { onlineUserIds: await getOnlineUserIds() });
+    if (becameOnline) {
+      socket.broadcast.emit('presence_changed', { userId: currentUser.userId, isOnline: true, lastSeenAt: null });
+    }
 
     socket.on('client_activity', () => {
       // Frontend görünür kullanıcı aktivitesi algıladığında bunu yollar.
@@ -155,17 +159,17 @@ export const registerSocketHandlers = (io: Server) => {
       if (!membership) return;
       socket.emit('game:voice-presence-snapshot', {
         groupId,
-        presences: [...voicePresences.values()].filter((presence) => presence.conversationId === groupId).map(({ socketIds, ...presence }) => presence)
+        presences: await getConversationVoicePresences(groupId)
       });
     });
 
     socket.on('game:voice-presence', async (payload: unknown) => {
       resetInactivityTimer();
-      if (!checkSocketRateLimit(socket.id, 'game:voice-presence', 3) || !payload || typeof payload !== 'object') return;
+      if (!await checkDistributedSocketRateLimit(currentUser.userId, 'game:voice-presence', 3) || !payload || typeof payload !== 'object') return;
       const { action, conversationId, channelId } = payload as { action?: unknown; conversationId?: unknown; channelId?: unknown };
       if (action === 'leave') {
         if (typeof channelId === 'string' && activeVoicePresence?.channelId !== channelId) return;
-        leaveVoiceChannel();
+        await leaveVoiceChannel();
         return;
       }
       if (action !== 'join' || typeof conversationId !== 'string' || typeof channelId !== 'string' || !uuidPattern.test(conversationId) || !uuidPattern.test(channelId)) return;
@@ -177,20 +181,22 @@ export const registerSocketHandlers = (io: Server) => {
       });
       if (!channel) return;
       if (activeVoicePresence?.channelId === channelId && activeVoicePresence.conversationId === conversationId) return;
-      leaveVoiceChannel();
-      const key = `${channelId}:${currentUser.userId}`;
-      const existing = voicePresences.get(key);
-      if (existing) {
-        existing.socketIds.add(socket.id);
-      } else {
-        voicePresences.set(key, { conversationId, channelId, userId: currentUser.userId, username: currentUser.username, isSpeaking: false, socketIds: new Set([socket.id]) });
+      await leaveVoiceChannel();
+      const becamePresent = await joinVoicePresence(socket.id, {
+        conversationId,
+        channelId,
+        userId: currentUser.userId,
+        username: currentUser.username,
+        isSpeaking: false
+      }, remainingSessionMs());
+      if (becamePresent) {
         socket.to(conversationId).emit('game:voice-presence-joined', { conversationId, channelId, userId: currentUser.userId, username: currentUser.username, isSpeaking: false });
       }
       activeVoicePresence = { conversationId, channelId };
     });
 
     socket.on('game:voice-speaking', async (payload: unknown) => {
-      if (!checkSocketRateLimit(socket.id, 'game:voice-speaking', 5) || !payload || typeof payload !== 'object' || !activeVoicePresence) return;
+      if (!await checkDistributedSocketRateLimit(currentUser.userId, 'game:voice-speaking', 5) || !payload || typeof payload !== 'object' || !activeVoicePresence) return;
       const { channelId, isSpeaking } = payload as { channelId?: unknown; isSpeaking?: unknown };
       if (channelId !== activeVoicePresence.channelId || typeof isSpeaking !== 'boolean') return;
       const membership = await requireActiveParticipant(
@@ -198,12 +204,11 @@ export const registerSocketHandlers = (io: Server) => {
         currentUser.userId
       ).catch(() => null);
       if (!membership) {
-        leaveVoiceChannel();
+        await leaveVoiceChannel();
         return;
       }
-      const presence = voicePresences.get(`${activeVoicePresence.channelId}:${currentUser.userId}`);
-      if (!presence || presence.isSpeaking === isSpeaking) return;
-      presence.isSpeaking = isSpeaking;
+      const presence = await setVoiceSpeaking(socket.id, isSpeaking, remainingSessionMs());
+      if (!presence) return;
       socket.to(activeVoicePresence.conversationId).emit('game:voice-speaking', {
         conversationId: activeVoicePresence.conversationId,
         channelId: activeVoicePresence.channelId,
@@ -217,7 +222,7 @@ export const registerSocketHandlers = (io: Server) => {
       acknowledge?: (result: { ok: boolean; error?: string }) => void
     ) => {
       resetInactivityTimer();
-      if (!checkSocketRateLimit(socket.id, 'odaya_katil', 100)) {
+      if (!await checkDistributedSocketRateLimit(currentUser.userId, 'odaya_katil', 100)) {
         logger.warn({ event: 'security.socket_rate_limit', userId: currentUser.userId, eventName: 'odaya_katil' }, 'Socket event rate limit exceeded');
         acknowledge?.({ ok: false, error: 'Çok fazla istek gönderdiniz. Lütfen bekleyin.' });
         return;
@@ -258,7 +263,7 @@ export const registerSocketHandlers = (io: Server) => {
 
     socket.on('typing_changed', async (payload: unknown) => {
       resetInactivityTimer();
-      if (!checkSocketRateLimit(socket.id, 'typing_changed', 15)) {
+      if (!await checkDistributedSocketRateLimit(currentUser.userId, 'typing_changed', 15)) {
         logger.warn({ event: 'security.socket_rate_limit', userId: currentUser.userId, eventName: 'typing_changed' }, 'Socket event rate limit exceeded');
         return;
       }
@@ -295,7 +300,7 @@ export const registerSocketHandlers = (io: Server) => {
     // dosyanın kendisiyle ilgisi yok. Frontend MediaRecorder start/stop anında bunu emit eder.
     socket.on('voice_recording_changed', async (payload: unknown) => {
       resetInactivityTimer();
-      if (!checkSocketRateLimit(socket.id, 'voice_recording_changed', 10)) {
+      if (!await checkDistributedSocketRateLimit(currentUser.userId, 'voice_recording_changed', 10)) {
         logger.warn({ event: 'security.socket_rate_limit', userId: currentUser.userId, eventName: 'voice_recording_changed' }, 'Socket event rate limit exceeded');
         return;
       }
@@ -479,15 +484,10 @@ export const registerSocketHandlers = (io: Server) => {
 
     socket.on('disconnect', async () => {
       logger.info({ event: 'socket.disconnected', userId: currentUser.userId, socketId: socket.id }, 'Socket disconnected');
-      leaveVoiceChannel();
-      socketEventTimestamps.delete(socket.id);
+      await leaveVoiceChannel();
       if (inactivityTimer) clearTimeout(inactivityTimer);
-      const sockets = onlineSockets.get(currentUser.userId);
-      sockets?.delete(socket.id);
       // Aynı kullanıcı başka sekmede hâlâ bağlıysa offline yayını yapmıyoruz.
-      if (sockets && sockets.size > 0) return;
-
-      onlineSockets.delete(currentUser.userId);
+      if (!await markUserOfflineIfDisconnected(io, currentUser.userId, socket.id)) return;
       const lastSeenAt = new Date();
       try {
         // Son socket de kapandığında lastSeenAt DB'ye yazılır ve diğer client'lara presence_changed gider.

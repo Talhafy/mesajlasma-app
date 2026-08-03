@@ -1,16 +1,26 @@
 //Engellenen kullanıcılar için ayrı bir servis
 
 import prisma from '../db';
+import { AppError } from '../errors/AppError';
 import { createSignedFileUrl } from './fileStorage';
 
 /**
  * Mevcut kullanıcı hariç tüm kullanıcıları engellenme durumlarıyla birlikte listeler.
  */
-export const listUsers = async (currentUserId: string) => {
+export const listUsers = async (currentUserId: string, cursor?: string, limit: number = 20) => {
+  const takeLimit = Math.min(Math.max(limit || 20, 1), 100);
   const users = await prisma.user.findMany({
     where: { NOT: { id: currentUserId } },
-    select: { id: true, username: true, email: true, avatarFileKey: true, lastSeenAt: true }
+    take: takeLimit + 1,
+    skip: cursor ? 1 : 0,
+    ...(cursor ? { cursor: { id: String(cursor) } } : {}),
+    orderBy: { id: 'asc' },
+    select: { id: true, username: true, avatarFileKey: true, lastSeenAt: true }
   });
+
+  const hasNext = users.length > takeLimit;
+  const pageUsers = hasNext ? users.slice(0, takeLimit) : users;
+  const nextCursor = hasNext ? pageUsers[pageUsers.length - 1].id : null;
 
   const myBlocked = await prisma.blockedUser.findMany({
     where: { userId: currentUserId },
@@ -24,18 +34,23 @@ export const listUsers = async (currentUserId: string) => {
   });
   const blockedMeSet = new Set(blockedMe.map((r) => r.userId));
 
-  return Promise.all(
-    users.map(async (user) => {
+  const items = await Promise.all(
+    pageUsers.map(async (user) => {
       const isBlocked = myBlockedSet.has(user.id);
       const blockedByOther = blockedMeSet.has(user.id);
       return {
-        ...user,
+        id: user.id,
+        username: user.username,
+        avatarFileKey: user.avatarFileKey,
+        lastSeenAt: user.lastSeenAt,
         avatarUrl: user.avatarFileKey ? await createSignedFileUrl(user.avatarFileKey) : null,
         isBlocked,
         blockedByOther
       };
     })
   );
+
+  return { items, nextCursor };
 };
 
 /**
@@ -44,7 +59,7 @@ export const listUsers = async (currentUserId: string) => {
 export const getUserProfile = async (targetId: string, currentUserId: string) => {
   const user = await prisma.user.findUnique({
     where: { id: targetId },
-    select: { id: true, username: true, email: true, avatarFileKey: true, lastSeenAt: true, createdAt: true }
+    select: { id: true, username: true, avatarFileKey: true, lastSeenAt: true, createdAt: true }
   });
   if (!user) return null;
 
@@ -57,7 +72,11 @@ export const getUserProfile = async (targetId: string, currentUserId: string) =>
   });
 
   return {
-    ...user,
+    id: user.id,
+    username: user.username,
+    avatarFileKey: user.avatarFileKey,
+    lastSeenAt: user.lastSeenAt,
+    createdAt: user.createdAt,
     avatarUrl: user.avatarFileKey ? await createSignedFileUrl(user.avatarFileKey) : null,
     isBlocked: !!myBlock,
     blockedByOther: !!otherBlock
@@ -88,7 +107,7 @@ export const getBlockedUsers = async (currentUserId: string) => {
  */
 export const blockUser = async (currentUserId: string, targetId: string, io: any) => {
   if (currentUserId === targetId) {
-    throw new Error("Kendinizi engelleyemezsiniz.");
+    throw AppError.badRequest('CANNOT_BLOCK_SELF', 'Kendinizi engelleyemezsiniz.');
   }
 
   const targetUser = await prisma.user.findUnique({ where: { id: targetId }, select: { id: true } });

@@ -2,6 +2,7 @@
 
 import { Prisma } from '@prisma/client';
 import prisma from '../db';
+import { AppError } from '../errors/AppError';
 import { withSignedFileUrl } from './fileStorage';
 import { deleteFileIfUnreferenced } from './fileCleanup';
 import { attachOwnedAsset, cloneAssetForOwner } from './uploadedAssetService';
@@ -43,7 +44,7 @@ const requireActiveMessageAccess = async (
     errorMessage
   );
   if (message.createdAt < membership.joinedAt) {
-    throw new Error(errorMessage);
+    throw AppError.forbidden('CONVERSATION_FORBIDDEN', errorMessage);
   }
   return membership;
 };
@@ -77,12 +78,12 @@ const resolveMessageAsset = async (input: {
   });
   const membership = sourceMessage?.conversation.participants[0];
   if (!sourceMessage || sourceMessage.conversation.isDeleted || !membership || sourceMessage.createdAt < membership.joinedAt) {
-    throw new Error('İletilecek dosyaya erişim yetkiniz yok.');
+    throw AppError.forbidden('ASSET_NOT_OWNED', 'İletilecek dosyaya erişim yetkiniz yok.');
   }
 
   const sourceAsset = await prisma.uploadedAsset.findUnique({ where: { fileKey: input.fileKey } });
   if (!sourceAsset || sourceAsset.status === 'REJECTED') {
-    throw new Error('İletilecek dosya kullanılamıyor.');
+    throw AppError.badRequest('ASSET_EXPIRED_OR_REJECTED', 'İletilecek dosya kullanılamıyor.');
   }
 
   const copiedFileKey = await cloneAssetForOwner({
@@ -118,12 +119,13 @@ export type MessageWithReads = Prisma.MessageGetPayload<{
 /**
  * Mesajı imzalı dosya URL'leri ile zenginleştirir ve okundu listesine göndericiyi dahil eder.
  */
-export const serializeMessage = async (msg: MessageWithReads) => {
+export const serializeMessage = async (msg: MessageWithReads, cursorReadByIds: string[] = []) => {
   const signed = await withSignedFileUrl(msg);
   const { reads = [], stars = [], deletions = [], ...rest } = signed;
 
   const readByIds = [...new Set([
-    ...reads.map((r) => r.userId)
+    ...reads.map((r) => r.userId),
+    ...cursorReadByIds
   ])];
 
   const starredByIds = stars.map((s) => s.userId);
@@ -135,6 +137,34 @@ export const serializeMessage = async (msg: MessageWithReads) => {
     starredByIds,
     deletedForIds
   };
+};
+
+// Read cursor'larını tek sorguda çekerek eski MessageRead kayıtlarıyla birleştirir.
+// Böylece yeni mesajlar için MessageRead yazmadan, sayfa yenilendiğinde de read receipt gösterilir.
+export const serializeMessages = async (messages: MessageWithReads[]) => {
+  if (messages.length === 0) return [];
+  const windows = [...new Map(messages.map((message) => [
+    `${message.conversationId}:${message.gameChannelId || ''}`,
+    { conversationId: message.conversationId, channelKey: message.gameChannelId || '' }
+  ])).values()];
+  const states = await prisma.conversationReadState.findMany({
+    where: { OR: windows },
+    select: { userId: true, conversationId: true, channelKey: true, lastReadAt: true }
+  });
+  const statesByWindow = new Map<string, typeof states>();
+  for (const state of states) {
+    const key = `${state.conversationId}:${state.channelKey}`;
+    const current = statesByWindow.get(key) || [];
+    current.push(state);
+    statesByWindow.set(key, current);
+  }
+
+  return Promise.all(messages.map((message) => {
+    const stateReaders = (statesByWindow.get(`${message.conversationId}:${message.gameChannelId || ''}`) || [])
+      .filter((state) => state.userId !== message.senderId && state.lastReadAt >= message.createdAt)
+      .map((state) => state.userId);
+    return serializeMessage(message, stateReaders);
+  }));
 };
 
 /**
@@ -167,12 +197,12 @@ export const sendMessage = async (
     where: { id: conversationId },
     include: { participants: true }
   });
-  if (!conversation) throw new Error("Sohbet bulunamadı.");
+  if (!conversation) throw AppError.notFound('CONVERSATION_NOT_FOUND', 'Sohbet bulunamadı.');
   if (conversation.isDeleted) {
-    throw new Error("Bu grup silinmiştir. Yeni mesaj gönderilemez.");
+    throw AppError.forbidden('CONVERSATION_FORBIDDEN', 'Bu grup silinmiştir. Yeni mesaj gönderilemez.');
   }
   if (!conversation.participants.some((participant: any) => participant.userId === senderId && participant.isActive)) {
-    throw new Error("Bu sohbete mesaj gönderme yetkiniz yok.");
+    throw AppError.forbidden('CONVERSATION_FORBIDDEN', 'Bu sohbete mesaj gönderme yetkiniz yok.');
   }
 
   if (gameChannelId) {
@@ -181,7 +211,7 @@ export const sendMessage = async (
       select: { id: true }
     });
     if (!conversation.isGroup || !channel) {
-      throw new Error('Yazı kanalı bulunamadı.');
+      throw AppError.notFound('CHANNEL_NOT_FOUND', 'Yazı kanalı bulunamadı.');
     }
   }
 
@@ -193,14 +223,14 @@ export const sendMessage = async (
         where: { userId_blockedId: { userId: otherParticipant.userId, blockedId: senderId } }
       });
       if (blockedByOther) {
-        throw new Error("Bu kullanıcıya mesaj gönderemezsiniz çünkü engellendiniz.");
+        throw AppError.forbidden('USER_BLOCKED', 'Bu kullanıcıya mesaj gönderemezsiniz çünkü engellendiniz.');
       }
 
       const blockedByMe = await prisma.blockedUser.findUnique({
         where: { userId_blockedId: { userId: senderId, blockedId: otherParticipant.userId } }
       });
       if (blockedByMe) {
-        throw new Error("Bu kullanıcıyı engellediniz. Mesaj göndermek için engeli kaldırın.");
+        throw AppError.forbidden('USER_BLOCKED', 'Bu kullanıcıyı engellediniz. Mesaj göndermek için engeli kaldırın.');
       }
     }
   }
@@ -216,7 +246,7 @@ export const sendMessage = async (
       },
       select: { id: true }
     });
-    if (!repliedMessage) throw new Error("Yanıtlanan mesaj bu sohbete ait değil.");
+    if (!repliedMessage) throw AppError.badRequest('BAD_REQUEST', 'Yanıtlanan mesaj bu sohbete ait değil.');
   }
 
   const resolvedFileKey = await resolveMessageAsset({ fileKey, fileName, isForwarded, senderId });
@@ -252,7 +282,7 @@ export const sendMessage = async (
         deletions: { select: { userId: true } }
       }
     });
-    if (!savedMessage) throw new Error('Oluşturulan mesaj yüklenemedi.');
+    if (!savedMessage) throw AppError.internal('Oluşturulan mesaj yüklenemedi.');
   } catch (error) {
     // Idempotency (clientId unique key çakışması) kontrolü
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
@@ -289,12 +319,30 @@ export const sendMessage = async (
 /**
  * Geçmiş mesajları sayfalanmış şekilde döner.
  */
-export const fetchMessages = async (conversationId: string, userId: string, cursor?: string) => {
+export const fetchMessages = async (conversationId: string, userId: string, cursor?: string, limit: number = 50) => {
   const participant = await requireHistoryParticipant(
     conversationId,
     userId,
     'Bu sohbetin mesajlarını görüntüleme yetkiniz yok.'
   );
+
+  const takeLimit = Math.min(Math.max(limit || 50, 1), 100);
+  let tupleCursorWhere = {};
+
+  if (cursor) {
+    const cursorMsg = await prisma.message.findUnique({
+      where: { id: String(cursor) },
+      select: { createdAt: true, id: true }
+    });
+    if (cursorMsg) {
+      tupleCursorWhere = {
+        OR: [
+          { createdAt: { lt: cursorMsg.createdAt } },
+          { createdAt: cursorMsg.createdAt, id: { lt: cursorMsg.id } }
+        ]
+      };
+    }
+  }
 
   const whereClause: any = {
     conversationId,
@@ -304,15 +352,17 @@ export const fetchMessages = async (conversationId: string, userId: string, curs
     createdAt: {
       gte: participant.joinedAt,
       ...(participant.leftAt ? { lte: participant.leftAt } : {})
-    }
+    },
+    ...tupleCursorWhere
   };
 
-  const messages = await prisma.message.findMany({
+  const rawMessages = await prisma.message.findMany({
     where: whereClause,
-    take: 50,
-    skip: cursor ? 1 : 0,
-    ...(cursor ? { cursor: { id: String(cursor) } } : {}),
-    orderBy: { createdAt: 'desc' },
+    take: takeLimit + 1,
+    orderBy: [
+      { createdAt: 'desc' },
+      { id: 'desc' }
+    ],
     include: {
       sender: { select: { username: true } },
       replyTo: { select: { id: true, content: true, sender: { select: { username: true } } } },
@@ -322,30 +372,45 @@ export const fetchMessages = async (conversationId: string, userId: string, curs
     }
   });
 
-  return Promise.all(messages.reverse().map(serializeMessage));
+  const hasNext = rawMessages.length > takeLimit;
+  const pageMessages = hasNext ? rawMessages.slice(0, takeLimit) : rawMessages;
+  const nextCursor = hasNext ? pageMessages[pageMessages.length - 1].id : null;
+
+  const items = await serializeMessages(pageMessages.reverse());
+  return { items, nextCursor };
 };
 
 /**
  * Kullanıcının katıldığı konuşmalardaki mesajları arar.
  */
 export const searchMessages = async (userId: string, searchTerm: string) => {
-  const memberships = await getActiveMessageWindows(userId);
-  if (memberships.length === 0) return [];
+  const term = searchTerm.trim();
+  // pg_trgm GIN indexi ILIKE '%term%' sorgusunu büyük Message tablosunda full scan olmadan çalıştırır.
+  // Katılımcılık ve silinme filtreleri SQL tarafında uygulanır; sonra normal serializer için kayıtlar yüklenir.
+  const matches = await prisma.$queryRaw<Array<{ id: string }>>`
+    SELECT m."id"
+    FROM "Message" m
+    INNER JOIN "Participant" p
+      ON p."conversationId" = m."conversationId"
+      AND p."userId" = ${userId}
+      AND p."isActive" = true
+      AND m."createdAt" >= p."joinedAt"
+    INNER JOIN "Conversation" c ON c."id" = m."conversationId" AND c."isDeleted" = false
+    WHERE m."gameChannelId" IS NULL
+      AND m."content" ILIKE ${`%${term}%`}
+      AND (m."expiresAt" IS NULL OR m."expiresAt" > NOW())
+      AND NOT EXISTS (
+        SELECT 1 FROM "MessageDeletion" d
+        WHERE d."messageId" = m."id" AND d."userId" = ${userId}
+      )
+    ORDER BY similarity(m."content", ${term}) DESC, m."createdAt" DESC
+    LIMIT 30
+  `;
+  if (matches.length === 0) return [];
 
   const messages = await prisma.message.findMany({
     where: {
-      gameChannelId: null,
-      content: { contains: searchTerm.trim(), mode: 'insensitive' },
-      deletions: { none: { userId } },
-      AND: [
-        visibleMessageWhere(),
-        {
-          OR: memberships.map(({ conversationId, joinedAt }) => ({
-            conversationId,
-            createdAt: { gte: joinedAt }
-          }))
-        }
-      ]
+      id: { in: matches.map((match) => match.id) }
     },
     include: {
       sender: { select: { username: true } },
@@ -356,16 +421,17 @@ export const searchMessages = async (userId: string, searchTerm: string) => {
         include: {
           participants: {
             where: { isActive: true },
-            include: { user: { select: { id: true, username: true, email: true } } }
+            include: { user: { select: { id: true, username: true } } }
           }
         }
       }
     },
-    orderBy: { createdAt: 'desc' },
     take: 30
   });
-
-  return Promise.all(messages.map(serializeMessage));
+  const byId = new Map(messages.map((message) => [message.id, message]));
+  return serializeMessages(matches
+    .map((match) => byId.get(match.id))
+    .filter((message): message is typeof messages[number] => Boolean(message)));
 };
 
 /**
@@ -399,7 +465,7 @@ export const fetchStarredMessages = async (userId: string) => {
         include: {
           participants: {
             where: { isActive: true },
-            include: { user: { select: { id: true, username: true, email: true } } }
+            include: { user: { select: { id: true, username: true } } }
           }
         }
       }
@@ -408,7 +474,7 @@ export const fetchStarredMessages = async (userId: string) => {
     take: 50
   });
 
-  return Promise.all(messages.map(serializeMessage));
+  return serializeMessages(messages);
 };
 
 /**
@@ -416,9 +482,9 @@ export const fetchStarredMessages = async (userId: string) => {
  */
 export const editMessage = async (messageId: string, userId: string, content: string, io: any) => {
   const message = await prisma.message.findUnique({ where: { id: messageId } });
-  if (!message) throw new Error("Mesaj bulunamadı.");
+  if (!message) throw AppError.notFound('MESSAGE_NOT_FOUND', 'Mesaj bulunamadı.');
   if (message.senderId !== userId) {
-    throw new Error("Yalnızca kendi mesajınızı düzenleyebilirsiniz.");
+    throw AppError.forbidden('MESSAGE_FORBIDDEN', 'Yalnızca kendi mesajınızı düzenleyebilirsiniz.');
   }
   await requireActiveMessageAccess(
     message,
@@ -442,7 +508,7 @@ export const editMessage = async (messageId: string, userId: string, content: st
       deletions: { select: { userId: true } }
     }
   });
-  if (!updatedMessage) throw new Error("Mesaj yüklenemedi.");
+  if (!updatedMessage) throw AppError.internal('Mesaj yüklenemedi.');
 
   const responseMessage = await serializeMessage(updatedMessage);
 
@@ -488,7 +554,7 @@ export const fetchConversationMedia = async (conversationId: string, userId: str
     }
   });
 
-  const signedRecords = await Promise.all(records.map(serializeMessage));
+  const signedRecords = await Promise.all(records.map((record) => serializeMessage(record)));
   const mediaMessages = signedRecords.filter((message) => Boolean(message.fileKey));
   const linkItems = signedRecords.flatMap((message) => {
     const urls = message.content?.match(/https?:\/\/[^\s]+/g) || [];
@@ -503,7 +569,7 @@ export const fetchConversationMedia = async (conversationId: string, userId: str
  */
 export const pinMessage = async (messageId: string, userId: string, io: any) => {
   const message = await prisma.message.findUnique({ where: { id: messageId } });
-  if (!message) throw new Error("Mesaj bulunamadı.");
+  if (!message) throw AppError.notFound('MESSAGE_NOT_FOUND', 'Mesaj bulunamadı.');
   await requireActiveMessageAccess(
     message,
     userId,
@@ -536,7 +602,7 @@ export const pinMessage = async (messageId: string, userId: string, io: any) => 
  */
 export const starMessage = async (messageId: string, userId: string, io: any) => {
   const message = await prisma.message.findUnique({ where: { id: messageId } });
-  if (!message) throw new Error("Mesaj bulunamadı.");
+  if (!message) throw AppError.notFound('MESSAGE_NOT_FOUND', 'Mesaj bulunamadı.');
   await requireActiveMessageAccess(
     message,
     userId,
@@ -567,7 +633,7 @@ export const starMessage = async (messageId: string, userId: string, io: any) =>
       deletions: { select: { userId: true } }
     }
   });
-  if (!updatedMessage) throw new Error("Mesaj bulunamadı.");
+  if (!updatedMessage) throw AppError.notFound('MESSAGE_NOT_FOUND', 'Mesaj bulunamadı.');
 
   const responseMessage = await serializeMessage(updatedMessage);
 
@@ -583,7 +649,7 @@ export const starMessage = async (messageId: string, userId: string, io: any) =>
  */
 export const deleteMessage = async (messageId: string, userId: string, forEveryone: boolean, io: any) => {
   const message = await prisma.message.findUnique({ where: { id: messageId } });
-  if (!message) throw new Error("Mesaj bulunamadı.");
+  if (!message) throw AppError.notFound('MESSAGE_NOT_FOUND', 'Mesaj bulunamadı.');
   await requireActiveMessageAccess(
     message,
     userId,
@@ -592,7 +658,7 @@ export const deleteMessage = async (messageId: string, userId: string, forEveryo
 
   if (forEveryone) {
     if (message.senderId !== userId) {
-      throw new Error("Sadece kendi mesajınızı herkesten silebilirsiniz.");
+      throw AppError.forbidden('MESSAGE_FORBIDDEN', 'Sadece kendi mesajınızı herkesten silebilirsiniz.');
     }
 
     const updatedMessageId = await prisma.$transaction(async (tx) => {
@@ -622,7 +688,7 @@ export const deleteMessage = async (messageId: string, userId: string, forEveryo
         deletions: { select: { userId: true } }
       }
     });
-    if (!updatedMessage) throw new Error("Geri yüklenen mesaj bulunamadı.");
+    if (!updatedMessage) throw AppError.internal('Geri yüklenen mesaj bulunamadı.');
 
     await deleteFileIfUnreferenced(message.fileKey);
 
@@ -671,42 +737,53 @@ export const markAsRead = async (
       select: { id: true, createdAt: true }
     });
     if (!lastReadMessage) {
-      throw new Error("Belirtilen son okunan mesaj bu sohbete ait değil.");
+      throw AppError.badRequest('BAD_REQUEST', 'Belirtilen son okunan mesaj bu sohbete ait değil.');
     }
     if (lastReadMessage.createdAt < membership.joinedAt) {
-      throw new Error("Belirtilen son okunan mesaj üyelik döneminizin dışında.");
+      throw AppError.badRequest('BAD_REQUEST', 'Belirtilen son okunan mesaj üyelik döneminizin dışında.');
     }
   }
 
-  const unreadMessages = await prisma.message.findMany({
+  const channelKey = gameChannelId || '';
+  const readCursor = lastReadMessage?.createdAt || new Date();
+  const previousReadState = await prisma.conversationReadState.findUnique({
+    where: { userId_conversationId_channelKey: { userId, conversationId, channelKey } },
+    select: { lastReadAt: true }
+  });
+  const previousReadAt = previousReadState?.lastReadAt || membership.joinedAt;
+
+  const updatedCount = readCursor > previousReadAt
+    ? await prisma.message.count({
     where: {
       conversationId,
       gameChannelId: gameChannelId || null,
       senderId: { not: userId },
       createdAt: {
-        gte: membership.joinedAt,
-        ...(lastReadMessage ? { lte: lastReadMessage.createdAt } : {})
+        gt: previousReadAt,
+        lte: readCursor
       },
-      ...visibleMessageWhere(),
-      reads: {
-        none: { userId }
-      }
+      ...visibleMessageWhere()
     },
-    select: { id: true }
-  });
+  })
+    : 0;
 
-  if (unreadMessages.length > 0) {
-    const data = unreadMessages.map((msg) => ({
-      messageId: msg.id,
-      userId
-    }));
-    await prisma.messageRead.createMany({
-      data,
-      skipDuplicates: true
-    });
-  }
+  // Monotonik cursor: iki sekmenin eş zamanlı read isteği daha eski bir konuma geri döndüremez.
+  await prisma.$executeRaw`
+    INSERT INTO "ConversationReadState"
+      ("id", "userId", "conversationId", "channelKey", "lastReadAt", "lastReadMessageId", "updatedAt")
+    VALUES
+      (${crypto.randomUUID()}, ${userId}, ${conversationId}, ${channelKey}, ${readCursor}, ${lastReadMessageId || null}, CURRENT_TIMESTAMP)
+    ON CONFLICT ("userId", "conversationId", "channelKey") DO UPDATE
+    SET
+      "lastReadAt" = GREATEST("ConversationReadState"."lastReadAt", EXCLUDED."lastReadAt"),
+      "lastReadMessageId" = CASE
+        WHEN EXCLUDED."lastReadAt" >= "ConversationReadState"."lastReadAt" THEN EXCLUDED."lastReadMessageId"
+        ELSE "ConversationReadState"."lastReadMessageId"
+      END,
+      "updatedAt" = CURRENT_TIMESTAMP
+  `;
 
-  if (unreadMessages.length > 0 && emitReceipt !== false && io) {
+  if (updatedCount > 0 && emitReceipt !== false && io) {
     io.to(conversationId).emit('mesajlar_okundu', {
       conversationId,
       readByUserId: userId,
@@ -715,71 +792,58 @@ export const markAsRead = async (
     });
   }
 
-  return { success: true, updatedCount: unreadMessages.length };
+  return { success: true, updatedCount };
 };
 
 /**
  * Kullanıcının katıldığı tüm sohbetlerdeki okunmamış mesaj sayılarını döner.
  */
 export const getUnreadCounts = async (userId: string) => {
-  const myParticipants = await prisma.participant.findMany({
-    where: {
-      userId,
-      isActive: true,
-      conversation: { isDeleted: false }
-    },
-    select: {
-      conversationId: true,
-      joinedAt: true,
-      conversation: {
-        select: {
-          isGroup: true,
-          participants: {
-            where: { userId: { not: userId } },
-            select: { userId: true }
-          }
-        }
-      }
-    }
-  });
-
+  // Tek grouped sorgu, sohbet sayısı kadar Message.count çağrısı yapmaz.
+  const rows = await prisma.$queryRaw<Array<{
+    conversationId: string;
+    isGroup: boolean;
+    otherUserId: string | null;
+    unreadCount: number;
+  }>>`
+    SELECT
+      p."conversationId",
+      c."isGroup",
+      (
+        SELECT other_p."userId"
+        FROM "Participant" other_p
+        WHERE other_p."conversationId" = p."conversationId" AND other_p."userId" <> ${userId}
+        ORDER BY other_p."joinedAt" ASC
+        LIMIT 1
+      ) AS "otherUserId",
+      COUNT(m."id")::int AS "unreadCount"
+    FROM "Participant" p
+    INNER JOIN "Conversation" c ON c."id" = p."conversationId" AND c."isDeleted" = false
+    LEFT JOIN "ConversationReadState" rs
+      ON rs."userId" = p."userId"
+      AND rs."conversationId" = p."conversationId"
+      AND rs."channelKey" = ''
+    LEFT JOIN "Message" m
+      ON m."conversationId" = p."conversationId"
+      AND m."gameChannelId" IS NULL
+      AND m."senderId" <> ${userId}
+      AND m."createdAt" >= p."joinedAt"
+      AND (rs."lastReadAt" IS NULL OR m."createdAt" > rs."lastReadAt")
+      AND m."content" NOT LIKE '[SYSTEM\_%' ESCAPE '\'
+      AND (m."expiresAt" IS NULL OR m."expiresAt" > NOW())
+      AND NOT EXISTS (
+        SELECT 1 FROM "MessageDeletion" d
+        WHERE d."messageId" = m."id" AND d."userId" = ${userId}
+      )
+    WHERE p."userId" = ${userId} AND p."isActive" = true
+    GROUP BY p."conversationId", c."isGroup"
+  `;
   const counts: Record<string, number> = {};
-
-  await Promise.all(
-    myParticipants.map(async (p) => {
-      const count = await prisma.message.count({
-        where: {
-          conversationId: p.conversationId,
-          gameChannelId: null,
-          senderId: { not: userId },
-          createdAt: { gte: p.joinedAt },
-          content: {
-            not: {
-              startsWith: '[SYSTEM_'
-            }
-          },
-          ...visibleMessageWhere(),
-          reads: {
-            none: { userId }
-          },
-          deletions: {
-            none: { userId }
-          }
-        }
-      });
-
-      if (count > 0) {
-        if (p.conversation.isGroup) {
-          counts[p.conversationId] = count;
-        } else {
-          const otherParticipant = p.conversation.participants[0];
-          if (otherParticipant) {
-            counts[otherParticipant.userId] = count;
-          }
-        }
-      }
-    })
-  );
+  for (const row of rows) {
+    if (row.unreadCount <= 0) continue;
+    if (row.isGroup) counts[row.conversationId] = row.unreadCount;
+    else if (row.otherUserId) counts[row.otherUserId] = row.unreadCount;
+  }
 
   return counts;
 };

@@ -28,9 +28,11 @@ model User {
   messageDeletions          MessageDeletion[]
   gameChannelMutes          GameChannelMute[]
   uploadedAssets            UploadedAsset[]
+  conversationReadStates    ConversationReadState[]
 }
 
 enum UploadedAssetStatus {
+  QUARANTINE
   READY
   ATTACHED
   REJECTED
@@ -43,7 +45,7 @@ model UploadedAsset {
   mimeType     String
   sizeBytes    Int
   checksum     String
-  status       UploadedAssetStatus @default(READY)
+  status       UploadedAssetStatus @default(QUARANTINE)
   expiresAt    DateTime?
   attachedAt   DateTime?
   createdAt    DateTime            @default(now())
@@ -93,6 +95,7 @@ model Conversation {
   scheduledMessages ScheduledMessage[]
   participants      Participant[]
   gameChannels      GameChannel[]
+  readStates        ConversationReadState[]
 
   @@index([adminId])
 }
@@ -144,6 +147,7 @@ model Message {
   @@index([expiresAt])
   @@index([senderId])
   @@index([gameChannelId, createdAt(sort: Desc), id(sort: Desc)])
+  @@index([content(ops: raw("gin_trgm_ops"))], type: Gin, map: "Message_content_trgm_idx")
 }
 
 enum GameChannelType {
@@ -178,6 +182,23 @@ model MessageRead {
 
   @@id([messageId, userId])
   @@index([userId, messageId])
+}
+
+// Bir kullanıcının sohbet/kanal başına son okuma imleci. Her mesaj için MessageRead satırı
+// oluşturmak yerine sabit sayıda durum kaydı tutulur.
+model ConversationReadState {
+  id                String       @id @default(uuid())
+  userId            String
+  conversationId    String
+  channelKey        String       @default("")
+  lastReadAt        DateTime
+  lastReadMessageId String?
+  updatedAt         DateTime     @updatedAt
+  user              User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversation      Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, conversationId, channelKey])
+  @@index([conversationId, channelKey, lastReadAt])
 }
 
 model ScheduledMessage {

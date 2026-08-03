@@ -41,7 +41,8 @@ export interface GameChannel {
 export interface User {
   id: string;
   username: string;
-  email: string;
+  // Public kullanıcı yanıtlarında e-posta gönderilmez; yalnızca oturum sahibinin profilinde bulunur.
+  email?: string;
   readReceiptsOn?: boolean;
   avatarFileKey?: string;
   avatarUrl?: string;

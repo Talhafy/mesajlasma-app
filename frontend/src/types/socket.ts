@@ -16,6 +16,8 @@ export interface ClientToServerEvents {
 }
 
 export interface ServerToClientEvents {
+  'auth:expired': () => void;
+  'auth:session-revoked': (payload: { reason: string }) => void;
   presence_snapshot: (payload: { onlineUserIds: string[] }) => void;
   presence_changed: (payload: { userId: string; isOnline: boolean; lastSeenAt?: string | null }) => void;
   'game:voice-presence-snapshot': (payload: { groupId: string; presences: Array<{ conversationId: string; channelId: string; userId: string; username: string; isSpeaking: boolean }> }) => void;

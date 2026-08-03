@@ -6,6 +6,7 @@ import {
   livekitTokenTtlSeconds,
   livekitUrl
 } from '../config/env';
+import { AppError } from '../errors/AppError';
 
 export type CallType = 'audio' | 'video';
 
@@ -33,7 +34,7 @@ export const ensurePersistentVoiceRoom = async ({
   channelId: string;
   maxParticipants: number;
 }) => {
-  if (!isLivekitConfigured()) throw new Error('LiveKit ayarları eksik.');
+  if (!isLivekitConfigured()) throw AppError.internal('LiveKit ayarları eksik.');
   const roomName = createLivekitRoomName(conversationId, channelId);
   const httpUrl = livekitUrl.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:');
   const roomService = new RoomServiceClient(httpUrl, livekitApiKey, livekitApiSecret);
@@ -68,7 +69,7 @@ export const createConversationCallToken = async ({
   user: { id: string; username: string };
 }) => {
   if (!isLivekitConfigured()) {
-    throw new Error('LiveKit ayarları eksik.');
+    throw AppError.internal('LiveKit ayarları eksik.');
   }
 
   const roomName = createLivekitRoomName(conversationId, callId);

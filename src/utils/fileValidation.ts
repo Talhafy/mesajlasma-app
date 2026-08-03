@@ -1,65 +1,83 @@
+/**
+ * ============================================================================
+ * DOSYA İMZASI VE MAGIC-BYTE DOĞRULAMA (OWASP ASVS V12.1.2)
+ * ============================================================================
+ * 
+ * Bu yardımcı fonksiyon, yüklenen dosyanın ikili (binary) verisinin ilk 4-12 byte'lık
+ * imzasını (Magic Bytes) inceleyerek beyan edilen MIME tipi ile uyuşup uyuşmadığını denetler.
+ * 
+ * GÜVENLİK AMACI:
+ * - Uzantı Sahteciliği (MIME Spoofing) Engelleme: Örneğin `.exe` veya `.php` zararlı bir
+ *   yazılımın uzantısı `.png` yapılarak sunucuya gönderilirse, uzantı PNG görünür ancak
+ *   binary imzası 'MZ' (4D 5A) veya '<?php' olur. Bu kontrol sahtekarlığı tespit eder.
+ */
+
 import { logger } from '../config/logger';
 
 /**
- * Dosyanın ilk 4-12 byte'lık imzasını (magic bytes) kontrol ederek 
- * sahte MIME tipi (MIME spoofing) ve stored XSS saldırılarını engeller.
+ * Dosya tamponunun (Buffer) ikili imzasını beyan edilen MIME tipi ile karşılaştırır.
+ * 
+ * @param buffer Dosyanın ikili veri tamponu
+ * @param mimeType İstemcinin beyan ettiği MIME türü (ör. 'image/png')
+ * @returns true ise imza geçerli, false ise imza sahte/uyumsuz
  */
 export const verifyFileSignature = (buffer: Buffer, mimeType: string): boolean => {
   if (!buffer || buffer.length < 4) return false;
 
+  // İlk 4 byte'ı Hexadecimal (Onatılıklı) dizgiye dönüştürüyoruz
   const hex = buffer.toString('hex', 0, 4).toUpperCase();
 
   switch (mimeType) {
     case 'image/jpeg':
-      // JPEG dosyaları FF D8 FF ile başlar
+      // JPEG dosyaları her zaman FF D8 FF başlığı ile başlar
       return hex.startsWith('FFD8FF');
 
     case 'image/png':
-      // PNG dosyaları 89 50 4E 47 ile başlar
+      // PNG dosyaları her zaman 89 50 4E 47 (\x89PNG) başlığı ile başlar
       return hex === '89504E47';
 
     case 'image/gif':
-      // GIF dosyaları 47 49 46 38 ile başlar
+      // GIF dosyaları 47 49 46 38 (GIF8) başlığı ile başlar
       return hex === '47494638';
 
     case 'image/webp':
-      // WebP RIFF (52 49 46 46) ve WEBP (57 45 42 50) taşır
+      // WebP dosyaları RIFF (52 49 46 46) ve WEBP (57 45 42 50) başlıkları taşır
       if (buffer.length < 12) return false;
       const riff = buffer.toString('hex', 0, 4).toUpperCase();
       const webp = buffer.toString('hex', 8, 12).toUpperCase();
       return riff === '52494646' && webp === '57454250';
 
     case 'application/pdf':
-      // PDF dosyaları %PDF (25 50 44 46) ile başlar
+      // PDF dosyaları %PDF (25 50 44 46) başlığı ile başlar
       return hex === '25504446';
 
     case 'application/zip':
     case 'application/vnd.openxmlformats-officedocument.wordprocessingml.document': // .docx
     case 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': // .xlsx
     case 'application/vnd.openxmlformats-officedocument.presentationml.presentation': // .pptx
-      // ZIP ve Modern Office XML arşivleri PK (50 4B 03 04) ile başlar
+      // ZIP ve Modern Office XML arşivleri PK (50 4B 03 04) başlığı ile başlar
       return hex === '504B0304';
 
     case 'application/msword': // .doc
-      // Eski binary word formatı D0 CF 11 E0 ile başlar
+      // Eski binary Word formatı D0 CF 11 E0 başlığı ile başlar
       return hex === 'D0CF11E0';
 
     case 'audio/mpeg':
-      // MP3 ID3v2 tag (49 44 33) veya Frame Sync (FF FB / FF F3 / FF F2)
+      // MP3 ID3v2 etiket başlığı (49 44 33) veya Frame Sync (FFF)
       return hex.startsWith('494433') || hex.startsWith('FFF');
 
     case 'audio/wav':
-      // WAV RIFF (52 49 46 46) ve WAVE (57 41 56 45)
+      // WAV dosyaları RIFF (52 49 46 46) ve WAVE (57 41 56 45) başlıkları taşır
       if (buffer.length < 12) return false;
       const wavRiff = buffer.toString('hex', 0, 4).toUpperCase();
       const wave = buffer.toString('hex', 8, 12).toUpperCase();
       return wavRiff === '52494646' && wave === '57415645';
 
     case 'text/plain':
-      // Düz metin dosyalarında binary karakter olmamalıdır (ASCII / UTF-8 kontrolü)
+      // Düz metin dosyalarında çalıştırılabilir ikili (binary) kontrol karakterleri bulunmamalıdır
       for (let i = 0; i < Math.min(buffer.length, 512); i++) {
         const code = buffer[i];
-        // 9 (TAB), 10 (LF), 13 (CR) dışındaki 32 altı kontrol karakterleri binary demektir
+        // 9 (TAB), 10 (LF), 13 (CR) dışındaki kontrol karakterleri metin değil ikili veridir
         if (code < 9 || (code > 13 && code < 32)) {
           return false;
         }
@@ -67,7 +85,6 @@ export const verifyFileSignature = (buffer: Buffer, mimeType: string): boolean =
       return true;
 
     default:
-      // Diğer kategoriler için genel güvenlik önlemi olarak izin ver
       return true;
   }
 };

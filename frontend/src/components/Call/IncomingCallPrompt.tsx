@@ -1,6 +1,21 @@
+/**
+ * ============================================================================
+ * GELEN ARAMA UYARI VE KABUL/REDDET BİLEŞENİ (IncomingCallPrompt Component)
+ * ============================================================================
+ * 
+ * Bu bileşen, başka bir kullanıcı arama başlattığında ekranda beliren gelen arama
+ * bildirim kartını (Pop-up Overlay) render eder.
+ * 
+ * ÖZELLİKLER:
+ * 1. Arayan kullanıcının adı ve profil baş harfi (Avatar)
+ * 2. Aramanın türüne göre (Sesli veya Görüntülü) özel ikonlar
+ * 3. Kabul Et (Accept) ve Reddet (Decline) buton işleyicileri
+ */
+
 import type { CallType } from './CallModal';
 import './IncomingCallPrompt.css';
 
+/** Gelen Arama Bilgi Arayüzü */
 export interface IncomingCall {
   conversationId: string;
   callId: string;
@@ -20,6 +35,7 @@ interface IncomingCallPromptProps {
 }
 
 export default function IncomingCallPrompt({ call, onAccept, onDecline }: IncomingCallPromptProps) {
+  // Grup araması ise grup adı, birebir arama ise arayanın adı gösterilir
   const title = call.isGroup && call.conversationName
     ? call.conversationName
     : call.caller.username;
@@ -28,18 +44,22 @@ export default function IncomingCallPrompt({ call, onAccept, onDecline }: Incomi
   return (
     <div className="incoming-call-overlay">
       <div className="incoming-call-card">
+        {/* Arama Türü Üst İkonları */}
         <div className="incoming-call-top-icons">
           <span>{isVideo ? '▦' : '◖'}</span>
           <span>{isVideo ? '◼' : '◗'}</span>
         </div>
 
+        {/* Profil Avatar Harfi */}
         <div className="incoming-call-avatar">{title[0]?.toUpperCase()}</div>
 
+        {/* Arama Başlığı ve Metni */}
         <div className="incoming-call-copy">
           <h2>{title}</h2>
           <p>{isVideo ? 'gelen görüntülü arama' : 'gelen sesli arama'}</p>
         </div>
 
+        {/* Aksiyon Butonları (Reddet / Kabul Et) */}
         <div className="incoming-call-actions">
           <div className="incoming-call-action">
             <button className="incoming-call-button decline" onClick={onDecline} title="Reddet">

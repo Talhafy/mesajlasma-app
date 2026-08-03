@@ -6,12 +6,14 @@ import { authenticateToken, CustomRequest } from '../middleware/authMiddleware';
 import { validateRequest } from '../middleware/validateRequest';
 import { chatSchemas } from '../validation/schemas';
 import {
+  createPresignedUploadUrl,
   deletePrivateFile,
   uploadPrivateFile,
   withSignedFileUrl
 } from '../services/fileStorage';
 import { MalwareDetectedError, MalwareScannerUnavailableError, scanBufferForMalware } from '../services/malwareScan';
-import { registerUploadedAsset, sha256 } from '../services/uploadedAssetService';
+import { confirmAndApproveAsset, registerUploadedAsset, sha256 } from '../services/uploadedAssetService';
+import { UploadedAssetStatus } from '@prisma/client';
 import { logger } from '../config/logger';
 import { getAuthenticatedUserId as getUserId, getRouteParam as getParam } from '../utils/request';
 import { verifyFileSignature } from '../utils/fileValidation';
@@ -19,22 +21,61 @@ import * as userService from '../services/userService';
 import * as conversationService from '../services/conversationService';
 import * as messageService from '../services/messageService';
 
+import { AppError, respondWithError } from '../errors/AppError';
+
 const router = express.Router();
 
 // Bu router altındaki tüm mesaj, sohbet ve dosya endpoint'leri access token gerektirir.
 router.use(authenticateToken);
 
-const isAccessError = (message: string) => (
-  message.includes('yetki') ||
-  message.includes('yönetici') ||
-  message.includes('kurucu') ||
-  message.includes('aktif') ||
-  message.includes('Yalnızca kendi yüklediğiniz dosyayı')
-);
+// ==========================================
+// 1. DOSYA YÜKLEME VE GÜVENLİK API'LERİ
+// ==========================================
 
-// ==========================================
-// 1. DOSYA YÜKLEME API'Sİ
-// ==========================================
+// Direct-to-R2 Presigned Upload URL Alma Uç Noktası
+router.post('/upload/presigned', async (req: CustomRequest, res: Response): Promise<any> => {
+  try {
+    const { fileName, contentType, sizeBytes } = req.body;
+    if (!fileName || !contentType || !sizeBytes) {
+      return res.status(400).json({ error: 'fileName, contentType ve sizeBytes zorunludur.', code: 'VALIDATION_ERROR' });
+    }
+
+    const userId = getUserId(req);
+    const { fileKey, uploadUrl, expiresAt } = await createPresignedUploadUrl(fileName, contentType);
+
+    // Dosya doğrudan R2'ye yüklenmeden önce veritabanında QUARANTINE statüsünde açılır.
+    await registerUploadedAsset({
+      fileKey,
+      ownerId: userId,
+      mimeType: contentType,
+      sizeBytes: Number(sizeBytes),
+      checksum: 'pending_direct_upload',
+      status: UploadedAssetStatus.QUARANTINE
+    });
+
+    return res.status(200).json({ fileKey, uploadUrl, expiresAt });
+  } catch (error) {
+    return respondWithError(res, error, 'Presigned yükleme adresi üretilemedi.');
+  }
+});
+
+// Direct Upload Karantina Onay ve Tarama Uç Noktası
+router.post('/upload/confirm', async (req: CustomRequest, res: Response): Promise<any> => {
+  try {
+    const { fileKey } = req.body;
+    if (!fileKey) {
+      return res.status(400).json({ error: 'fileKey zorunludur.', code: 'VALIDATION_ERROR' });
+    }
+    const userId = getUserId(req);
+
+    // Karantinadaki dosya taramadan geçirilip READY statüsüne getirilir.
+    const approvedAsset = await confirmAndApproveAsset(fileKey, userId);
+    return res.status(200).json({ fileKey: approvedAsset.fileKey, status: approvedAsset.status });
+  } catch (error) {
+    return respondWithError(res, error, 'Karantinadaki dosya doğrulanamadı.');
+  }
+});
+
 router.post('/upload', uploadSingleFile, async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     if (!req.file) return res.status(400).json({ error: "Dosya bulunamadı." });
@@ -52,7 +93,7 @@ router.post('/upload', uploadSingleFile, async (req: CustomRequest, res: Respons
         fileName: originalNameDecoded,
         mimetype: req.file.mimetype
       }, 'File signature mismatch detected');
-      return res.status(400).json({ error: 'Dosya içeriği beyan edilen dosya türü (MIME tipi) ile uyuşmuyor.' });
+      return res.status(400).json({ error: 'Dosya içeriği beyan edilen dosya türü (MIME tipi) ile uyuşmuyor.', code: 'VALIDATION_ERROR' });
     }
 
     await scanBufferForMalware(req.file.buffer);
@@ -63,13 +104,16 @@ router.post('/upload', uploadSingleFile, async (req: CustomRequest, res: Respons
       originalNameDecoded
     );
     try {
+      // Yüklenen dosya kayıt anında QUARANTINE statüsünde başlatılır, başarıyla taranınca READY yapılır.
       await registerUploadedAsset({
         fileKey,
         ownerId: getUserId(req),
         mimeType: req.file.mimetype,
         sizeBytes: req.file.size,
-        checksum: sha256(req.file.buffer)
+        checksum: sha256(req.file.buffer),
+        status: UploadedAssetStatus.QUARANTINE
       });
+      await confirmAndApproveAsset(fileKey, getUserId(req));
     } catch (error) {
       await deletePrivateFile(fileKey).catch(() => undefined);
       throw error;
@@ -99,10 +143,12 @@ router.post('/upload', uploadSingleFile, async (req: CustomRequest, res: Respons
 // 2. KULLANICI YÖNETİMİ API'LERİ (UserService)
 // ==========================================
 
-router.get('/users', async (req: CustomRequest, res: Response): Promise<any> => {
+router.get('/users', validateRequest({ query: chatSchemas.paginationQuery }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const currentUserId = getUserId(req);
-    const users = await userService.listUsers(currentUserId);
+    const cursor = req.query.cursor ? String(req.query.cursor) : undefined;
+    const limit = req.query.limit ? Number(req.query.limit) : undefined;
+    const users = await userService.listUsers(currentUserId, cursor, limit);
     return res.status(200).json(users);
   } catch (error) {
     logger.error({ event: 'chat.list_users_failed', err: error, userId: req.user?.userId, ip: req.ip }, 'List users failed');
@@ -144,7 +190,7 @@ router.post('/users/:id/block', validateRequest({ params: chatSchemas.idParams }
     return res.status(200).json(result);
   } catch (error: any) {
     logger.error({ event: 'chat.block_user_failed', err: error, userId: req.user?.userId, targetId: req.params.id, ip: req.ip }, 'Block user failed');
-    return res.status(error.message === "Kendinizi engelleyemezsiniz." ? 400 : 500).json({ error: error.message || "Engelleme başarısız." });
+    return respondWithError(res, error, 'Engelleme başarısız.');
   }
 });
 
@@ -165,10 +211,12 @@ router.delete('/users/:id/block', validateRequest({ params: chatSchemas.idParams
 // 3. SOHBET VE GRUP YÖNETİMİ API'LERİ (ConversationService)
 // ==========================================
 
-router.get('/conversations', async (req: CustomRequest, res: Response): Promise<any> => {
+router.get('/conversations', validateRequest({ query: chatSchemas.paginationQuery }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const userId = getUserId(req);
-    const conversations = await conversationService.listConversations(userId);
+    const cursor = req.query.cursor ? String(req.query.cursor) : undefined;
+    const limit = req.query.limit ? Number(req.query.limit) : undefined;
+    const conversations = await conversationService.listConversations(userId, cursor, limit);
     return res.status(200).json(conversations);
   } catch (error) {
     logger.error({ event: 'chat.conversations_fetch_failed', err: error, userId: req.user?.userId, ip: req.ip }, 'Conversations fetch failed');
@@ -185,7 +233,7 @@ router.delete('/conversations/:id', validateRequest({ params: chatSchemas.conver
     return res.status(200).json(result);
   } catch (error: any) {
     logger.error({ event: 'chat.conversation_delete_failed', err: error, userId: req.user?.userId, conversationId: req.params.id, ip: req.ip }, 'Delete conversation history failed');
-    return res.status(500).json({ error: error.message || "Sohbet silinemedi." });
+    return respondWithError(res, error, 'Sohbet silinemedi.');
   }
 });
 
@@ -197,8 +245,7 @@ router.put('/conversations/:id/pin', validateRequest({ params: chatSchemas.conve
     return res.status(200).json(result);
   } catch (error: any) {
     logger.error({ event: 'chat.conversation_pin_failed', err: error, userId: req.user?.userId, conversationId: req.params.id, ip: req.ip }, 'Conversation pin status update failed');
-    const status = error.message.includes('yetkiniz yok') ? 403 : error.message.includes('bulunamadı') ? 404 : 500;
-    return res.status(status).json({ error: error.message || 'Sohbet sabitleme durumu güncellenemedi.' });
+    return respondWithError(res, error, 'Sohbet sabitleme durumu güncellenemedi.');
   }
 });
 
@@ -210,8 +257,7 @@ router.put('/conversations/:id/archive', validateRequest({ params: chatSchemas.c
     return res.status(200).json(result);
   } catch (error: any) {
     logger.error({ event: 'chat.conversation_archive_failed', err: error, userId: req.user?.userId, conversationId: req.params.id, ip: req.ip }, 'Conversation archive status update failed');
-    const status = error.message.includes('yetkiniz yok') ? 403 : error.message.includes('bulunamadı') ? 404 : 500;
-    return res.status(status).json({ error: error.message || 'Sohbet arşiv durumu güncellenemedi.' });
+    return respondWithError(res, error, 'Sohbet arşiv durumu güncellenemedi.');
   }
 });
 
@@ -223,8 +269,7 @@ router.put('/conversations/:id/mute', validateRequest({ params: chatSchemas.conv
     return res.status(200).json(result);
   } catch (error: any) {
     logger.error({ event: 'chat.conversation_mute_failed', err: error, userId: req.user?.userId, conversationId: req.params.id, ip: req.ip }, 'Conversation mute status update failed');
-    const status = error.message.includes('yetkiniz yok') ? 403 : error.message.includes('bulunamadı') ? 404 : 500;
-    return res.status(status).json({ error: error.message || 'Sohbet sessize alma durumu güncellenemedi.' });
+    return respondWithError(res, error, 'Sohbet sessize alma durumu güncellenemedi.');
   }
 });
 
@@ -241,8 +286,7 @@ router.put('/conversations/:id/disappearing', validateRequest({
     return res.status(200).json(result);
   } catch (error: any) {
     logger.error({ event: 'chat.conversation_disappearing_failed', err: error, userId: req.user?.userId, conversationId: req.params.id, ip: req.ip }, 'Conversation disappearing mode update failed');
-    const status = error.message.includes('yetkiniz yok') ? 403 : 500;
-    return res.status(status).json({ error: error.message || 'Kaybolan mesaj modu güncellenemedi.' });
+    return respondWithError(res, error, 'Kaybolan mesaj modu güncellenemedi.');
   }
 });
 
@@ -254,8 +298,7 @@ router.post('/conversations/direct', validateRequest({ body: chatSchemas.directC
     return res.status(200).json(result);
   } catch (error: any) {
     logger.error({ event: 'chat.direct_conversation_failed', err: error, userId: req.user?.userId, targetUserId: req.body.targetUserId, ip: req.ip }, 'Direct conversation creation failed');
-    const status = error.message.includes('Kendinizle') ? 400 : error.message.includes('bulunamadı') ? 404 : 500;
-    return res.status(status).json({ error: error.message || 'Sohbet odası oluşturulamadı.' });
+    return respondWithError(res, error, 'Sohbet odası oluşturulamadı.');
   }
 });
 
@@ -268,8 +311,7 @@ router.post('/conversations/group', validateRequest({ body: chatSchemas.group })
     return res.status(201).json(result);
   } catch (error: any) {
     logger.error({ event: 'chat.group_creation_failed', err: error, userId: req.user?.userId, ip: req.ip }, 'Group creation failed');
-    const status = error.message.includes('bulunamadı') ? 400 : 500;
-    return res.status(status).json({ error: error.message || "Grup oluşturulamadı." });
+    return respondWithError(res, error, 'Grup oluşturulamadı.');
   }
 });
 
@@ -292,8 +334,7 @@ router.get('/conversations/group/:id/participants', validateRequest({ params: ch
     return res.status(200).json(participants);
   } catch (error: any) {
     logger.error({ event: 'chat.group_participants_failed', err: error, userId: req.user?.userId, groupId: req.params.id, ip: req.ip }, 'Group participants fetch failed');
-    const status = error.message.includes('yetkiniz yok') ? 403 : 500;
-    return res.status(status).json({ error: error.message || "Grup üyeleri alınamadı." });
+    return respondWithError(res, error, 'Grup üyeleri alınamadı.');
   }
 });
 
@@ -309,8 +350,7 @@ router.put('/conversations/group/:id/name', validateRequest({
     return res.status(200).json(result);
   } catch (error: any) {
     logger.error({ event: 'chat.group_name_failed', err: error, userId: req.user?.userId, groupId: req.params.id, ip: req.ip }, 'Group name update failed');
-    const status = error.message.includes('bulunamadı') ? 404 : isAccessError(error.message) ? 403 : 500;
-    return res.status(status).json({ error: error.message || "Grup adı güncellenemedi." });
+    return respondWithError(res, error, 'Grup adı güncellenemedi.');
   }
 });
 
@@ -327,8 +367,7 @@ router.put('/conversations/group/:id/avatar', validateRequest({
     return res.status(200).json(result);
   } catch (error: any) {
     logger.error({ event: 'chat.group_avatar_failed', err: error, userId: req.user?.userId, groupId: req.params.id, ip: req.ip }, 'Group avatar update failed');
-    const status = error.message.includes('bulunamadı') ? 404 : isAccessError(error.message) ? 403 : 500;
-    return res.status(status).json({ error: error.message || "Grup resmi güncellenemedi." });
+    return respondWithError(res, error, 'Grup resmi güncellenemedi.');
   }
 });
 
@@ -342,8 +381,7 @@ router.delete('/conversations/group/:id/participants/:userId', validateRequest({
     return res.status(200).json(result);
   } catch (error: any) {
     logger.error({ event: 'chat.group_member_remove_failed', err: error, userId: req.user?.userId, groupId: req.params.id, targetUserId: req.params.userId, ip: req.ip }, 'Remove group member failed');
-    const status = error.message.includes('bulunamadı') ? 404 : isAccessError(error.message) ? 403 : 500;
-    return res.status(status).json({ error: error.message || "Kişi çıkarılamadı." });
+    return respondWithError(res, error, 'Kişi çıkarılamadı.');
   }
 });
 
@@ -360,8 +398,7 @@ router.post('/conversations/group/:id/participants', validateRequest({
     return res.status(200).json(result);
   } catch (error: any) {
     logger.error({ event: 'chat.group_member_add_failed', err: error, userId: req.user?.userId, groupId: req.params.id, ip: req.ip }, 'Add group members failed');
-    const status = error.message.includes('bulunamadı') ? 400 : isAccessError(error.message) ? 403 : 500;
-    return res.status(status).json({ error: error.message || "Ekleme başarısız." });
+    return respondWithError(res, error, 'Ekleme başarısız.');
   }
 });
 
@@ -378,8 +415,7 @@ router.put('/conversations/group/:id/admin', validateRequest({
     return res.status(200).json(result);
   } catch (error: any) {
     logger.error({ event: 'chat.group_admin_transfer_failed', err: error, userId: req.user?.userId, groupId: req.params.id, newAdminId: req.body.newAdminId, ip: req.ip }, 'Transfer group admin failed');
-    const status = isAccessError(error.message) ? 403 : error.message.includes('üyesi') || error.message.includes('bulunamadı') ? 400 : 500;
-    return res.status(status).json({ error: error.message || "İşlem başarısız." });
+    return respondWithError(res, error, 'İşlem başarısız.');
   }
 });
 
@@ -392,8 +428,7 @@ router.delete('/conversations/group/:id', validateRequest({ params: chatSchemas.
     return res.status(200).json(result);
   } catch (error: any) {
     logger.error({ event: 'chat.group_delete_failed', err: error, userId: req.user?.userId, groupId: req.params.id, ip: req.ip }, 'Delete group failed');
-    const status = isAccessError(error.message) ? 403 : 500;
-    return res.status(status).json({ error: error.message || "Grup silinemedi." });
+    return respondWithError(res, error, 'Grup silinemedi.');
   }
 });
 
@@ -409,10 +444,7 @@ router.post('/messages', validateRequest({ body: chatSchemas.message }), async (
     return res.status(201).json(result);
   } catch (error: any) {
     logger.error({ event: 'chat.message_send_failed', err: error, userId: req.user?.userId, conversationId: req.body.conversationId, ip: req.ip }, 'Message send failed');
-    const status = isAccessError(error.message) || error.message.includes('engellendiniz') || error.message.includes('engellediniz') ? 403 :
-      error.message.includes('bulunamadı') ? 404 :
-        error.message.includes('Yanıtlanan') ? 400 : 500;
-    return res.status(status).json({ error: error.message || 'Mesaj gönderilemedi.' });
+    return respondWithError(res, error, 'Mesaj gönderilemedi.');
   }
 });
 
@@ -422,14 +454,14 @@ router.get('/conversations/:conversationId/messages', validateRequest({
 }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const conversationId = getParam(req, 'conversationId');
-    const { cursor } = req.query;
+    const cursor = req.query.cursor ? String(req.query.cursor) : undefined;
+    const limit = req.query.limit ? Number(req.query.limit) : undefined;
     const userId = getUserId(req);
-    const messages = await messageService.fetchMessages(conversationId, userId, cursor as string);
+    const messages = await messageService.fetchMessages(conversationId, userId, cursor, limit);
     return res.status(200).json(messages);
   } catch (error: any) {
     logger.error({ event: 'chat.messages_fetch_failed', err: error, userId: req.user?.userId, conversationId: req.params.conversationId, ip: req.ip }, 'Messages fetch failed');
-    const status = error.message.includes('yetkiniz yok') ? 403 : 500;
-    return res.status(status).json({ error: error.message || 'Mesajlar yüklenemedi.' });
+    return respondWithError(res, error, 'Mesajlar yüklenemedi.');
   }
 });
 
@@ -446,8 +478,7 @@ router.post('/conversations/:id/read', validateRequest({
     return res.status(200).json(result);
   } catch (error: any) {
     logger.error({ event: 'chat.read_receipt_failed', err: error, userId: req.user?.userId, conversationId: req.params.id, ip: req.ip }, 'Read receipt failed');
-    const status = error.message.includes('yetkiniz yok') ? 403 : error.message.includes('son okunan') ? 400 : 500;
-    return res.status(status).json({ error: error.message || 'Görüldü atılamadı.' });
+    return respondWithError(res, error, 'Görüldü atılamadı.');
   }
 });
 
@@ -498,8 +529,7 @@ router.put('/messages/:id', validateRequest({
     return res.status(200).json(updated);
   } catch (error: any) {
     logger.error({ event: 'chat.message_edit_failed', err: error, userId: req.user?.userId, messageId: req.params.id, ip: req.ip }, 'Message edit failed');
-    const status = error.message.includes('bulunamadı') ? 404 : error.message.includes('kendi mesajınızı') || error.message.includes('üyesi değilsiniz') ? 403 : 500;
-    return res.status(status).json({ error: error.message || "Mesaj düzenlenemedi." });
+    return respondWithError(res, error, 'Mesaj düzenlenemedi.');
   }
 });
 
@@ -513,8 +543,7 @@ router.get('/conversations/:conversationId/media', validateRequest({
     return res.status(200).json(media);
   } catch (error: any) {
     logger.error({ event: 'chat.media_fetch_failed', err: error, userId: req.user?.userId, conversationId: req.params.conversationId, ip: req.ip }, 'Media fetch failed');
-    const status = error.message.includes('yetkiniz yok') ? 403 : 500;
-    return res.status(status).json({ error: error.message || 'Medya bilgileri getirilemedi.' });
+    return respondWithError(res, error, 'Medya bilgileri getirilemedi.');
   }
 });
 
@@ -527,8 +556,7 @@ router.put('/messages/:id/pin', validateRequest({ params: chatSchemas.idParams }
     return res.status(200).json(result);
   } catch (error: any) {
     logger.error({ event: 'chat.message_pin_failed', err: error, userId: req.user?.userId, messageId: req.params.id, ip: req.ip }, 'Message pin failed');
-    const status = error.message.includes('bulunamadı') ? 404 : error.message.includes('yetkiniz yok') ? 403 : 500;
-    return res.status(status).json({ error: error.message || "Sabitleme işlemi başarısız." });
+    return respondWithError(res, error, 'Sabitleme işlemi başarısız.');
   }
 });
 
@@ -541,8 +569,7 @@ router.put('/messages/:id/star', validateRequest({ params: chatSchemas.idParams 
     return res.status(200).json(result);
   } catch (error: any) {
     logger.error({ event: 'chat.message_star_failed', err: error, userId: req.user?.userId, messageId: req.params.id, ip: req.ip }, 'Message star failed');
-    const status = error.message.includes('bulunamadı') ? 404 : error.message.includes('yetkiniz yok') ? 403 : 500;
-    return res.status(status).json({ error: error.message || "Yıldızlama başarısız." });
+    return respondWithError(res, error, 'Yıldızlama başarısız.');
   }
 });
 
@@ -559,8 +586,7 @@ router.delete('/messages/:id', validateRequest({
     return res.status(200).json(result);
   } catch (error: any) {
     logger.error({ event: 'chat.message_delete_failed', err: error, userId: req.user?.userId, messageId: req.params.id, ip: req.ip }, 'Message delete failed');
-    const status = error.message.includes('bulunamadı') ? 404 : error.message.includes('silme yetkiniz') || error.message.includes('Sadece kendi') ? 403 : 500;
-    return res.status(status).json({ error: error.message || "Silme işlemi başarısız." });
+    return respondWithError(res, error, 'Silme işlemi başarısız.');
   }
 });
 

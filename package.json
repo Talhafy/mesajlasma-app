@@ -4,10 +4,26 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "build": "tsc",
+    "start": "node dist/src/index.js",
     "dev": "nodemon --exec \"node --no-warnings -r ts-node/register src/index.ts\"",
     "worker:scheduled": "node --no-warnings -r ts-node/register src/workers/scheduledMessageWorkerProcess.ts",
     "dev:worker:scheduled": "nodemon --exec \"node --no-warnings -r ts-node/register src/workers/scheduledMessageWorkerProcess.ts\"",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
+    "test:coverage": "vitest run --coverage",
+    "db:validate": "prisma validate",
+    "db:migrate:deploy": "prisma migrate deploy",
+    "db:migrate:check": "prisma migrate status",
+    "db:migrate:diff": "prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code",
+    "security:audit": "npm audit --audit-level=high",
+    "security:asvs": "vitest run tests/unit/owaspAsvs.test.ts",
+    "smoke": "node scripts/smoke-test.mjs",
+    "generate:client": "node scripts/generate-client.mjs",
+    "ci": "npm run typecheck && npm run test:coverage",
     "logging:up": "docker compose -f docker-compose.logging.yml up -d",
     "logging:down": "docker compose -f docker-compose.logging.yml down",
     "logging:logs": "docker compose -f docker-compose.logging.yml logs -f elasticsearch logstash kibana"
@@ -17,9 +33,11 @@
   "license": "ISC",
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1078.0",
+    "@aws-sdk/lib-storage": "^3.1101.0",
     "@aws-sdk/s3-request-presigner": "^3.1079.0",
     "@prisma/adapter-pg": "^7.8.0",
     "@prisma/client": "^7.8.0",
+    "@socket.io/redis-adapter": "^8.3.0",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
@@ -33,7 +51,10 @@
     "pg": "^8.22.0",
     "pino": "^10.3.1",
     "pino-http": "^11.0.0",
+    "rate-limit-redis": "^6.0.1",
+    "redis": "^6.2.0",
     "socket.io": "^4.8.3",
+    "swagger-ui-express": "^5.0.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -44,9 +65,14 @@
     "@types/multer": "^2.2.0",
     "@types/node": "^26.0.0",
     "@types/pg": "^8.20.0",
+    "@types/supertest": "^7.2.1",
+    "@types/swagger-ui-express": "^4.1.8",
+    "@vitest/coverage-v8": "^4.1.10",
     "nodemon": "^3.1.14",
     "prisma": "^7.8.0",
+    "supertest": "^7.2.2",
     "ts-node": "^10.9.2",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
   }
 }

@@ -1,8 +1,9 @@
 // Oyun grupları altındaki sesli ve yazılı kanalların yönetimini sağlayan servis katmanı.
 import type { GameChannelType } from '@prisma/client';
 import prisma from '../db';
+import { AppError } from '../errors/AppError';
 import { requireActiveParticipant } from './conversationAccess';
-import { markAsRead, sendMessage, serializeMessage } from './messageService';
+import { markAsRead, sendMessage, serializeMessages } from './messageService';
 
 // Her kanal türü (ses/yazı) için grup başına maksimum kanal sınırı
 const MAX_CHANNELS_PER_TYPE = 5;
@@ -25,7 +26,7 @@ const requireGroupMember = async (groupId: string, userId: string) => {
     },
     select: { id: true, name: true, adminId: true }
   });
-  if (!group) throw new Error('Bu oyun grubuna erişim yetkiniz yok.');
+  if (!group) throw AppError.forbidden('CONVERSATION_FORBIDDEN', 'Bu oyun grubuna erişim yetkiniz yok.');
   return { group, membership };
 };
 
@@ -67,7 +68,7 @@ export const createChannel = async (
     where: { conversationId: groupId, type: input.type }
   });
   if (count >= MAX_CHANNELS_PER_TYPE) {
-    throw new Error(`Bir grupta en fazla ${MAX_CHANNELS_PER_TYPE} ${input.type === 'VOICE' ? 'ses' : 'yazı'} kanalı olabilir.`);
+    throw AppError.badRequest('CHANNEL_LIMIT_REACHED', `Bir grupta en fazla ${MAX_CHANNELS_PER_TYPE} ${input.type === 'VOICE' ? 'ses' : 'yazı'} kanalı olabilir.`);
   }
 
   // Yazı kanalları için isim normalizasyonu (küçük harf ve türkçe karakter duyarlılığı, boşluklar yerine tire)
@@ -80,7 +81,7 @@ export const createChannel = async (
     where: { conversationId: groupId, type: input.type, name: { equals: name, mode: 'insensitive' } },
     select: { id: true }
   });
-  if (duplicate) throw new Error('Bu isimde bir kanal zaten var.');
+  if (duplicate) throw AppError.conflict('CHANNEL_DUPLICATE', 'Bu isimde bir kanal zaten var.');
 
   // Kanal veritabanına eklenir
   return prisma.gameChannel.create({
@@ -104,11 +105,11 @@ export const deleteChannel = async (groupId: string, channelId: string, userId: 
     where: { id: channelId, conversationId: groupId },
     select: { id: true, createdById: true }
   });
-  if (!channel) throw new Error('Kanal bulunamadı.');
+  if (!channel) throw AppError.notFound('CHANNEL_NOT_FOUND', 'Kanal bulunamadı.');
   
   // Yetki kontrolü (Grup yöneticisi veya kanalı oluşturan kişi)
   if (group.adminId !== userId && channel.createdById !== userId) {
-    throw new Error('Bu kanalı silme yetkiniz yok.');
+    throw AppError.forbidden('CHANNEL_FORBIDDEN', 'Bu kanalı silme yetkiniz yok.');
   }
   
   await prisma.gameChannel.delete({ where: { id: channelId } });
@@ -129,7 +130,7 @@ export const fetchChannelMessages = async (
     where: { id: channelId, conversationId: groupId, type: 'TEXT' },
     select: { id: true }
   });
-  if (!channel) throw new Error('Yazı kanalı bulunamadı.');
+  if (!channel) throw AppError.notFound('CHANNEL_NOT_FOUND', 'Yazı kanalı bulunamadı.');
 
   // Silinmemiş ve süresi dolmamış mesajlar çekilir
   const messages = await prisma.message.findMany({
@@ -154,7 +155,7 @@ export const fetchChannelMessages = async (
     }
   });
   // Mesajlar kronolojik sıra için tersine çevrilerek serialize edilir
-  return Promise.all(messages.reverse().map(serializeMessage));
+  return serializeMessages(messages.reverse());
 };
 
 /**
@@ -193,7 +194,7 @@ export const markChannelAsRead = async (
     where: { id: channelId, conversationId: groupId, type: 'TEXT' },
     select: { id: true }
   });
-  if (!channel) throw new Error('Yazı kanalı bulunamadı.');
+  if (!channel) throw AppError.notFound('CHANNEL_NOT_FOUND', 'Yazı kanalı bulunamadı.');
   return markAsRead(groupId, userId, lastReadMessageId, true, io, channelId);
 };
 
@@ -214,7 +215,7 @@ export const getVoiceChannelAccess = async (channelId: string, userId: string) =
     }
   });
   if (!channel || channel.type !== 'VOICE' || !channel.conversation.isGroup) {
-    throw new Error('Bu ses kanalına katılma yetkiniz yok.');
+    throw AppError.forbidden('CHANNEL_FORBIDDEN', 'Bu ses kanalına katılma yetkiniz yok.');
   }
   const membership = await requireActiveParticipant(
     channel.conversation.id,
@@ -237,11 +238,11 @@ export const updateChannel = async (
   const channel = await prisma.gameChannel.findFirst({
     where: { id: channelId, conversationId: groupId }
   });
-  if (!channel) throw new Error('Kanal bulunamadı.');
+  if (!channel) throw AppError.notFound('CHANNEL_NOT_FOUND', 'Kanal bulunamadı.');
 
   // Yalnızca grup yöneticisi veya kanalı oluşturan kişi düzenleyebilir
   if (group.adminId !== userId && channel.createdById !== userId) {
-    throw new Error('Bu kanalı düzenleme yetkiniz yok.');
+    throw AppError.forbidden('CHANNEL_FORBIDDEN', 'Bu kanalı düzenleme yetkiniz yok.');
   }
 
   const data: any = {};
@@ -250,7 +251,7 @@ export const updateChannel = async (
       ? input.name.trim().toLocaleLowerCase('tr-TR').replace(/\s+/g, '-').replace(/-+/g, '-')
       : input.name.trim();
 
-    if (!name) throw new Error('Geçersiz kanal adı.');
+    if (!name) throw AppError.validation('Geçersiz kanal adı.');
 
     // Çakışan isim kontrolü
     const duplicate = await prisma.gameChannel.findFirst({
@@ -262,14 +263,14 @@ export const updateChannel = async (
       },
       select: { id: true }
     });
-    if (duplicate) throw new Error('Bu isimde bir kanal zaten var.');
+    if (duplicate) throw AppError.conflict('CHANNEL_DUPLICATE', 'Bu isimde bir kanal zaten var.');
     data.name = name;
   }
 
   // Ses kanalları için katılımcı limiti güncellenir, yazı kanallarında bu işleme izin verilmez
   if (input.maxParticipants !== undefined) {
     if (channel.type === 'TEXT' && input.maxParticipants !== null) {
-      throw new Error('Yazı kanallarında katılımcı limiti kullanılamaz.');
+      throw AppError.validation('Yazı kanallarında katılımcı limiti kullanılamaz.');
     }
     data.maxParticipants = input.maxParticipants;
   }
@@ -318,7 +319,7 @@ export const toggleChannelMute = async (
     where: { id: channelId, conversationId: groupId },
     select: { id: true }
   });
-  if (!channel) throw new Error('Kanal bulunamadı.');
+  if (!channel) throw AppError.notFound('CHANNEL_NOT_FOUND', 'Kanal bulunamadı.');
 
   const existing = await prisma.gameChannelMute.findUnique({
     where: { channelId_userId: { channelId, userId } }

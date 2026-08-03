@@ -1,5 +1,21 @@
+/**
+ * ============================================================================
+ * SOHBET ZAMAN ÇİZELGESİ VE TARİH AYRAÇLARI MANTIĞI (Chat Timeline Helpers)
+ * ============================================================================
+ * 
+ * Bu dosya, sohbet akışında mesajları ve sistem bildirimlerini (katıldı, ayrıldı vb.)
+ * kronolojik sıraya dizip aralarına "Bugün", "Dün" veya "15 Ağustos 2026" gibi
+ * tarih ayraçları (Date Separators) yerleştiren yardımcı fonksiyonları içerir.
+ * 
+ * İŞLEVLER:
+ * 1. buildTimelineWithDateSeparators -> Mesaj ve sistem kayıtlarını harmanlayıp tarih başlıkları ekler.
+ * 2. getMessagePreview               -> Son mesaj metnini veya medya tipine göre önizleme metnini döner.
+ * 3. formatDetailedDate & getUnixEpoch -> Tarihleri okunabilir Türkçe formata dönüştürür.
+ */
+
 import type { Message } from '../../types/chat';
 
+/** Sistem Bildirimi Zaman Çizelgesi Girdisi */
 export type SystemTimelineEntry = {
   id: string;
   conversationId: string;
@@ -11,6 +27,7 @@ type TimelineItem =
   | { type: 'message'; createdAt: string; id: string; message: Message }
   | { type: 'system'; createdAt: string; id: string; entry: SystemTimelineEntry };
 
+/** Zaman Çizelgesinde Render Edilecek Son Tip (Mesaj, Sistem Uyarısı veya Tarih Ayracı) */
 export type TimelineRenderItem = TimelineItem | {
   type: 'date';
   id: string;
@@ -18,11 +35,13 @@ export type TimelineRenderItem = TimelineItem | {
   createdAt: string;
 };
 
+/** Tarihi YYYY-MM-DD formatında string anahtara çevirir */
 const getDateKey = (dateString?: string) => {
   const date = dateString ? new Date(dateString) : new Date();
   return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`;
 };
 
+/** Tarih Ayracı Etiketini Belirler ("Bugün", "Dün" veya "15 Ağustos 2026") */
 const getDateSeparatorLabel = (dateString?: string) => {
   const date = dateString ? new Date(dateString) : new Date();
   const today = new Date();
@@ -34,6 +53,12 @@ const getDateSeparatorLabel = (dateString?: string) => {
   return date.toLocaleDateString('tr-TR', { day: 'numeric', month: 'long', year: 'numeric' });
 };
 
+/**
+ * MESAJ VE SİSTEM KAYITLARINDAN BİRLEŞİK ZAMAN ÇİZELGESİ OLUŞTURUR
+ * 
+ * 1. Tüm kayıtları tarihine göre eskiden yeniye doğru sıralar.
+ * 2. Gün değişimi olan noktalara otomatik { type: 'date' } nesnesi ekler.
+ */
 export const buildTimelineWithDateSeparators = (
   messages: Message[],
   systemEntries: SystemTimelineEntry[]
@@ -60,6 +85,7 @@ export const buildTimelineWithDateSeparators = (
   }, []);
 };
 
+/** Tarihi Türkçe gün ve saat bilgisiyle detaylı formatlar */
 export const formatDetailedDate = (dateString?: string) => {
   if (!dateString) return '-';
   return new Date(dateString).toLocaleDateString('tr-TR', {
@@ -67,8 +93,13 @@ export const formatDetailedDate = (dateString?: string) => {
   });
 };
 
+/** Unix Epoch zaman damgasını saniye cinsinden döner */
 export const getUnixEpoch = (dateString?: string) => dateString ? Math.floor(new Date(dateString).getTime() / 1000) : '-';
 
+/**
+ * MESAJ ÖNİZLEME METNİ OLUŞTURUCU (Last Message Preview)
+ * Sohbet listesinde son mesajın metnini veya medya ikonu temsilini döner.
+ */
 export const getMessagePreview = (message?: Message | null) => {
   if (!message) return '';
   if (message.content?.trim()) return message.content;

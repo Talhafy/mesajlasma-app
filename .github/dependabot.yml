@@ -1,0 +1,42 @@
+# ============================================================================
+# GİTHUB DEPENDABOT OTOMATİK BAĞIMLILIK GÜNCELLEME KONFİGÜRASYONU
+# ============================================================================
+#
+# Bu dosya, projenin kullandığı npm ve GitHub Actions kütüphanelerini haftalık olarak
+# tarar; yeni veya güvenlik güncellemesi içeren paketler çıktığında otomatik olarak
+# Pull Request (PR) açarak bağımlılıkların güncel kalmasını sağlar.
+
+version: 2
+
+updates:
+  # --------------------------------------------------------------------------
+  # 1. BACKEND NPM PAKETLERİ GÜNCELLEMESİ
+  # --------------------------------------------------------------------------
+  - package-ecosystem: npm # Paket yöneticisi türü (Node.js npm)
+    directory: /           # Backend package.json konumu (Kök dizin)
+    schedule:
+      interval: weekly    # Her hafta bir kez otomatik tara
+    open-pull-requests-limit: 5 # Aynı anda en fazla 5 adet PR açık kalabilir
+    groups:
+      backend-dependencies:
+        patterns: ["*"]   # Güncellemeleri tek bir toplu PR halinde grupla
+
+  # --------------------------------------------------------------------------
+  # 2. FRONTEND NPM PAKETLERİ GÜNCELLEMESİ
+  # --------------------------------------------------------------------------
+  - package-ecosystem: npm
+    directory: /frontend  # Frontend projesi package.json konumu
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      frontend-dependencies:
+        patterns: ["*"]
+
+  # --------------------------------------------------------------------------
+  # 3. GİTHUB ACTIONS WORKFLOW EKLENTİLERİ GÜNCELLEMESİ
+  # --------------------------------------------------------------------------
+  - package-ecosystem: github-actions # .github/workflows altındaki eklentiler (checkout, setup-node vb.)
+    directory: /
+    schedule:
+      interval: weekly

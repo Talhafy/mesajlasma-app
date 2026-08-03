@@ -1,0 +1,63 @@
+# ============================================================================
+# GİTHUB CODEQL GÜVENLİK VE STATİK KOD ANALİZİ (CodeQL Security Analysis)
+# ============================================================================
+#
+# Bu workflow, koddaki güvenlik zafiyetlerini (SQL Injection, XSS, Path Traversal,
+# yetkisiz erişim vb.) yapay zeka ve kural motoru desteğiyle statik olarak analiz eder (SAST).
+#
+# ÇALIŞMA ZAMANLARI:
+# 1. Her Pull Request açıldığında
+# 2. Main veya Master dalına yeni kod birleştirildiğinde
+# 3. Her Pazartesi saat 03:17'de periyodik olarak (Cron Job)
+
+name: CodeQL Security
+
+# ----------------------------------------------------------------------------
+# WORKFLOW TETİKLENME KURALLARI (Triggers)
+# ----------------------------------------------------------------------------
+on:
+  pull_request: # PR kontrolü
+  push:
+    branches: [main, master] # Ana dal kontrolü
+  schedule:
+    - cron: "17 3 * * 1" # Haftalık otomatik güvenlik taraması
+
+# ----------------------------------------------------------------------------
+# EŞZAMANLILIK YÖNETİMİ (Concurrency)
+# ----------------------------------------------------------------------------
+# Yeni commit geldiğinde devam eden eski analizi iptal eder.
+concurrency:
+  group: codeql-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# ----------------------------------------------------------------------------
+# GÜVENLİK VE İZİNLER (Permissions)
+# ----------------------------------------------------------------------------
+# GitHub Security sekmesine zafiyet raporu (SARIF) yazabilmesi için 'security-events: write' yetkisi verilir.
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  # ==========================================================================
+  # İŞ: CODEQL STATİK GÜVENLİK TARAMASI
+  # ==========================================================================
+  codeql:
+    name: codeql
+    runs-on: ubuntu-latest
+    timeout-minutes: 15 # Maksimum çalışma süresi 15 dakika
+
+    steps:
+      # Adım 1: Kaynak kodları çek
+      - uses: actions/checkout@v4
+
+      # Adım 2: CodeQL tarama motorunu JavaScript & TypeScript dili için yapılandır
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          build-mode: none # Derleme gerektirmeden kod analizi yap (Interpreted language mode)
+
+      # Adım 3: Taramayı gerçekleştir ve zafiyet raporunu GitHub Security paneline aktar
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:javascript-typescript

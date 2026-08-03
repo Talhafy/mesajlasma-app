@@ -1,31 +1,53 @@
+/**
+ * ============================================================================
+ * KULLANICI GİRİŞ VE KAYIT BİLEŞENİ (Auth Component)
+ * ============================================================================
+ * 
+ * Bu bileşen, kullanıcıların sisteme giriş yapmasını (Login) veya yeni hesap
+ * oluşturmasını (Register) sağlayan ana arayüz ekranıdır.
+ * 
+ * ÖZELLİKLER:
+ * 1. Giriş ve Kayıt Formları Arasında Akıcı Geçiş (State-based View Switching)
+ * 2. Şifre Göster/Gizle Parola Butonu (Password Visibility Toggle)
+ * 3. Hata Mesajı ve Zod Doğrulama Uyarısı Gösterimi (Error Alerts)
+ * 4. SSO (Google / Apple) Demo Giriş Butonları
+ */
+
 import React, { useState } from 'react';
 import { api } from '../../api/httpClient';
 import './Auth.css';
 import type { User } from '../../types/chat';
 
 interface AuthProps {
+  /** Giriş başarılı olduğunda token ve kullanıcı nesnesiyle çağrılan geribildirim fonksiyonu */
   onLoginSuccess: (token: string, user: User) => void;
 }
 
 export default function Auth({ onLoginSuccess }: AuthProps) {
+  // Görünüm Durumu: 'login' (Giriş) veya 'register' (Kayıt)
   const [currentView, setCurrentView] = useState<'login' | 'register'>('login');
 
-  // Form states
+  // Form Alanı Durumları
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [username, setUsername] = useState('');
   const [identifier, setIdentifier] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   
-  // UI states
+  // Arayüz Durumları
   const [hataMesaji, setHataMesaji] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
+  /**
+   * KAYIT İŞLEMİ HANDLER (Register Form Submission)
+   */
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setHataMesaji('');
+
+    // Ön Yüz Şifre Eşleşme Kontrolü
     if (password !== confirmPassword) {
       return setHataMesaji('Şifreler birbiriyle eşleşmiyor!');
     }
@@ -51,6 +73,9 @@ export default function Auth({ onLoginSuccess }: AuthProps) {
     }
   };
 
+  /**
+   * GİRİŞ İŞLEMİ HANDLER (Login Form Submission)
+   */
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setHataMesaji('');
@@ -73,6 +98,7 @@ export default function Auth({ onLoginSuccess }: AuthProps) {
     }
   };
 
+  /** SSO (Tekli Oturum Açma) Demo Buton İşleyicisi */
   const handleSsoClick = (provider: string) => {
     alert(`${provider} ile giriş özelliği şu anda demo aşamasındadır.`);
   };
@@ -81,32 +107,27 @@ export default function Auth({ onLoginSuccess }: AuthProps) {
 
   return (
     <div className="auth-page">
-      {/* SOL PANEL (TANITIM ALANI) */}
+      {/* SOL PANEL (TANITIM VE LOGO ALANI) */}
       <div className="auth-left-panel">
         <div className="brand-header">
           <div className="brand-logo-container">
             <svg className="brand-logo-svg" viewBox="0 0 100 100" width="56" height="56">
               <defs>
-                {/* Fractal noise displacement filter to deform straight lines into highly organic, jagged lightning bolts */}
                 <filter id="lightning-fractal" x="-30%" y="-30%" width="160%" height="160%">
                   <feTurbulence type="fractalNoise" baseFrequency="0.09" numOctaves="4" result="noise" />
                   <feDisplacementMap in="SourceGraphic" in2="noise" scale="8" xChannelSelector="R" yChannelSelector="G" />
                 </filter>
               </defs>
 
-              {/* Multiple cascading lightning bolts deformed by the fractal noise */}
               <g filter="url(#lightning-fractal)" strokeLinecap="round" strokeLinejoin="round">
-                {/* 4 parallel jagged lightning paths descending from the cloud base */}
                 <path className="old-lightning-hair" d="M26 35 L18 52 L28 68 L16 88" fill="none" strokeWidth="2.2" />
                 <path className="old-lightning-hair" d="M42 35 L38 52 L48 68 L36 88" fill="none" strokeWidth="2.2" />
                 <path className="old-lightning-hair" d="M58 35 L62 52 L54 68 L64 88" fill="none" strokeWidth="2.2" />
                 <path className="old-lightning-hair" d="M74 35 L82 52 L72 68 L80 88" fill="none" strokeWidth="2.2" />
               </g>
 
-              {/* Cloud shape with a WhatsApp-style message bubble tail (flashes on strike) */}
               <path className="brand-cloud" d="M20 32 C 20 20, 35 15, 50 20 C 65 15, 80 20, 80 32 C 92 32, 95 42, 85 49 C 75 53, 35 53, 28 52 L 12 65 C 12 65, 18 57, 18 49 C 5 42, 8 32, 20 32 Z" />
 
-              {/* Smiling face elements inside/emerging from the cloud */}
               <circle className="discord-face-element" cx="38" cy="30" r="3" fill="#ffffff" />
               <circle className="discord-face-element" cx="62" cy="30" r="3" fill="#ffffff" />
               <path className="discord-face-element" d="M42 37 Q50 43 58 37" fill="none" stroke="#ffffff" strokeWidth="2.5" strokeLinecap="round" />
@@ -117,14 +138,13 @@ export default function Auth({ onLoginSuccess }: AuthProps) {
 
         <div className="brand-body">
           <h1>Güvenli İletişimin <span>En Hızlı</span> Hali</h1>
-          <p>Arkadaşlarınızla, iş ortaklarınızla veya sevdiklerinizle tamamen gerçek zamanlı, uçtan uca şifrelenmiş ve güçlü araçlarla donatılmış Thunder dünyasında buluşun.</p>
+          <p>Arkadaşlarınızla, iş ortaklarınızla veya sevdiklerinizle güvenli bağlantı, özel dosya depolama ve güçlü iletişim araçları sunan Thunder dünyasında buluşun.</p>
         </div>
 
         <div className="brand-footer">
           &copy; {new Date().getFullYear()} Thunder.app. Tüm hakları saklıdır.
         </div>
         
-        {/* Dekoratif Premium Arka Plan Şekilleri */}
         <div className="brand-graphics">
           <div className="circle-shape-1" />
           <div className="circle-shape-2" />
@@ -132,7 +152,7 @@ export default function Auth({ onLoginSuccess }: AuthProps) {
         </div>
       </div>
 
-      {/* SAĞ PANEL (FORM ALANI) */}
+      {/* SAĞ PANEL (GİRİŞ VE KAYIT FORMLARI ALANI) */}
       <div className="auth-right-panel">
         <div className="auth-card">
           <div className="auth-header">
@@ -140,7 +160,7 @@ export default function Auth({ onLoginSuccess }: AuthProps) {
             <p>{isLogin ? 'Lütfen bilgilerinizi girerek oturum açın.' : 'Aramıza katılmak için formu doldurun.'}</p>
           </div>
 
-          {/* MOCK SSO BUTTONS */}
+          {/* SSO GİRİŞ BUTONLARI */}
           <div className="sso-buttons-container">
             <button type="button" className="sso-btn" onClick={() => handleSsoClick('Google')}>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
@@ -163,6 +183,7 @@ export default function Auth({ onLoginSuccess }: AuthProps) {
             <span>veya e-posta ile devam edin</span>
           </div>
 
+          {/* HATA BİLDİRİM UYARISI */}
           {hataMesaji && (
             <div className="error-alert">
               <svg className="error-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -177,7 +198,7 @@ export default function Auth({ onLoginSuccess }: AuthProps) {
           <form onSubmit={isLogin ? handleLogin : handleRegister} className="auth-form-new">
             {!isLogin ? (
               <>
-                {/* KAYIT OL INPUTLARI */}
+                {/* KAYIT OL INPUT ALANLARI */}
                 <div className="input-group">
                   <label htmlFor="reg-username">Kullanıcı Adı</label>
                   <div className="input-wrapper">
@@ -296,7 +317,7 @@ export default function Auth({ onLoginSuccess }: AuthProps) {
               </>
             ) : (
               <>
-                {/* GİRİŞ YAP INPUTLARI */}
+                {/* GİRİŞ YAP INPUT ALANLARI */}
                 <div className="input-group">
                   <label htmlFor="login-id">E-posta veya Kullanıcı Adı</label>
                   <div className="input-wrapper">
@@ -362,6 +383,7 @@ export default function Auth({ onLoginSuccess }: AuthProps) {
               <span>{isLogin ? 'Giriş Yap' : 'Kayıt Ol'}</span>
             </button>
 
+            {/* FORM GÖRÜNÜM DEĞİŞTİRME LİNKİ */}
             <div className="auth-switch-text">
               {isLogin ? 'Hesabınız yok mu?' : 'Zaten üye misiniz?'}
               <span

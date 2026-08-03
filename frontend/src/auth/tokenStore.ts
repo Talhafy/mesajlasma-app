@@ -1,3 +1,24 @@
+/**
+ * ============================================================================
+ * FRONTEND TOKEN VE OTURUM YÖNETİM MERKEZİ (In-Memory Token Store & Interceptors)
+ * ============================================================================
+ * 
+ * Bu dosya, Frontend uygulamasının güvenlik mimarisinin kalbidir.
+ * 
+ * GÜVENLİK İLKELERİ:
+ * 1. In-Memory Storage (Bellekte Saklama):
+ *    - JWT Access Token kesinlikle LocalStorage veya SessionStorage'a YAZILMAZ.
+ *    - Bunun sebebi XSS (Cross-Site Scripting) zafiyeti durumunda kötü niyetli
+ *      scriptlerin LocalStorage'ı okuyabilmesidir. Token yalnızca JS belleğinde saklanır.
+ * 2. HttpOnly Refresh Cookie:
+ *    - Refresh Token JS tarafından hiç okunamaz; backend tarafından HttpOnly cookie olarak yönetilir.
+ * 3. Web Locks API & Eşzamanlı Refresh Engelleme:
+ *    - Birden fazla sekme aynı anda açıkken veya paralel API istekleri 401 aldığında
+ *      tarayıcı sekme kilitleri (`navigator.locks`) kullanılarak tek bir refresh isteği yapılır.
+ * 4. Sessiz Yenileme (Silent Refresh Timer):
+ *    - Token süresi dolmadan 1 dakika önce arka planda otomatik yeni token alınır.
+ */
+
 import type { AxiosError, InternalAxiosRequestConfig } from 'axios';
 import { api, authApi } from '../api/httpClient';
 
@@ -6,9 +27,6 @@ let refreshPromise: Promise<RefreshResponse> | null = null;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 const tokenListeners = new Set<(token: string | null) => void>();
 
-// Bu dosya frontend'in oturum merkezidir.
-// Access token localStorage/sessionStorage'a yazılmaz; sadece bu modül içindeki bellekte tutulur.
-// Refresh token ise frontend JS tarafından okunamaz, backend tarafından HttpOnly cookie olarak yönetilir.
 interface RefreshResponse {
   accessToken: string;
   user?: unknown;
@@ -16,17 +34,19 @@ interface RefreshResponse {
 
 type RetryableConfig = InternalAxiosRequestConfig & { _retry?: boolean };
 
+/**
+ * SESSİZ REFRESH ZAMANLAYICI (Silent Refresh Scheduler)
+ * JWT süresi dolmadan 60 saniye önce arka planda yenileme tetikler.
+ */
 const scheduleRefresh = (token: string) => {
   if (refreshTimer) clearTimeout(refreshTimer);
   try {
-    // JWT payload'ındaki exp alanını sadece süre hesaplamak için okuyoruz.
-    // Burada token doğrulaması yapmıyoruz; gerçek doğrulama her zaman backend'de yapılır.
     const encodedPayload = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
     const paddedPayload = encodedPayload.padEnd(Math.ceil(encodedPayload.length / 4) * 4, '=');
     const payload = JSON.parse(atob(paddedPayload)) as { exp?: number };
     if (!payload.exp) return;
-    // Token süresi dolmadan yaklaşık 1 dakika önce sessiz refresh yapıyoruz.
-    // Böylece kullanıcı aktifken 401 görmeden yeni access token alınır.
+
+    // Token süresi dolmadan 1 dakika önce sessizce yeniliyoruz
     const delay = Math.max(1_000, payload.exp * 1000 - Date.now() - 60_000);
     refreshTimer = setTimeout(() => {
       void refreshAccessSession().catch(() => undefined);
@@ -36,11 +56,13 @@ const scheduleRefresh = (token: string) => {
   }
 };
 
+/** Bellekteki aktif Access Token'ı döner */
 export const getAccessToken = () => accessToken;
 
+/**
+ * Bellekteki Access Token'ı günceller, zamanlayıcıyı yeniler ve dinleyen bileşenlere bildirir.
+ */
 export const setAccessToken = (token: string | null) => {
-  // Token değişince eski refresh timer iptal edilir; yeni token varsa yeni timer kurulur.
-  // Logout veya refresh hatasında token null olur ve dinleyicilere oturumun bittiği bildirilir.
   accessToken = token;
   if (refreshTimer) clearTimeout(refreshTimer);
   refreshTimer = null;
@@ -48,19 +70,22 @@ export const setAccessToken = (token: string | null) => {
   tokenListeners.forEach((listener) => listener(token));
 };
 
+/**
+ * Access Token değişimlerini takip etmek isteyen React bileşenleri için abonelik mekanizması.
+ */
 export const subscribeAccessToken = (listener: (token: string | null) => void) => {
-  // App.tsx gibi üst bileşenler token değişimini buradan takip edebilir.
-  // Fonksiyon cleanup döndürür; component unmount olunca listener sızıntısı olmaz.
   tokenListeners.add(listener);
   return () => tokenListeners.delete(listener);
 };
 
+/**
+ * OTURUM YENİLEME (Refresh Access Session)
+ * Web Locks kilit mekanizması ve tekil Promise paylaşımı ile 401 durumlarında oturumu yeniler.
+ */
 export const refreshAccessSession = async (): Promise<RefreshResponse> => {
   if (!refreshPromise) {
-    // Aynı anda birden fazla API isteği 401 alırsa hepsi ayrı refresh başlatmasın diye promise paylaşılır.
-    // Bu, refresh token rotation yapılan sistemlerde çok önemlidir; paralel refresh token reuse gibi görünebilir.
-    // Web Locks aynı tarayıcıdaki sekmelerin refresh cookie'yi eş zamanlı döndürmesini engeller.
     const performRefresh = () => authApi.post<RefreshResponse>('/refresh');
+    // Web Locks API ile tarayıcı sekmeleri arası yarış durumunu (race condition) engelliyoruz
     const refreshRequest = navigator.locks
       ? navigator.locks.request('mesajlasma-refresh-token', performRefresh)
       : performRefresh();
@@ -71,7 +96,6 @@ export const refreshAccessSession = async (): Promise<RefreshResponse> => {
         return response.data;
       })
       .catch((error) => {
-        // Refresh başarısızsa access token temizlenir ve uygulama login ekranına dönebilmek için global event alır.
         setAccessToken(null);
         window.dispatchEvent(new Event('auth:expired'));
         throw error;
@@ -83,24 +107,28 @@ export const refreshAccessSession = async (): Promise<RefreshResponse> => {
   return refreshPromise;
 };
 
+/** Oturumu Güvenle Kapatma */
 export const closeRefreshSession = async () => {
   try {
-    // Logout backend'deki refresh session'ı iptal eder; finally bloğu frontend belleğini her durumda temizler.
     await authApi.post('/logout');
   } finally {
     setAccessToken(null);
   }
 };
 
+/**
+ * AXIOS AUTHENTICATION INTERCEPTORS
+ * Uygulama başlarken Axios istek ve yanıt önleyicilerini bağlar.
+ */
 export const configureAxiosAuth = () => {
-  // Bu fonksiyon uygulama başlarken bir kez çağrılır ve axios interceptor'larını bağlar.
-  // Access token kalıcı depoya yazılmaz; her istekte bellekten okunur.
+  // Her giden API isteğine 'Authorization: Bearer <token>' başlığını ekler
   api.interceptors.request.use((config) => {
     const token = getAccessToken();
     if (token) config.headers.Authorization = `Bearer ${token}`;
     return config;
   });
 
+  // Gelen yanıt 401 Unauthorized ise otomatik token yenileyip isteği 1 kez tekrar dener
   api.interceptors.response.use(
     (response) => response,
     async (error: AxiosError) => {
@@ -108,14 +136,11 @@ export const configureAxiosAuth = () => {
       const path = config?.url || '';
       const isAuthRoute = ['/login', '/register', '/refresh'].some((route) => path.endsWith(route));
 
-      // Auth endpoint'lerinde 401 alınırsa tekrar refresh denemesi yapmıyoruz.
-      // Aksi halde login/refresh hataları sonsuz döngüye girebilir.
       if (error.response?.status !== 401 || !config || config._retry || isAuthRoute) {
         throw error;
       }
 
       config._retry = true;
-      // 401 alan normal API isteği için önce access token yenilenir, sonra aynı istek bir kez daha denenir.
       const refreshed = await refreshAccessSession();
       config.headers.Authorization = `Bearer ${refreshed.accessToken}`;
       return api(config);

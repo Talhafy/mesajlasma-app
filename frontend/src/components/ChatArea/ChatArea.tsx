@@ -1,3 +1,23 @@
+/**
+ * ============================================================================
+ * ANA SOHBET ALANI BİLEŞENİ (ChatArea Component)
+ * ============================================================================
+ * 
+ * Bu bileşen, mesajlaşma uygulamasının orta gövdesini oluşturan ana sohbet ekranıdır.
+ * 
+ * ANA MİMARİ VE YETENEKLER:
+ * 1. Alt Bileşenler (Subcomponents Orchestration):
+ *    - ChatHeader: Üst bar (Arama, arama butonları, sohbet menüsü).
+ *    - MessageBubble: Çizelgedeki mesaj balonu render edicisi (Medya, ses oynatıcı, tikler).
+ *    - ChatInput: Alt mesaj yazma, ses kaydı alma, emoji/dosya seçici.
+ *    - ConversationInfoSidebar: Sağ detay paneli (Medya galerisi, yıldızlılar, zamanlanmışlar).
+ *    - EmptyChatState: Sohbet seçilmediğinde karşılama ekranı.
+ * 2. Akıllı Sayfalama (Infinite Scroll & Cursor Pagination):
+ *    - Yukarı kaydırıldığında geçmiş mesajların yüklenmesi ve scroll pozisyonunun korunması.
+ * 3. Gerçek Zamanlı Socket Olayları & Durumlar:
+ *    - Yazıyor... / Ses kaydediyor... sinyalleri, okundu bilgisi ve zamanlanmış mesajlar.
+ */
+
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { RefObject } from 'react';
 import { api } from '../../api/httpClient';

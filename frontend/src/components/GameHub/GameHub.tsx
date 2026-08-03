@@ -1,3 +1,23 @@
+/**
+ * ============================================================================
+ * GAME HUB DISCORD/SLACK TİPİ TOPLULUK MERKEZİ (GameHub Component)
+ * ============================================================================
+ * 
+ * Bu bileşen, Discord ve Slack benzeri sesli ve metin kanallarından oluşan
+ * oyun/topluluk sunucu arayüzüdür.
+ * 
+ * ANA MİMARİ VE YETENEKLER:
+ * 1. Kanallar (Text & Voice Channels):
+ *    - Metin Kanalları (#genel, #duyurular): Real-time chat ve sohbet akışı.
+ *    - Ses Kanalları (Lobi, Ekip Sesli): LiveKit WebRTC ile anlık ses akışı ve konuşma göstergesi.
+ * 2. Canlı Sesli Odalar (LiveKit Audio Streaming):
+ *    - Mikrofona basıldığında ses odaya aktarılır, yeşil hale (glow effect) ile kimin konuştuğu vurgulanır.
+ * 3. Üye Listesi & Sağ Panel:
+ *    - Sunucudaki çevrimiçi / çevrimdışı üyeler ve profil modalları.
+ * 4. Yönetici Yetkileri:
+ *    - Yeni kanal oluşturma (+) ve mevcut kanalları silme.
+ */
+
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
@@ -915,7 +935,7 @@ export default function GameHub({ currentUser, groups, users, socket, onExit, on
               </div>
               <div className="game-profile-user-details" style={{ minWidth: 0 }}>
                 <h3 style={{ margin: '0 0 4px', fontSize: '18px', fontWeight: 700 }}>{selectedMemberProfile.username}</h3>
-                <span className="game-profile-email" style={{ color: 'var(--game-muted)', fontSize: '12px' }}>{selectedMemberProfile.email || 'E-posta adresi yok'}</span>
+                <span className="game-profile-email" style={{ color: 'var(--game-muted)', fontSize: '12px' }}>Thunder üyesi</span>
               </div>
             </div>
             

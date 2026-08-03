@@ -1,29 +1,77 @@
+/**
+ * ============================================================================
+ * DOSYA VARLIĞI VE KARANTİNA SERVİSİ (Uploaded Asset & Quarantine Lifecycle)
+ * ============================================================================
+ * 
+ * Bu servis, veritabanındaki 'UploadedAsset' tablosu üzerinden dosyaların yaşam döngüsünü
+ * (Life Cycle), karantina statülerini ve sahiplik (ownership) güvenlik kurallarını yönetir.
+ * 
+ * STATÜ AKIŞI (Lifecycle States):
+ * 1. QUARANTINE -> İlk dosya yüklendiğinde veritabanına açılan geçici/izole durum.
+ * 2. READY      -> Virüs taraması ve magic-byte doğrulamasını başarıyla geçen güvenli durum.
+ * 3. ATTACHED   -> Bir mesaja veya gruba kalıcı olarak bağlanan durum (süresi dolmaz).
+ * 4. REJECTED   -> Güvenlik taramasından kalmış veya süresi dolduğu için reddedilmiş durum.
+ */
+
 import { createHash } from 'crypto';
 import { Prisma, UploadedAssetStatus } from '@prisma/client';
 import { uploadedAssetTtlHours } from '../config/env';
 import { logger } from '../config/logger';
 import prisma from '../db';
+import { AppError } from '../errors/AppError';
 import { copyPrivateFile, deletePrivateFile } from './fileStorage';
 
 type AssetClient = Pick<Prisma.TransactionClient, 'uploadedAsset'>;
 const pendingExpiry = () => new Date(Date.now() + uploadedAssetTtlHours * 60 * 60 * 1000);
 
+/** Dosya bütünlüğünü doğrulamak için SHA-256 özeti üretir */
 export const sha256 = (buffer: Buffer) => createHash('sha256').update(buffer).digest('hex');
 
+/**
+ * Yüklenen dosyayı veritabanında ilk kez kayıt altına alır (Varsayılan: QUARANTINE).
+ */
 export const registerUploadedAsset = async (input: {
   fileKey: string;
   ownerId: string;
   mimeType: string;
   sizeBytes: number;
   checksum: string;
+  status?: UploadedAssetStatus;
 }) => prisma.uploadedAsset.create({
   data: {
     ...input,
-    status: UploadedAssetStatus.READY,
+    status: input.status ?? UploadedAssetStatus.QUARANTINE,
     expiresAt: pendingExpiry()
   }
 });
 
+/**
+ * KARANTİNADAKİ DOSYAYI ONAYLAMA VE 'READY' STATÜSÜNE YÜKSELTME
+ * Güvenlik taramasını geçen dosya QUARANTINE -> READY yapılır.
+ */
+export const confirmAndApproveAsset = async (fileKey: string, ownerId: string) => {
+  const asset = await prisma.uploadedAsset.findUnique({ where: { fileKey } });
+  if (!asset || asset.ownerId !== ownerId) {
+    throw AppError.forbidden('ASSET_NOT_OWNED', 'Yalnızca kendi yüklediğiniz dosyayı doğrulayabilirsiniz.');
+  }
+  if (asset.status === UploadedAssetStatus.REJECTED) {
+    throw AppError.badRequest('ASSET_EXPIRED_OR_REJECTED', 'Bu dosya reddedilmiş.');
+  }
+
+  return prisma.uploadedAsset.update({
+    where: { id: asset.id },
+    data: { status: UploadedAssetStatus.READY }
+  });
+};
+
+/**
+ * DOSYAYI BİR MESAJ VEYA GRUBA BAĞLAMA (ATTACHMENT)
+ * 
+ * Güvenlik Kuralları:
+ * 1. Kullanıcı yalnızca KENDİ yüklediği dosyayı mesaja ekleyebilir (ASSET_NOT_OWNED).
+ * 2. Karantinada (`QUARANTINE`) olan taranmamış dosyalar eklenemez.
+ * 3. Bağlanan dosya `ATTACHED` durumuna geçer ve son kullanma tarihi (`expiresAt`) kaldırılır.
+ */
 export const attachOwnedAsset = async (
   fileKey: string,
   ownerId: string,
@@ -31,10 +79,13 @@ export const attachOwnedAsset = async (
 ) => {
   const asset = await client.uploadedAsset.findUnique({ where: { fileKey } });
   if (!asset || asset.ownerId !== ownerId) {
-    throw new Error('Yalnızca kendi yüklediğiniz dosyayı kullanabilirsiniz.');
+    throw AppError.forbidden('ASSET_NOT_OWNED', 'Yalnızca kendi yüklediğiniz dosyayı kullanabilirsiniz.');
+  }
+  if (asset.status === UploadedAssetStatus.QUARANTINE) {
+    throw AppError.badRequest('ASSET_EXPIRED_OR_REJECTED', 'Dosya henüz güvenlik taramasından geçmedi, karantinada.');
   }
   if (asset.status === UploadedAssetStatus.REJECTED || (asset.expiresAt && asset.expiresAt <= new Date())) {
-    throw new Error('Bu dosyanın yükleme süresi dolmuş veya dosya reddedilmiş.');
+    throw AppError.badRequest('ASSET_EXPIRED_OR_REJECTED', 'Bu dosyanın yükleme süresi dolmuş veya dosya reddedilmiş.');
   }
 
   if (asset.status === UploadedAssetStatus.READY) {
@@ -46,9 +97,9 @@ export const attachOwnedAsset = async (
   return asset;
 };
 
-// Callers must establish that the user is allowed to read the source message before calling this.
-// The copied object becomes a new READY asset owned by the forwarding user, then is attached by the
-// surrounding message creation flow.
+/**
+ * İLETİLEN MESAJ İÇİN DOSYA KLONLAMA
+ */
 export const cloneAssetForOwner = async (input: {
   sourceFileKey: string;
   sourceAsset: { mimeType: string; sizeBytes: number; checksum: string };
@@ -71,6 +122,9 @@ export const cloneAssetForOwner = async (input: {
   }
 };
 
+/**
+ * HİÇBİR MESAJA BAĞLANMAMIŞ VEYA SÜRESİ DOLMUŞ YETİM DOSYALARI TEMİZLEME
+ */
 export const removeExpiredUnattachedAssets = async () => {
   const now = new Date();
   const candidates = await prisma.uploadedAsset.findMany({
@@ -80,7 +134,6 @@ export const removeExpiredUnattachedAssets = async () => {
   });
 
   for (const asset of candidates) {
-    // Claiming the row prevents a concurrent attachment from being removed by this cleanup pass.
     const claimed = await prisma.uploadedAsset.updateMany({
       where: { id: asset.id, status: UploadedAssetStatus.READY, expiresAt: { lte: now } },
       data: { status: UploadedAssetStatus.REJECTED }
@@ -92,7 +145,6 @@ export const removeExpiredUnattachedAssets = async () => {
       await prisma.uploadedAsset.delete({ where: { id: asset.id } });
       logger.info({ event: 'storage.unattached_asset_deleted', fileKey: asset.fileKey }, 'Expired unattached asset deleted');
     } catch (error) {
-      // REJECTED is intentionally retained if object deletion fails so no caller can attach it.
       logger.error({ event: 'storage.unattached_asset_cleanup_failed', err: error, fileKey: asset.fileKey }, 'Expired unattached asset cleanup failed');
     }
   }

@@ -1,4 +1,14 @@
-# Logs
+# ============================================================================
+# FRONTEND GİT YASAKLI DOSYA VE DİZİN LİSTESİ (.gitignore)
+# ============================================================================
+#
+# Bu dosya, Git sürüm kontrol sistemine (GitHub vb.) aktarılmaması (commit edilmemesi)
+# gereken geçici çıktıları, bağımlılık klasörlerini ve hassas dosyaları tanımlar.
+
+# ----------------------------------------------------------------------------
+# 1. LOG VE GÜNLÜK DOSYALARI (Logs)
+# Paket yöneticilerinin ürettiği geçici hata ve çalışma logları
+# ----------------------------------------------------------------------------
 logs
 *.log
 npm-debug.log*
@@ -7,18 +17,24 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
-*.local
+# ----------------------------------------------------------------------------
+# 2. BAĞIMLILIKLAR VE ÜRETİLEN DERLEME ÇIKTILARI (Build Outputs & Node Modules)
+# ----------------------------------------------------------------------------
+node_modules   # İndirilen npm kütüphaneleri (Çok büyük olduğu için depoya eklenmez)
+dist           # Production derleme çıktısı (Vite build sonucu)
+coverage       # Vitest test kapsama raporları klasörü
+dist-ssr       # Server-Side Rendering geçici derleme çıktısı
+*.local        # Yerel ortam değişkenleri (.env.local vb. hassas şifreler içerebilir)
 
-# Editor directories and files
+# ----------------------------------------------------------------------------
+# 3. İŞLETİM SİSTEMİ VE EDİTÖR ÖZEL DOSYALARI (Editor & OS Files)
+# ----------------------------------------------------------------------------
 .vscode/*
 !.vscode/extensions.json
-.idea
-.DS_Store
-*.suo
+.idea          # JetBrains WebStorm / IntelliJ yapılandırmaları
+.DS_Store      # macOS Finder önizleme gizli dosyası
+*.suo          # Visual Studio yerel kullanıcı ayarları
 *.ntvs*
 *.njsproj
 *.sln
-*.sw?
+*.sw?          # Vim / Neovim geçici takas (swap) dosyaları

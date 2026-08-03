@@ -1,8 +1,25 @@
+/**
+ * ============================================================================
+ * SOHBET ERİŞİM VE YETKİLENDİRME SERVİSİ (Conversation Access Control)
+ * ============================================================================
+ * 
+ * Bu servis, kullanıcıların sohbet oturumlarına erişim haklarını denetler.
+ * 
+ * ERİŞİM İLKELERİ:
+ * 1. Aktif İşlem Yetkisi (`requireActiveParticipant`): Mesaj gönderme, düzenleme veya
+ *    gruba adam ekleme gibi işlemler için kullanıcının sohbet grubunda `isActive = true` olması gerekir.
+ * 2. Geçmişi Görme Yetkisi (`requireHistoryParticipant`): Gruptan ayrılmış bir kullanıcı
+ *    yalnızca grupta bulunduğu tarih aralığındaki (`joinedAt` -> `leftAt`) geçmiş mesajları görebilir;
+ *    gruptan ayrıldıktan sonra atılan yeni mesajları göremez.
+ */
+
 import type { Prisma } from '@prisma/client';
 import prisma from '../db';
+import { AppError } from '../errors/AppError';
 
 type ConversationAccessClient = Pick<Prisma.TransactionClient, 'participant'>;
 
+/** Katılımcı kaydını veritabanından sorgulayan dahili yardımcı fonksiyon */
 const findParticipant = (
   conversationId: string,
   userId: string,
@@ -39,8 +56,9 @@ const findParticipant = (
 );
 
 /**
- * Aktif işlem yetkisi ile geçmişi salt okunur görme yetkisi birbirinden ayrıdır.
- * Pasif Participant kaydı geçmiş görünürlüğü için korunur; yeni işlem yapma yetkisi vermez.
+ * AKTİF KATILIMCI DENETİMİ (Active Participant Enforcement)
+ * Kullanıcının sohbete aktif olarak katıldığını ve sohbetin silinmediğini doğrular.
+ * Yetki yoksa 403 Forbidden (`CONVERSATION_FORBIDDEN`) hatası fırlatır.
  */
 export const requireActiveParticipant = async (
   conversationId: string,
@@ -50,14 +68,15 @@ export const requireActiveParticipant = async (
 ) => {
   const participant = await findParticipant(conversationId, userId, client);
   if (!participant?.isActive || participant.conversation.isDeleted) {
-    throw new Error(errorMessage);
+    throw AppError.forbidden('CONVERSATION_FORBIDDEN', errorMessage);
   }
   return participant;
 };
 
 /**
- * Mesaj geçmişi için Participant kaydının bulunması yeterlidir.
- * Çağıran sorgu joinedAt/leftAt sınırlarını uygulayarak yalnızca üyelik dönemini göstermelidir.
+ * GEÇMİŞİ GÖRÜNTÜLEME DENETİMİ (History View Enforcement)
+ * Kullanıcının sohbet geçmişini görme yetkisini doğrular.
+ * Eski üyeler gruptan ayrılmış olsalar bile kaldıkları sürenin geçmişini okuyabilirler.
  */
 export const requireHistoryParticipant = async (
   conversationId: string,
@@ -67,7 +86,7 @@ export const requireHistoryParticipant = async (
 ) => {
   const participant = await findParticipant(conversationId, userId, client);
   if (!participant || (!participant.isActive && !participant.leftAt)) {
-    throw new Error(errorMessage);
+    throw AppError.forbidden('CONVERSATION_FORBIDDEN', errorMessage);
   }
   return participant;
 };

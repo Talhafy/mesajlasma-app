@@ -1,3 +1,20 @@
+/**
+ * ============================================================================
+ * SOHBET BAŞLIK BİLEŞENİ (ChatHeader Component)
+ * ============================================================================
+ * 
+ * Bu bileşen, mesajlaşma ekranının en üstünde yer alan üst bilgi çubuğudur.
+ * 
+ * MODLAR VE İŞLEVLER:
+ * 1. Seçim Modu (isSelectMode = true):
+ *    - Çoklu mesaj seçildiğinde açılır. Seçilen mesajları toplu yıldızlama,
+ *      toplu silme (Benden Sil / Herkesten Sil) veya toplu iletme imkanı sağlar.
+ * 2. Normal Sohbet Modu (isSelectMode = false):
+ *    - Karşı tarafın / Grubun adı, profil resmi ve çevrimiçi / yazıyor... durum bilgisi.
+ *    - Sesli / Görüntülü arama başlatma butonları (WebRTC).
+ *    - Mesaj içi arama, bekleyen zamanlanmış mesajlar modalı ve sohbet ayarları menüsü.
+ */
+
 import type { SetStateAction, Dispatch } from 'react';
 import type { User, Conversation, Message, ScheduledMessage } from '../../../types/chat';
 import Button from '../../UI/Button';
@@ -53,6 +70,7 @@ export default function ChatHeader({
   onToggleConversationMute, onToggleConversationPin, onToggleConversationArchive,
   handleDisappearingMode, isBlockedLocally, handleBlockToggle
 }: ChatHeaderProps) {
+  // Gruptan ayrılmış veya silinmiş sohbetlerde salt okunur mod kontrolü
   const isReadOnlyHistory = Boolean(
     activeConversation?.isGroup &&
     (activeConversation.isActive === false || activeConversation.isDeleted)
@@ -60,6 +78,7 @@ export default function ChatHeader({
 
   return (
     <div className="chat-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '15px 20px', background: panelBg, borderBottom: `1px solid ${borderColor}`, height: '71px', boxSizing: 'border-box' }}>
+      {/* 1. SEÇİM MODU VEYA NORMAL SOHBET BİLGİ ALANI */}
       {isSelectMode ? (
         <div className="chat-title-info" style={{ display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0, flex: '1 1 auto' }}>
           <button onClick={() => { setIsSelectMode(false); setSelectedMessageIds(new Set()); }} aria-label="Seçimi kapat" style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer', color: iconColor }}>✖</button>
@@ -70,6 +89,7 @@ export default function ChatHeader({
       ) : (
         <div className="chat-title-info" style={{ display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0, flex: '1 1 auto' }}>
           <button className="mobile-back-btn" onClick={closeChat} aria-label="Sohbeti kapat" style={{ fontSize: '20px', color: iconColor }}>←</button>
+          {/* Sohbet / Grup Avatarı */}
           <button className="avatar-circle" onClick={handleHeaderClick} disabled={isReadOnlyHistory} title={activeConversation?.isGroup ? 'Grup bilgisi' : 'Sohbet bilgisi'} aria-label={activeConversation?.isGroup ? 'Grup bilgisi' : 'Sohbet bilgisi'}>
             {activeConversation?.isGroup && activeConversation?.avatarUrl
               ? <img src={activeConversation?.avatarUrl || undefined} alt="Grup" />
@@ -77,6 +97,7 @@ export default function ChatHeader({
                 ? <img src={chatPartner?.avatarUrl || undefined} alt="Profil" />
                 : (activeConversation?.isGroup ? activeConversation?.name : chatPartner?.username)?.[0]?.toUpperCase()}
           </button>
+          {/* Başlık ve Durum Metni (Çevrimiçi / Yazıyor / Ses Kaydediyor) */}
           <button onClick={handleHeaderClick} disabled={isReadOnlyHistory} title={activeConversation?.isGroup ? 'Grup bilgisi' : 'Sohbet bilgisi'} aria-label={activeConversation?.isGroup ? 'Grup detayları' : 'Sohbet detayları'} style={{ minWidth: 0, background: 'transparent', border: 'none', padding: 0, textAlign: 'left', cursor: isReadOnlyHistory ? 'default' : 'pointer' }}>
             <h2 style={{ margin: 0, fontSize: '16px', color: textColor, fontWeight: '600', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {activeConversation?.isGroup ? activeConversation?.name : chatPartner?.username}
@@ -91,7 +112,9 @@ export default function ChatHeader({
         </div>
       )}
       
+      {/* 2. AKSİYON BUTONLARI ALANI */}
       {isSelectMode ? (
+        /* Toplu Mesaj Seçim Menüsü */
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0, position: 'relative' }}>
           <Button variant="icon" onClick={() => {
             const selectedMsgs = messages.filter(m => selectedMessageIds.has(m.id));
@@ -119,6 +142,7 @@ export default function ChatHeader({
           </div>
         </div>
       ) : (
+        /* Standart Sohbet Başlık Butonları (Arama, Zamanlanmış Mesaj, Menü) */
         <div style={{ display: 'flex', alignItems: 'center', gap: '2px', flexShrink: 0 }}>
           <Button variant="icon" onClick={() => onStartCall('audio')} disabled={!activeConversation?.id || isReadOnlyHistory} title="Sesli Ara" aria-label="Sesli arama yap" style={{ color: iconColor }} icon={<svg viewBox="0 0 24 24" width="23" height="23" fill="currentColor"><path d="M6.62 10.79a15.05 15.05 0 0 0 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1C10.61 21 3 13.39 3 4c0-.55.45-1 1-1h3.49c.55 0 1 .45 1 1 0 1.24.2 2.45.57 3.57.11.35.03.74-.25 1.02z"></path></svg>} />
           <Button variant="icon" onClick={() => onStartCall('video')} disabled={!activeConversation?.id || isReadOnlyHistory} title="Görüntülü Ara" aria-label="Görüntülü arama yap" style={{ color: iconColor }} icon={<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M17 10.5V6c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v12c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-4.5l4 4v-11z"></path></svg>} />
