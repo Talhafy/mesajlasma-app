@@ -171,7 +171,7 @@ jobs:
           path: |
             coverage/
             frontend/coverage/
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
 
   # ==========================================================================

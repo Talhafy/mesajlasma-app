@@ -1,5 +1,5 @@
 -- Track every uploaded R2 object with its owner, integrity metadata and lifecycle state.
-CREATE TYPE "UploadedAssetStatus" AS ENUM ('READY', 'ATTACHED', 'REJECTED');
+CREATE TYPE "UploadedAssetStatus" AS ENUM ('QUARANTINE', 'READY', 'ATTACHED', 'REJECTED');
 
 CREATE TABLE "UploadedAsset" (
   "id" TEXT NOT NULL,
@@ -8,7 +8,7 @@ CREATE TABLE "UploadedAsset" (
   "mimeType" TEXT NOT NULL,
   "sizeBytes" INTEGER NOT NULL,
   "checksum" TEXT NOT NULL,
-  "status" "UploadedAssetStatus" NOT NULL DEFAULT 'READY',
+  "status" "UploadedAssetStatus" NOT NULL DEFAULT 'QUARANTINE',
   "expiresAt" TIMESTAMP(3),
   "attachedAt" TIMESTAMP(3),
   "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
