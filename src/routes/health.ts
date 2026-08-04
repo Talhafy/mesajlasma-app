@@ -1,5 +1,13 @@
-// Liveness yalnızca process'in çalıştığını, readiness ise bağımlılıkların trafik almaya hazır
-// olduğunu bildirir. Load balancer bu iki sinyali farklı amaçlarla kullanmalıdır.
+/**
+ * ============================================================================
+ * SİSTEM SAĞLIĞI VE CANLILIK ROTALARI (System Health & Readiness Routes)
+ * ============================================================================
+ * 
+ * Bu dosya, Kubernetes, Cloudflare, Nginx veya Yük Dengeleyiciler (Load Balancer)
+ * tarafından sunucunun canlılık (liveness) ve trafiğe hazır olma (readiness)
+ * durumlarını izlemek için kullanılan sağlık kontrolü (Health Check) uç noktalarını içerir.
+ */
+
 import express, { Request, Response } from 'express';
 import { redisUrl } from '../config/env';
 import { logger, loggerRuntime } from '../config/logger';
@@ -8,6 +16,10 @@ import { getRealtimeRedis } from '../realtime/redis';
 
 const router = express.Router();
 
+/**
+ * Liveness (Canlılık Kontrolü) Yanıt Fonksiyonu
+ * Process'in çalışır durumda olduğunu doğrular.
+ */
 const sendLiveness = (_req: Request, res: Response) => {
   logger.info({ event: 'system.liveness_check' }, 'Liveness check requested');
   res.status(200).json({
@@ -17,10 +29,19 @@ const sendLiveness = (_req: Request, res: Response) => {
   });
 };
 
-// /health geriye dönük uyumluluk için liveness alias'ı olarak kalır.
+/** GET /api/v1/health -> Gerçi dönük uyumluluk (Legacy Alias) */
 router.get('/health', sendLiveness);
+/** GET /api/v1/health/live -> Kubernetes Liveness Probe Uç Noktası */
 router.get('/health/live', sendLiveness);
 
+/**
+ * GET /api/v1/health/ready -> Kubernetes Readiness Probe Uç Noktası
+ * 
+ * Sunucunun gelen HTTP/WebSocket trafiğini işleyip işleyemeyeceğini doğrular.
+ * - PostgreSQL veritabanı sorgusunu (`SELECT 1`) test eder.
+ * - Redis yapılandırılmışsa Redis `ping` komutunu doğrular.
+ * - Servislerden biri çökmüşse HTTP 503 Service Unavailable döner.
+ */
 router.get('/health/ready', async (_req: Request, res: Response) => {
   const checks = {
     database: 'up' as 'up' | 'down',
@@ -53,8 +74,10 @@ router.get('/health/ready', async (_req: Request, res: Response) => {
   });
 });
 
-// Logging health endpoint'i Elastic/Kibana kurulumundan bağımsız olarak logger runtime bilgisini gösterir.
-// Dosya sistemi yolları ve diğer iç yapılandırma bilgileri public yanıta dahil edilmez.
+/**
+ * GET /api/v1/health/logging -> Günlükleme (Logging) Sağlık Uç Noktası
+ * Pino logger çalışma zamanı durumunu (stdout, dosya kaydı aktifliği, log seviyesi) raporlar.
+ */
 router.get('/health/logging', async (_req: Request, res: Response) => {
   logger.info({ event: 'system.logging_health_check' }, 'Logging health check requested');
   const { level, service, env, stdout, file } = loggerRuntime;
@@ -65,3 +88,4 @@ router.get('/health/logging', async (_req: Request, res: Response) => {
 });
 
 export default router;
+

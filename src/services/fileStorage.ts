@@ -27,6 +27,7 @@ import path from 'path';
 import { Readable } from 'stream';
 import { logger } from '../config/logger';
 
+/** Zorunlu Cloudflare R2 ortam değişkenleri listesi */
 const requiredVariables = [
   'R2_ENDPOINT',
   'R2_ACCESS_KEY_ID',
@@ -39,7 +40,10 @@ if (missingVariables.length > 0) {
   throw new Error(`Eksik Cloudflare R2 değişkenleri: ${missingVariables.join(', ')}`);
 }
 
+/** R2 Kovası (Bucket) Adı */
 const bucketName = process.env.R2_BUCKET_NAME!;
+
+/** İmzalı URL geçerlilik süresi (Saniye) */
 const signedUrlTtlSeconds = Number(process.env.R2_SIGNED_URL_TTL_SECONDS || 900);
 
 if (!Number.isInteger(signedUrlTtlSeconds) || signedUrlTtlSeconds < 60 || signedUrlTtlSeconds > 3600) {
@@ -218,3 +222,4 @@ export const withSignedFileUrl = async <T extends { fileKey?: string | null }>(r
     fileUrl: record.fileKey ? await createSignedFileUrl(record.fileKey) : null
   };
 };
+

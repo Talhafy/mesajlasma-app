@@ -1,12 +1,28 @@
+/**
+ * ============================================================================
+ * ZAMANLANMIŞ MESAJ WORKER SÜREÇ GİRİŞ NOKTASI (Standalone Worker Process Entry)
+ * ============================================================================
+ * 
+ * Bu dosya, `scheduledMessageWorker.ts` modülünü bağımsız bir Node.js süreci (Process) 
+ * veya Docker Container olarak başlatmak için giriş noktası (Entry Point) görevi görür.
+ * 
+ * ÖZELLİKLER:
+ * - HTTP veya Socket.IO sunucusu açmaz.
+ * - Sadece zamanlanmış mesaj teslimatı ve dosya temizliğinden sorumludur.
+ * - `SIGINT`, `SIGTERM` sinyallerini yakalayarak veritabanı bağlantılarını ve log akışını 
+ *   güvenle kapatır (Graceful Shutdown).
+ */
+
 import 'dotenv/config';
 import { flushLogs, logger } from '../config/logger';
 import prisma from '../db';
 import { startScheduledMessageWorker } from './scheduledMessageWorker';
 
-// This entry point starts no HTTP or Socket.IO server. Run it as a dedicated process/container.
+// Worker servisi başlatılır
 const stopWorker = startScheduledMessageWorker();
 let shuttingDown = false;
 
+/** Süreci temiz bir şekilde sonlandıran (Graceful Shutdown) fonksiyon */
 const shutdown = async (signal: string) => {
   if (shuttingDown) return;
   shuttingDown = true;
@@ -30,3 +46,4 @@ process.on('uncaughtException', async (error) => {
   await shutdown('uncaughtException');
   process.exit(1);
 });
+

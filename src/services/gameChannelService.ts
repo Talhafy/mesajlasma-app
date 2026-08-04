@@ -1,11 +1,20 @@
-// Oyun grupları altındaki sesli ve yazılı kanalların yönetimini sağlayan servis katmanı.
+/**
+ * ============================================================================
+ * OYUN KANALLARI İŞ MANTIĞI SERVİSİ (Game Channels Business Service)
+ * ============================================================================
+ * 
+ * Bu servis, Discord/Guilded benzeri topluluk/oyun gruplarının altındaki sesli
+ * ve yazılı kanalların CRUD (oluşturma, okuma, güncelleme, silme) ve mesajlaşma
+ * süreçlerini yönetir.
+ */
+
 import type { GameChannelType } from '@prisma/client';
 import prisma from '../db';
 import { AppError } from '../errors/AppError';
 import { requireActiveParticipant } from './conversationAccess';
 import { markAsRead, sendMessage, serializeMessages } from './messageService';
 
-// Her kanal türü (ses/yazı) için grup başına maksimum kanal sınırı
+/** Her kanal türü (ses/yazı) için grup başına maksimum kanal sınırı */
 const MAX_CHANNELS_PER_TYPE = 5;
 
 /**
@@ -339,3 +348,4 @@ export const toggleChannelMute = async (
     return { muted: true, channelId };
   }
 };
+

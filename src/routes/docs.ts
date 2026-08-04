@@ -18,7 +18,8 @@ import { openapiSpec } from '../docs/openapiSpec';
 const router = express.Router();
 
 /**
- * Ham OpenAPI 3.0 JSON spesifikasyonunu indirmek/okumak isteyen istemcilere sunar.
+ * GET /api/v1/docs/json -> OpenAPI JSON Spesifikasyonu
+ * Ham OpenAPI 3.0 JSON spesifikasyonunu indirmek veya SDK üretmek isteyen istemcilere sunar.
  */
 router.get('/docs/json', (_req: Request, res: Response) => {
   res.setHeader('Content-Type', 'application/json');
@@ -26,6 +27,7 @@ router.get('/docs/json', (_req: Request, res: Response) => {
 });
 
 /**
+ * GET /api/v1/docs -> İnteraktif Swagger UI Ekranı
  * Tarayıcı üzerinden API'lerin canlı incelenmesini ve test edilmesini sağlayan Swagger UI arayüzü.
  */
 router.use('/docs', swaggerUi.serve, swaggerUi.setup(openapiSpec, {
@@ -33,3 +35,4 @@ router.use('/docs', swaggerUi.serve, swaggerUi.setup(openapiSpec, {
 }));
 
 export default router;
+

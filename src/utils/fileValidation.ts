@@ -88,3 +88,4 @@ export const verifyFileSignature = (buffer: Buffer, mimeType: string): boolean =
       return true;
   }
 };
+

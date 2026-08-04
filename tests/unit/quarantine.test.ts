@@ -1,3 +1,13 @@
+/**
+ * ============================================================================
+ * DOSYA KARANTİNA VE GÜVENLİK AKIŞI BİRİM TESTLERİ (Quarantine Asset Security Tests)
+ * ============================================================================
+ * 
+ * Bu dosya, yeni yüklenen dosyaların varsayılan olarak `QUARANTINE` statüsünde 
+ * kaydedildiğini, taranmadan mesaja bağlanamadığını, onaylandıktan sonra `READY` 
+ * statüsüne geçtiğini ve Cloudflare R2 doğrudan yükleme URL'lerinin oluşturulmasını test eder.
+ */
+
 import { UploadedAssetStatus } from '@prisma/client';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -53,6 +63,7 @@ describe('Quarantine Asset Security Flow unit tests', () => {
   });
 
   it('should register uploaded assets in QUARANTINE status by default', async () => {
+    // Yüklenen dosyalar ilk adımda varsayılan olarak QUARANTINE durumunda kaydedilmelidir
     createMock.mockResolvedValueOnce({
       id: 'asset-1',
       fileKey: 'test.png',
@@ -76,6 +87,7 @@ describe('Quarantine Asset Security Flow unit tests', () => {
   });
 
   it('should block attaching quarantined assets until approved', async () => {
+    // Henüz onaylanmamış karantina altındaki dosyalar mesaja eklenememeli ve hata fırlatmalıdır
     findUniqueMock.mockResolvedValueOnce({
       id: 'asset-1',
       fileKey: 'test.png',
@@ -87,6 +99,7 @@ describe('Quarantine Asset Security Flow unit tests', () => {
   });
 
   it('should approve quarantined asset to READY status', async () => {
+    // Taramadan başarıyla geçen dosya onaylanarak READY statüsüne getirilmelidir
     findUniqueMock.mockResolvedValueOnce({
       id: 'asset-1',
       fileKey: 'test.png',
@@ -105,6 +118,7 @@ describe('Quarantine Asset Security Flow unit tests', () => {
   });
 
   it('should generate presigned upload URLs for Direct-to-R2 uploads', async () => {
+    // İstemci doğrudan Cloudflare R2'ye yükleme yapabilsin diye presigned PUT URL üretilmelidir
     getSignedUrlMock.mockResolvedValueOnce('https://r2.example.com/upload-presigned-url');
 
     const result = await createPresignedUploadUrl('image.png', 'image/png');
@@ -113,3 +127,4 @@ describe('Quarantine Asset Security Flow unit tests', () => {
     expect(result.expiresAt).toBeInstanceOf(Date);
   });
 });
+

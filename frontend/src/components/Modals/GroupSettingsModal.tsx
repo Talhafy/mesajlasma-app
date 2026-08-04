@@ -5,46 +5,86 @@ import Button from '../UI/Button';
 import ImageCropperModal from './ImageCropperModal';
 import AvatarViewerModal from './AvatarViewerModal';
 
+/**
+ * GroupSettingsModal bileşenine iletilen prop'ların tip tanımlamaları.
+ */
 interface GroupSettingsModalProps {
+  /** Grup ayarları modalının açık/kapalı durumunu güncelleyen setter fonksiyonu */
   setIsGroupSettingsOpen: (isOpen: boolean) => void;
+  /** Ayarları görüntülenen aktif grup sohbeti nesnesi */
   activeConversation: Conversation;
+  /** Oturum açmış olan mevcut kullanıcı bilgisi */
   currentUser: User | null;
+  /** Grup adını güncellemek için API çağrısı yapan asenkron fonksiyon */
   handleUpdateGroupName: (newName?: string) => Promise<void>;
+  /** Grup avatarını değiştirmek için kırpılmış resmi sunucuya yükleyen fonksiyon */
   handleUpdateGroupAvatar: (file: File) => Promise<void>;
+  /** Grubun üye listesi (aktif ve ayrılmış üyeler dahil) */
   groupMembers: User[];
+  /** Üyeyi gruptan çıkarma veya gruptan ayrılma fonksiyonu */
   handleRemoveMember: (userId: string, skipConfirm?: boolean) => void;
+  /** Sohbet geçmişini kullanıcının ekranından tamamen temizleme fonksiyonu */
   handleDeleteConversationHistory: (conversationId: string) => void;
+  /** Gruba eklenebilecek tüm sistem kullanıcılarının listesi */
   usersList: User[];
+  /** Seçilen yeni kullanıcıları gruba ekleyen fonksiyon */
   handleAddMembersToGroup: (userIds: string[]) => void;
+  /** Grubun yöneticilik hakkını başka bir üyeye devreden fonksiyon */
   handleTransferAdmin: (newAdminId: string) => void;
+  /** Bir üyeyle özel (birebir) sohbet başlatan fonksiyon */
   startChat: (user: User) => void;
+  /** Karanlık modun aktif olup olmadığı bilgisi */
   isDarkMode: boolean;
+  /** Bir üyeyle doğrudan sesli/görüntülü arama başlatan isteğe bağlı callback fonksiyonu */
   onStartCallWithUser?: (targetUser: User, callType: 'audio' | 'video') => void;
 }
 
+/**
+ * Grup sohbetlerine ait detayların ve yönetici yetkilerinin yönetildiği modal bileşeni.
+ * Grup ismi ve resmini değiştirme, üye ekleme/çıkarma, yönetici devretme, gruptan ayrılma
+ * ve üye profillerini inceleyip arama/mesajlaşma başlatma özelliklerini barındırır.
+ */
 export default function GroupSettingsModal({
   setIsGroupSettingsOpen, activeConversation, currentUser, handleUpdateGroupName, handleUpdateGroupAvatar, groupMembers, handleRemoveMember, handleDeleteConversationHistory,
   usersList, handleAddMembersToGroup, handleTransferAdmin, startChat, isDarkMode, onStartCallWithUser
 }: GroupSettingsModalProps) {
 
+  // --- LOCAL STATE (YEREL DURUMLAR) ---
+  /** Yeni üye ekleme panelinin açık/kapalı olma durumu */
   const [showAddMember, setShowAddMember] = useState(false);
+  /** Gruba eklenmek üzere seçilen yeni kullanıcı ID'leri */
   const [selectedNewMembers, setSelectedNewMembers] = useState<string[]>([]);
+  /** Grup resmi yükleme işleminin devam edip etmediği durumu */
   const [isAvatarUploading, setIsAvatarUploading] = useState(false);
+  /** Grup resmini büyük boyutta açan modalın görünürlük durumu */
   const [isAvatarModalOpen, setIsAvatarModalOpen] = useState(false);
+  /** Detaylı profili görüntülenmek istenen grup üyesi */
   const [selectedMemberProfile, setSelectedMemberProfile] = useState<User | null>(null);
+  /** Avatar Görüntüleyici modalında gösterilecek kullanıcı bilgisi */
   const [viewerUser, setViewerUser] = useState<{ avatarUrl: string | null; username: string } | null>(null);
+  /** Kırpma modala aktarılmak üzere seçilen ham resim dosyası */
   const [selectedFileForCrop, setSelectedFileForCrop] = useState<File | null>(null);
 
+  /** Grup adının düzenleme modunda olup olmadığı durumu */
   const [isEditingName, setIsEditingName] = useState(false);
+  /** Düzenleme sırasında geçici olarak tutulan yeni grup adı */
   const [tempName, setTempName] = useState(activeConversation.name || '');
+  /** Gruptan ayrılma onay penceresinin görünürlük durumu */
   const [showExitConfirm, setShowExitConfirm] = useState(false);
 
+  // --- TÜRETİLMİŞ DEĞİŞKENLER (COMPUTED VALUES) ---
+  /** Giriş yapan kullanıcının bu gruptaki üyelik bilgisi */
   const myMemberInfo = groupMembers.find(m => m.id === currentUser?.id);
+  /** Kullanıcının grupta aktif bir üye olup olmadığı */
   const isMyMemberActive = myMemberInfo ? myMemberInfo.isActive !== false : true;
 
+  /** Grubun genel olarak silinmiş olup olmadığı */
   const isDeleted = activeConversation.isDeleted === true;
+  /** Giriş yapan kullanıcının grup yöneticisi (admin) olup olmadığı */
   const isAdmin = activeConversation.adminId === currentUser?.id;
+  /** Grubun aktif olarak devam eden üyeleri */
   const activeMembers = groupMembers.filter(m => m.isActive !== false);
+  /** Gruptan son 3 gün içinde ayrılmış veya çıkarılmış eski üyeler */
   const formerMembers = groupMembers.filter(m => {
     if (m.isActive !== false) return false;
     if (!m.leftAt) return false;
@@ -52,11 +92,16 @@ export default function GroupSettingsModal({
     const threeDaysAgo = Date.now() - 3 * 24 * 60 * 60 * 1000;
     return leftTime >= threeDaysAgo;
   });
+  /** Gruba henüz üye olmayan veya ayrılmış, yeniden eklenebilecek kullanıcılar */
   const availableUsersToAdd = usersList.filter(u => {
     const member = groupMembers.find(gm => gm.id === u.id);
     return !member || member.isActive === false;
   });
 
+  // --- YARDIMCI FONKSİYONLAR ---
+  /**
+   * Değiştirilen grup adını kaydeder ve API güncelleme isteğini tetikler.
+   */
   const handleSaveName = async () => {
     const trimmed = tempName.trim();
     if (!trimmed || trimmed === activeConversation.name) {
@@ -67,6 +112,9 @@ export default function GroupSettingsModal({
     setIsEditingName(false);
   };
 
+  /**
+   * Seçilen yeni üyeleri gruba ekler ve üye seçimi panelini sıfırlar.
+   */
   const submitNewMembers = () => {
     handleAddMembersToGroup(selectedNewMembers);
     setShowAddMember(false);
@@ -74,18 +122,21 @@ export default function GroupSettingsModal({
   };
 
   return (
+    // Modal karartılmış overlay katmanı
     <div className="settings-overlay" onClick={() => setIsGroupSettingsOpen(false)}>
+      {/* Modal penceresi */}
       <div className="settings-modal" style={{ width: '420px', maxHeight: '90vh', overflowY: 'auto' }} onClick={(e) => e.stopPropagation()}>
 
+        {/* Modal Üst Başlık */}
         <div className="settings-header">
           <h2>⚙️ Grup Ayarları</h2>
           <button className="close-btn" onClick={() => setIsGroupSettingsOpen(false)}>✕</button>
         </div>
 
         <div className="settings-body">
-          {/* GROUP HERO HEADER */}
+          {/* --- GRUP RESMİ VE ADI (HERO HEADER) --- */}
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', padding: '15px 0 20px', borderBottom: `1px solid var(--border-color, #eee)`, marginBottom: '20px' }}>
-            {/* Avatar container */}
+            {/* Grup Avatarı Alanı */}
             <div style={{ position: 'relative', width: '100px', height: '100px', borderRadius: '50%', background: '#f97316', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '36px', fontWeight: 800, overflow: 'hidden', marginBottom: '15px', boxShadow: '0 4px 12px rgba(0,0,0,0.1)', flexShrink: 0 }}>
               {activeConversation.avatarUrl ? (
                 <img src={activeConversation.avatarUrl} alt="Grup" onClick={() => setIsAvatarModalOpen(true)} style={{ width: '100%', height: '100%', objectFit: 'cover', cursor: 'pointer' }} />
@@ -93,6 +144,7 @@ export default function GroupSettingsModal({
                 activeConversation.name?.[0]?.toUpperCase()
               )}
 
+              {/* Adminler için resim değiştirme overlay katmanı */}
               {isMyMemberActive && isAdmin && !isDeleted && (
                 <label style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.5)', color: 'white', fontSize: '12px', fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0, transition: 'opacity 0.2s', cursor: 'pointer' }} className="group-avatar-overlay">
                   Değiştir
@@ -106,7 +158,7 @@ export default function GroupSettingsModal({
               )}
             </div>
 
-            {/* Editable Group Name */}
+            {/* Düzenlenebilir Grup Adı */}
             {isEditingName ? (
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px', width: '85%', justifyContent: 'center' }}>
                 <input
@@ -143,12 +195,13 @@ export default function GroupSettingsModal({
               </div>
             )}
 
+            {/* Üye Sayısı Bilgisi */}
             <div style={{ fontSize: '13px', color: 'var(--icon-color, #8696a0)', marginTop: '6px' }}>
               Grup · {groupMembers.length} Üye
             </div>
           </div>
 
-          {/* KİŞİ EKLEME BÖLÜMÜ (Sadece Admin) */}
+          {/* --- KİŞİ EKLEME BÖLÜMÜ (Sadece Admin Yetkisinde) --- */}
           {isMyMemberActive && isAdmin && !isDeleted && (
             <div className="settings-section" style={{ borderBottom: '1px solid var(--border-color, #eee)', paddingBottom: '15px', marginBottom: '15px' }}>
               <div className="section-header-row" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
@@ -158,6 +211,7 @@ export default function GroupSettingsModal({
                 </button>
               </div>
 
+              {/* Üye ekleme açılır paneli */}
               {showAddMember && (
                 <div className="add-member-box" style={{ background: 'var(--input-bg, rgba(0,0,0,0.02))', padding: '10px', borderRadius: '8px', border: '1px solid var(--border-color, #eee)' }}>
                   {availableUsersToAdd.length === 0 ? (
@@ -183,6 +237,7 @@ export default function GroupSettingsModal({
                             }}
                             className="group-member-select-item"
                           >
+                            {/* Özel Seçim Checkbox'ı */}
                             <div style={{
                               width: '18px',
                               height: '18px',
@@ -198,6 +253,7 @@ export default function GroupSettingsModal({
                               {isSelected && <span style={{ color: 'white', fontSize: '10px', fontWeight: 'bold' }}>✓</span>}
                             </div>
 
+                            {/* Kullanıcı Avatarı */}
                             <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: '#f97316', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: 'bold', overflow: 'hidden', marginRight: '10px', flexShrink: 0 }}>
                               {u.avatarUrl ? <img src={u.avatarUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : u.username?.[0]?.toUpperCase()}
                             </div>
@@ -216,7 +272,7 @@ export default function GroupSettingsModal({
             </div>
           )}
 
-          {/* MEVCUT ÜYELERİ LİSTELEME */}
+          {/* --- MEVCUT GRUP ÜYELERİ LİSTESİ --- */}
           <div className="settings-section">
             <h4 style={{ marginBottom: '12px', fontWeight: 600 }}>Grup Üyeleri ({activeMembers.length})</h4>
             <div className="member-list-container" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -226,8 +282,9 @@ export default function GroupSettingsModal({
 
                 return (
                   <div key={member.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', borderRadius: '8px', borderBottom: '1px solid var(--border-color, #f4f4f4)' }} className="member-list-item-row">
+                    {/* Üye Bilgisi (Tıklanınca profil detay popup'ını açar) */}
                     <div style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', flex: 1, minWidth: 0 }} onClick={() => setSelectedMemberProfile(member)}>
-                      {/* Avatar */}
+                      {/* Üye Avatarı */}
                       <div style={{ width: '38px', height: '38px', borderRadius: '50%', background: '#f97316', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '15px', fontWeight: 'bold', overflow: 'hidden', marginRight: '12px', flexShrink: 0 }}>
                         {member.avatarUrl ? (
                           <img src={member.avatarUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
@@ -236,7 +293,7 @@ export default function GroupSettingsModal({
                         )}
                       </div>
 
-                      {/* Name & Role */}
+                      {/* Üye Adı ve Rolü */}
                       <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
                         <span style={{ fontSize: '14px', fontWeight: 500, color: 'var(--text-color, inherit)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                           {isMe ? "Sen" : member.username}
@@ -249,7 +306,7 @@ export default function GroupSettingsModal({
                       </div>
                     </div>
 
-                    {/* Actions */}
+                    {/* Admin Aksiyon Butonları (Yönetici Yap / Çıkar) */}
                     <div style={{ display: 'flex', gap: '6px' }}>
                       {isMyMemberActive && isAdmin && !isDeleted && !isMe && (
                         <button
@@ -277,7 +334,7 @@ export default function GroupSettingsModal({
             </div>
           </div>
 
-          {/* ESKİ ÜYELERİ LİSTELEME */}
+          {/* --- ESKİ ÜYELERİ LİSTELEME (Son 3 Günde Ayrılanlar) --- */}
           {formerMembers.length > 0 && (
             <div className="settings-section" style={{ marginTop: '20px' }}>
               <h4 style={{ marginBottom: '12px', fontWeight: 600, color: '#888' }}>Eski Üyeler</h4>
@@ -302,7 +359,7 @@ export default function GroupSettingsModal({
                           )}
                         </div>
 
-                        {/* Name & Role */}
+                        {/* İsim ve Ayrılma Durumu */}
                         <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
                           <span style={{ fontSize: '14px', fontWeight: 500, color: 'var(--text-color, inherit)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                             {isMe ? (isKicked ? "Sen (Çıkarıldın)" : "Sen (Ayrıldın)") : member.username}
@@ -319,7 +376,7 @@ export default function GroupSettingsModal({
             </div>
           )}
 
-          {/* GRUBU TERK ETME / SİLME BUTONU */}
+          {/* --- GRUPTAN ÇIK BUTONU (Aktif Üyeler İçin) --- */}
           {isMyMemberActive && !isDeleted && (
             <div className="settings-section" style={{ marginTop: '25px', borderTop: '1px solid var(--border-color, #eee)', paddingTop: '20px' }}>
               <button className="danger-action-btn" onClick={() => setShowExitConfirm(true)} style={{ width: '100%', padding: '12px', border: 'none', background: 'rgba(229,57,53,0.08)', color: '#e53935', borderRadius: '8px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', fontWeight: 700, fontSize: '14px' }}>
@@ -333,7 +390,7 @@ export default function GroupSettingsModal({
             </div>
           )}
 
-          {/* SOHBETİ TAMAMEN SİLME BUTONU (Silinmiş veya Ayrılmış Üyeler İçin) */}
+          {/* --- SOHBETİ SİLME BUTONU (Ayrılmış / Çıkarılmış Üyeler İçin) --- */}
           {(!isMyMemberActive || isDeleted) && (
             <div className="settings-section" style={{ marginTop: '25px', borderTop: '1px solid var(--border-color, #eee)', paddingTop: '20px' }}>
               <button className="danger-action-btn" onClick={() => {
@@ -352,7 +409,7 @@ export default function GroupSettingsModal({
         </div>
       </div>
 
-      {/* --- GRUBU ONAYLI TERK ETME PENCERESİ --- */}
+      {/* --- GRUPTAN ÇIKMA ONAY DİYALOĞU --- */}
       {showExitConfirm && (
         <div className="exit-confirm-overlay" onClick={() => setShowExitConfirm(false)}>
           <div className="exit-confirm-content" onClick={(e) => e.stopPropagation()}>
@@ -362,6 +419,7 @@ export default function GroupSettingsModal({
             </p>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
+              {/* Sadece ayrıl */}
               <button
                 className="exit-confirm-btn-green"
                 onClick={() => {
@@ -375,6 +433,7 @@ export default function GroupSettingsModal({
                 Gruptan Çık
               </button>
 
+              {/* Vazgeç */}
               <button
                 className="exit-confirm-btn-green"
                 onClick={() => setShowExitConfirm(false)}
@@ -382,6 +441,7 @@ export default function GroupSettingsModal({
                 İptal
               </button>
 
+              {/* Ayrıl ve sohbeti sil */}
               <button
                 className="exit-confirm-btn-danger"
                 onClick={() => {
@@ -397,7 +457,7 @@ export default function GroupSettingsModal({
         </div>
       )}
 
-      {/* --- TAM EKRAN GRUP RESMİ GÖRÜNTÜLEYİCİ BURAYA GELDİ --- */}
+      {/* --- TAM EKRAN GRUP AVATARI GÖRÜNTÜLEYİCİ --- */}
       {isAvatarModalOpen && activeConversation.avatarUrl && (
         <div
           className="settings-overlay"
@@ -438,6 +498,7 @@ export default function GroupSettingsModal({
         </div>
       )}
 
+      {/* --- ÜYE PROFİL DETAY KARTI VE HIZLI AKSİYONLAR --- */}
       {selectedMemberProfile && (
         <div
           className="settings-overlay"
@@ -465,6 +526,7 @@ export default function GroupSettingsModal({
               boxShadow: '0 10px 25px rgba(0,0,0,0.2)'
             }}
           >
+            {/* Kapat Butonu */}
             <button 
               onClick={() => setSelectedMemberProfile(null)} 
               style={{ 
@@ -490,6 +552,7 @@ export default function GroupSettingsModal({
             </button>
             
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', marginTop: '12px' }}>
+              {/* Profil Resmi */}
               <div 
                 onClick={() => setViewerUser({ 
                   avatarUrl: selectedMemberProfile.avatarUrl || null, 
@@ -524,7 +587,9 @@ export default function GroupSettingsModal({
                 {selectedMemberProfile.username}
               </h3>
 
+              {/* Aksiyon Butonları (Mesaj Gönder / Sesli Ara / Görüntülü Ara) */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px', width: '100%' }}>
+                {/* Özel Mesaj Gönder */}
                 <button
                   onClick={() => {
                     startChat(selectedMemberProfile);
@@ -553,6 +618,7 @@ export default function GroupSettingsModal({
                   Mesaj
                 </button>
 
+                {/* Sesli Arama */}
                 <button
                   onClick={() => {
                     if (onStartCallWithUser) {
@@ -585,6 +651,7 @@ export default function GroupSettingsModal({
                   Sesli Ara
                 </button>
 
+                {/* Görüntülü Arama */}
                 <button
                   onClick={() => {
                     if (onStartCallWithUser) {
@@ -620,8 +687,9 @@ export default function GroupSettingsModal({
             </div>
           </div>
         </div>
-      ) /* selectedMemberProfile end */}
+      )}
 
+      {/* --- RESİM KIRPMA MODALI (IMAGE CROOPPER) --- */}
       {selectedFileForCrop && (
         <ImageCropperModal
           file={selectedFileForCrop}
@@ -638,6 +706,7 @@ export default function GroupSettingsModal({
         />
       )}
 
+      {/* --- AVATAR GÖRÜNTÜLEYİCİ MODAL --- */}
       {viewerUser && (
         <AvatarViewerModal
           avatarUrl={viewerUser.avatarUrl}
@@ -648,3 +717,4 @@ export default function GroupSettingsModal({
     </div>
   );
 }
+

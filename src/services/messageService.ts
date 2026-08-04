@@ -1,4 +1,13 @@
-//Mesajlaşma ile ilgili özellikler
+/**
+ * ============================================================================
+ * MESAJLAŞMA İŞ MANTIĞI SERVİSİ (Message Management Service)
+ * ============================================================================
+ * 
+ * Bu dosya; mesaj gönderimi, mesaj düzenleme, herkesten/benden mesaj silme,
+ * PostgreSQL pg_trgm GIN indeksi ile hızlı arama, medya/link geçmişi çekme, 
+ * mesaj yıldızlama, okundu bilgisi işaretleme (`ConversationReadState` cursor)
+ * ve okunmamış mesaj sayacı hesaplama iş mantıklarını yürütür.
+ */
 
 import { Prisma } from '@prisma/client';
 import prisma from '../db';
@@ -11,7 +20,7 @@ import {
   requireHistoryParticipant
 } from './conversationAccess';
 
-// Arama koşulu (expiresAt null veya gelecekte olan mesajlar)
+/** Görünür mesaj filtresi (Süresi dolmuş kaybolan mesajları hariç tutar) */
 const visibleMessageWhere = () => ({
   OR: [
     { expiresAt: null },
@@ -19,6 +28,7 @@ const visibleMessageWhere = () => ({
   ]
 });
 
+/** Kullanıcının aktif olduğu sohbet pencerelerini getirir */
 const getActiveMessageWindows = (userId: string) => (
   prisma.participant.findMany({
     where: {
@@ -33,6 +43,7 @@ const getActiveMessageWindows = (userId: string) => (
   })
 );
 
+/** Mesaja aktif erişim yetkisi olup olmadığını denetler */
 const requireActiveMessageAccess = async (
   message: { conversationId: string; createdAt: Date },
   userId: string,
@@ -49,6 +60,7 @@ const requireActiveMessageAccess = async (
   return membership;
 };
 
+/** Mesaja eklenecek dosya varlığını çözümler veya iletilen mesaj için klonlar */
 const resolveMessageAsset = async (input: {
   fileKey?: string | null;
   fileName?: string | null;
@@ -139,8 +151,10 @@ export const serializeMessage = async (msg: MessageWithReads, cursorReadByIds: s
   };
 };
 
-// Read cursor'larını tek sorguda çekerek eski MessageRead kayıtlarıyla birleştirir.
-// Böylece yeni mesajlar için MessageRead yazmadan, sayfa yenilendiğinde de read receipt gösterilir.
+/**
+ * Read cursor'larını tek sorguda çekerek eski MessageRead kayıtlarıyla birleştirir.
+ * Böylece yeni mesajlar için MessageRead yazmadan, sayfa yenilendiğinde de read receipt gösterilir.
+ */
 export const serializeMessages = async (messages: MessageWithReads[]) => {
   if (messages.length === 0) return [];
   const windows = [...new Map(messages.map((message) => [
@@ -168,7 +182,9 @@ export const serializeMessages = async (messages: MessageWithReads[]) => {
 };
 
 /**
- * Yeni mesaj gönderir, engelleme kontrollerini yapar ve soket yayını tetikler.
+ * YENİ MESAJ GÖNDERME
+ * Engelleme kontrolleri, yanıt verilen mesaj doğrulaması, dosya bağlama (attachment)
+ * ve idempotency (`clientId`) kontrolleri yapılarak mesaj veritabanına eklenir ve Socket.IO yayınlanır.
  */
 export const sendMessage = async (
   senderId: string,
@@ -317,7 +333,8 @@ export const sendMessage = async (
 };
 
 /**
- * Geçmiş mesajları sayfalanmış şekilde döner.
+ * MESAJLARI GETİRME (Cursor Pagination)
+ * Geçmiş mesajları kullanıcının katılım tarihine (`joinedAt`) göre süzerek getirir.
  */
 export const fetchMessages = async (conversationId: string, userId: string, cursor?: string, limit: number = 50) => {
   const participant = await requireHistoryParticipant(
@@ -381,12 +398,12 @@ export const fetchMessages = async (conversationId: string, userId: string, curs
 };
 
 /**
- * Kullanıcının katıldığı konuşmalardaki mesajları arar.
+ * MESAJ ARAMA (pg_trgm GIN Index)
+ * PostgreSQL Trigram indeksi kullanarak mesaj içeriklerinde hızlı arama yapar.
  */
 export const searchMessages = async (userId: string, searchTerm: string) => {
   const term = searchTerm.trim();
   // pg_trgm GIN indexi ILIKE '%term%' sorgusunu büyük Message tablosunda full scan olmadan çalıştırır.
-  // Katılımcılık ve silinme filtreleri SQL tarafında uygulanır; sonra normal serializer için kayıtlar yüklenir.
   const matches = await prisma.$queryRaw<Array<{ id: string }>>`
     SELECT m."id"
     FROM "Message" m
@@ -435,7 +452,7 @@ export const searchMessages = async (userId: string, searchTerm: string) => {
 };
 
 /**
- * Kullanıcının yıldızlı mesajlarını döner.
+ * YILDIZLI MESAJLARI GETİRME
  */
 export const fetchStarredMessages = async (userId: string) => {
   const memberships = await getActiveMessageWindows(userId);
@@ -451,7 +468,7 @@ export const fetchStarredMessages = async (userId: string) => {
         {
           OR: memberships.map(({ conversationId, joinedAt }) => ({
             conversationId,
-            createdAt: { gte: joinedAt }
+            createdAt: { gte:joinedAt }
           }))
         }
       ]
@@ -478,7 +495,7 @@ export const fetchStarredMessages = async (userId: string) => {
 };
 
 /**
- * Gönderilen mesajın içeriğini düzenler.
+ * MESAJ DÜZENLEME
  */
 export const editMessage = async (messageId: string, userId: string, content: string, io: any) => {
   const message = await prisma.message.findUnique({ where: { id: messageId } });
@@ -520,7 +537,7 @@ export const editMessage = async (messageId: string, userId: string, content: st
 };
 
 /**
- * Sohbetteki paylaşılan medyaları ve bağlantıları getirir.
+ * SOHBET MEDYA VE BAĞLANTILARINI ÇEKME
  */
 export const fetchConversationMedia = async (conversationId: string, userId: string) => {
   const membership = await requireActiveParticipant(
@@ -565,7 +582,7 @@ export const fetchConversationMedia = async (conversationId: string, userId: str
 };
 
 /**
- * Mesaj sabitleme ayarını günceller.
+ * MESAJ SABİTLEME
  */
 export const pinMessage = async (messageId: string, userId: string, io: any) => {
   const message = await prisma.message.findUnique({ where: { id: messageId } });
@@ -598,7 +615,7 @@ export const pinMessage = async (messageId: string, userId: string, io: any) => 
 };
 
 /**
- * Mesajı yıldızlar veya yıldızı kaldırır.
+ * MESAJ YILDIZLAMA
  */
 export const starMessage = async (messageId: string, userId: string, io: any) => {
   const message = await prisma.message.findUnique({ where: { id: messageId } });
@@ -645,7 +662,8 @@ export const starMessage = async (messageId: string, userId: string, io: any) =>
 };
 
 /**
- * Mesajı benden siler ya da herkesten silerek yerine placeholder koyar (R2 dosyasını temizler).
+ * MESAJ SİLME (Herkesten Sil vs. Benden Sil)
+ * Herkesten silinirken mesaj içeriği "🚫 Bu mesaj silindi" yapılır ve R2 dosyası kaldırılır.
  */
 export const deleteMessage = async (messageId: string, userId: string, forEveryone: boolean, io: any) => {
   const message = await prisma.message.findUnique({ where: { id: messageId } });
@@ -714,7 +732,7 @@ export const deleteMessage = async (messageId: string, userId: string, forEveryo
 };
 
 /**
- * Mesajları belirli bir eşik değerine (lastReadMessageId) ve katılım tarihine göre okundu olarak işaretler.
+ * MESAJLARI OKUNDU İŞARETLEME (Monotonic ConversationReadState Cursor)
  */
 export const markAsRead = async (
   conversationId: string,
@@ -796,7 +814,7 @@ export const markAsRead = async (
 };
 
 /**
- * Kullanıcının katıldığı tüm sohbetlerdeki okunmamış mesaj sayılarını döner.
+ * OKUNMAMIŞ MESAJ SAYACINI HESAPLAMA (Single Grouped Query)
  */
 export const getUnreadCounts = async (userId: string) => {
   // Tek grouped sorgu, sohbet sayısı kadar Message.count çağrısı yapmaz.

@@ -1,3 +1,13 @@
+/**
+ * ============================================================================
+ * OYUN VE TOPLULUK KANALLARI ROTALARI (Game & Community Channels Routes)
+ * ============================================================================
+ * 
+ * Bu dosya, Discord/Guilded benzeri oyun gruplarındaki yazılı ve sesli kanalların
+ * (Game Channels) yönetimi, kanal mesajlaşması, ses kanalı LiveKit jetonları ve 
+ * kanal sıralaması gibi uç noktaları yönetir.
+ */
+
 import express, { Response } from 'express';
 import { authenticateToken, CustomRequest } from '../middleware/authMiddleware';
 import { validateRequest } from '../middleware/validateRequest';
@@ -9,8 +19,11 @@ import { logger } from '../config/logger';
 import { AppError, respondWithError } from '../errors/AppError';
 
 const router = express.Router();
+
+// Oyun kanalı rotalarının tamamı JWT Access Token yetkilendirmesi gerektirir.
 router.use(authenticateToken);
 
+/** GET /api/v1/game/groups/:groupId/channels -> Grubun Sesli/Yazılı Kanallarını Listeleme */
 router.get('/game/groups/:groupId/channels', validateRequest({ params: gameSchemas.groupParams }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     return res.status(200).json(await gameChannelService.listChannels(getParam(req, 'groupId'), getUserId(req)));
@@ -19,6 +32,7 @@ router.get('/game/groups/:groupId/channels', validateRequest({ params: gameSchem
   }
 });
 
+/** POST /api/v1/game/groups/:groupId/channels -> Grubunda Yeni Kanal Oluşturma (Yönetici Yetkisi) */
 router.post('/game/groups/:groupId/channels', validateRequest({ params: gameSchemas.groupParams, body: gameSchemas.createChannel }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const channel = await gameChannelService.createChannel(getParam(req, 'groupId'), getUserId(req), req.body);
@@ -29,6 +43,7 @@ router.post('/game/groups/:groupId/channels', validateRequest({ params: gameSche
   }
 });
 
+/** DELETE /api/v1/game/groups/:groupId/channels/:channelId -> Oyun Kanalını Silme */
 router.delete('/game/groups/:groupId/channels/:channelId', validateRequest({ params: gameSchemas.channelParams }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const groupId = getParam(req, 'groupId');
@@ -40,6 +55,7 @@ router.delete('/game/groups/:groupId/channels/:channelId', validateRequest({ par
   }
 });
 
+/** GET /api/v1/game/groups/:groupId/channels/:channelId/messages -> Yazılı Kanal Mesajlarını Sayfalamalı Getirme */
 router.get('/game/groups/:groupId/channels/:channelId/messages', validateRequest({ params: gameSchemas.channelParams, query: gameSchemas.channelMessagesQuery }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const messages = await gameChannelService.fetchChannelMessages(
@@ -51,6 +67,7 @@ router.get('/game/groups/:groupId/channels/:channelId/messages', validateRequest
   }
 });
 
+/** POST /api/v1/game/groups/:groupId/channels/:channelId/messages -> Yazılı Kanala Mesaj Gönderme */
 router.post('/game/groups/:groupId/channels/:channelId/messages', validateRequest({ params: gameSchemas.channelParams, body: gameSchemas.channelMessage }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const message = await gameChannelService.sendChannelMessage(
@@ -63,6 +80,7 @@ router.post('/game/groups/:groupId/channels/:channelId/messages', validateReques
   }
 });
 
+/** POST /api/v1/game/groups/:groupId/channels/:channelId/read -> Kanalı Okundu Olarak İşaretleme */
 router.post('/game/groups/:groupId/channels/:channelId/read', validateRequest({ params: gameSchemas.channelParams, body: gameSchemas.readChannel }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const result = await gameChannelService.markChannelAsRead(
@@ -74,6 +92,7 @@ router.post('/game/groups/:groupId/channels/:channelId/read', validateRequest({ 
   }
 });
 
+/** POST /api/v1/game/channels/:channelId/token -> Sesli Oyun Kanalına Katılım Jetonu (LiveKit WebRTC Token) Alma */
 router.post('/game/channels/:channelId/token', validateRequest({ params: gameSchemas.channelIdParams }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     if (!isLivekitConfigured()) return res.status(503).json({ error: 'LiveKit yapılandırması eksik.' });
@@ -95,6 +114,7 @@ router.post('/game/channels/:channelId/token', validateRequest({ params: gameSch
   }
 });
 
+/** PATCH /api/v1/game/groups/:groupId/channels/:channelId -> Kanal Bilgilerini Güncelleme */
 router.patch('/game/groups/:groupId/channels/:channelId', validateRequest({ params: gameSchemas.channelParams, body: gameSchemas.updateChannel }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const groupId = getParam(req, 'groupId');
@@ -107,6 +127,7 @@ router.patch('/game/groups/:groupId/channels/:channelId', validateRequest({ para
   }
 });
 
+/** PUT /api/v1/game/groups/:groupId/channels/reorder -> Kanalların Ekran Sırasını Yeniden Düzenleme */
 router.put('/game/groups/:groupId/channels/reorder', validateRequest({ params: gameSchemas.groupParams, body: gameSchemas.reorderChannels }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const groupId = getParam(req, 'groupId');
@@ -118,6 +139,7 @@ router.put('/game/groups/:groupId/channels/reorder', validateRequest({ params: g
   }
 });
 
+/** POST /api/v1/game/groups/:groupId/channels/:channelId/mute -> Kanal Bildirimlerini Sessize Alma / Açma */
 router.post('/game/groups/:groupId/channels/:channelId/mute', validateRequest({ params: gameSchemas.channelParams }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const groupId = getParam(req, 'groupId');
@@ -130,3 +152,4 @@ router.post('/game/groups/:groupId/channels/:channelId/mute', validateRequest({ 
 });
 
 export default router;
+

@@ -1,3 +1,13 @@
+/**
+ * ============================================================================
+ * GERÇEK ZAMANLI GERİ ÇEKİLME DÜZENİ BİRİM TESTLERİ (Realtime Fallback Tests)
+ * ============================================================================
+ * 
+ * Bu dosya, Redis kapalı olduğunda devreye giren tekil sunucu (Single-Instance In-Memory)
+ * varlık (presence) durumlarını, çoklu sekme çevrimiçi takibini, soket rate limitini
+ * ve ses kanalı konuşuyor (`isSpeaking`) durum yönetimini test eder.
+ */
+
 import { describe, expect, it } from 'vitest';
 import type { Server } from 'socket.io';
 import {
@@ -13,6 +23,7 @@ import {
 
 describe('single-instance realtime fallback', () => {
   it('tracks multi-tab online presence until the final socket disconnects', async () => {
+    // Birden fazla sekmesi açık olan kullanıcı ancak son sekmesinin soket bağlantısı kopunca çevrimdışı (offline) işaretlenmelidir
     const userId = 'realtime-user-presence';
     expect(await markUserOnline(userId, 'presence-socket-1')).toBe(true);
     expect(await markUserOnline(userId, 'presence-socket-2')).toBe(false);
@@ -24,6 +35,7 @@ describe('single-instance realtime fallback', () => {
   });
 
   it('applies a per-user socket event rate limit', async () => {
+    // Soket olaylarında kullanıcı bazlı saniyelik rate limit doğrulanmalıdır
     const userId = 'realtime-user-rate';
     expect(await checkDistributedSocketRateLimit(userId, 'typing_changed', 2)).toBe(true);
     expect(await checkDistributedSocketRateLimit(userId, 'typing_changed', 2)).toBe(true);
@@ -31,6 +43,7 @@ describe('single-instance realtime fallback', () => {
   });
 
   it('keeps voice state per socket while exposing one presence per user', async () => {
+    // Oyun ses kanallarındaki varlık ve konuşuyor (isSpeaking) durumları soket bazlı takip edilip tekil kullanıcı olarak sunulmalıdır
     const presence = {
       conversationId: 'realtime-conversation',
       channelId: 'realtime-channel',
@@ -51,3 +64,4 @@ describe('single-instance realtime fallback', () => {
     expect(await getConversationVoicePresences(presence.conversationId)).toEqual([]);
   });
 });
+

@@ -21,7 +21,10 @@ import prisma from '../db';
 import { AppError } from '../errors/AppError';
 import { copyPrivateFile, deletePrivateFile } from './fileStorage';
 
+/** Transaction istemcisi veya ana Prisma örneği tipi */
 type AssetClient = Pick<Prisma.TransactionClient, 'uploadedAsset'>;
+
+/** Bekleyen karantina dosyaları için son kullanma tarihi hesaplar */
 const pendingExpiry = () => new Date(Date.now() + uploadedAssetTtlHours * 60 * 60 * 1000);
 
 /** Dosya bütünlüğünü doğrulamak için SHA-256 özeti üretir */
@@ -99,6 +102,7 @@ export const attachOwnedAsset = async (
 
 /**
  * İLETİLEN MESAJ İÇİN DOSYA KLONLAMA
+ * Bir mesaj başka bir sohbete iletildiğinde R2 üzerinde nesneyi kopyalar ve yeni kullanıcıya sahiplik atar.
  */
 export const cloneAssetForOwner = async (input: {
   sourceFileKey: string;
@@ -124,6 +128,7 @@ export const cloneAssetForOwner = async (input: {
 
 /**
  * HİÇBİR MESAJA BAĞLANMAMIŞ VEYA SÜRESİ DOLMUŞ YETİM DOSYALARI TEMİZLEME
+ * `READY` durumunda kalıp mesaja bağlanmadan süresi dolan dosyaları R2 ve DB'den siler.
  */
 export const removeExpiredUnattachedAssets = async () => {
   const now = new Date();
@@ -149,3 +154,4 @@ export const removeExpiredUnattachedAssets = async () => {
     }
   }
 };
+

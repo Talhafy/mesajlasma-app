@@ -1,14 +1,38 @@
+/**
+ * ============================================================================
+ * GERÇEK ZAMANLI DURUM VE PRESENCE YÖNETİMİ (Real-Time State & Presence Store)
+ * ============================================================================
+ * 
+ * Bu modül; kullanıcıların çevrimiçi (online/offline) varlık (presence) durumlarını,
+ * ses kanallarındaki anlık katılım ve konuşuyor (`isSpeaking`) bilgilerini,
+ * ve dağıtık ortamlar (Redis Cluster) için Socket Rate Limiting mantığını yönetir.
+ * 
+ * ESNEK MİMARİ (Redis / In-Memory Fallback):
+ * - Redis aktifse: ZSET ve HASH yapıları ile multi-node cluster uyumlu çalışır.
+ * - Redis kapalıysa: Standalone in-memory Map & Set koleksiyonlarına yumuşak geçiş yapar.
+ */
+
 import { Server } from 'socket.io';
 import { getRealtimeRedis } from '../realtime/redis';
 
+/** Redis Presence ZSET anahtarı */
 const PRESENCE_KEY = 'mesajlasma:presence:online';
+
+/** In-Memory Fallback koleksiyonları (Redis bağlantısı olmadığında kullanılır) */
 const fallbackOnlineUsers = new Map<string, Set<string>>();
 const fallbackRateEvents = new Map<string, number[]>();
+
+/** Ses kanalı varlık (Voice Presence) veri yapısı */
 type VoicePresence = { conversationId: string; channelId: string; userId: string; username: string; isSpeaking: boolean };
 const fallbackVoicePresences = new Map<string, VoicePresence & { socketIds: Set<string> }>();
 
+/** Varsayılan presence TTL süresi (3 Saat) */
 export const presenceTtlMs = 3 * 60 * 60 * 1000;
 
+/**
+ * KULLANICIYI ÇEVRİMİÇİ İŞARETLEME
+ * Kullanıcı ilk kez çevrimiçi oluyorsa `true` döner (presence_changed yayını için).
+ */
 export const markUserOnline = async (userId: string, socketId: string, ttlMs = presenceTtlMs) => {
   const redis = getRealtimeRedis();
   if (!redis) {
@@ -28,11 +52,17 @@ export const markUserOnline = async (userId: string, socketId: string, ttlMs = p
   return priorExpiry === null || Number(priorExpiry) <= now;
 };
 
+/**
+ * Kullanıcının çevrimiçi son kullanma süresini (TTL) tazeler (Heartbeat).
+ */
 export const touchUserPresence = async (userId: string, ttlMs = presenceTtlMs) => {
   const redis = getRealtimeRedis();
   if (redis) await redis.zAdd(PRESENCE_KEY, { score: Date.now() + ttlMs, value: userId });
 };
 
+/**
+ * Anlık olarak tüm çevrimiçi kullanıcı ID'lerinin listesini döner.
+ */
 export const getOnlineUserIds = async () => {
   const redis = getRealtimeRedis();
   if (!redis) return [...fallbackOnlineUsers.keys()];
@@ -41,6 +71,9 @@ export const getOnlineUserIds = async () => {
   return redis.zRangeByScore(PRESENCE_KEY, now, '+inf');
 };
 
+/**
+ * Kullanıcı tamamen bağlantıyı kestiyse (Tüm sekmeleri kapandıysa) çevrimdışı işaretler.
+ */
 export const markUserOfflineIfDisconnected = async (io: Server, userId: string, socketId: string) => {
   const redis = getRealtimeRedis();
   if (!redis) {
@@ -58,6 +91,10 @@ export const markUserOfflineIfDisconnected = async (io: Server, userId: string, 
   return true;
 };
 
+/**
+ * DAĞITIK SOKET İSTEK SINIRLAYICI (Distributed Socket Rate Limiting)
+ * Kullanıcıların soket üzerinden belirli bir eylemi saniyede `maxPerSecond` defadan fazla tetiklemesini engeller.
+ */
 export const checkDistributedSocketRateLimit = async (userId: string, eventName: string, maxPerSecond: number) => {
   const redis = getRealtimeRedis();
   if (!redis) {
@@ -81,6 +118,7 @@ const voiceSocketKey = (socketId: string) => `mesajlasma:voice:socket:${socketId
 const voiceChannelKey = (channelId: string) => `mesajlasma:voice:channel:${channelId}`;
 const voiceConversationKey = (conversationId: string) => `mesajlasma:voice:conversation:${conversationId}`;
 
+/** Dahili ses varlığı JSON ayrıştırıcı */
 const parseVoicePresence = (value: string | null): VoicePresence | null => {
   if (!value) return null;
   try {
@@ -98,6 +136,7 @@ const parseVoicePresence = (value: string | null): VoicePresence | null => {
   }
 };
 
+/** Belirtilen ses kanalındaki aktif katılımcıları Redis'ten getirir */
 const getRedisChannelPresences = async (channelId: string) => {
   const redis = getRealtimeRedis();
   if (!redis) return [];
@@ -119,6 +158,9 @@ const getRedisChannelPresences = async (channelId: string) => {
   return [...byUser.values()];
 };
 
+/**
+ * SES KANALINA KATILMA (Join Voice Presence)
+ */
 export const joinVoicePresence = async (socketId: string, presence: VoicePresence, ttlMs: number) => {
   const redis = getRealtimeRedis();
   if (!redis) {
@@ -143,11 +185,15 @@ export const joinVoicePresence = async (socketId: string, presence: VoicePresenc
   return isNewUser;
 };
 
+/** Ses kanalı varlık süresini tazeleyici */
 export const touchVoicePresence = async (socketId: string, ttlMs: number) => {
   const redis = getRealtimeRedis();
   if (redis) await redis.pExpire(voiceSocketKey(socketId), ttlMs);
 };
 
+/**
+ * SES KANALINDAN AYRILMA (Leave Voice Presence)
+ */
 export const leaveVoicePresence = async (socketId: string, presence: Pick<VoicePresence, 'conversationId' | 'channelId' | 'userId'>) => {
   const redis = getRealtimeRedis();
   if (!redis) {
@@ -168,6 +214,9 @@ export const leaveVoicePresence = async (socketId: string, presence: Pick<VoiceP
   return !userStillPresent;
 };
 
+/**
+ * KONUŞUYOR DURUMUNU GÜNCELLEME (Voice Speaking Indicator)
+ */
 export const setVoiceSpeaking = async (socketId: string, isSpeaking: boolean, ttlMs: number) => {
   const redis = getRealtimeRedis();
   if (!redis) {
@@ -186,6 +235,9 @@ export const setVoiceSpeaking = async (socketId: string, isSpeaking: boolean, tt
   return next;
 };
 
+/**
+ * BİR GRUPTAKİ TÜM SES KANALLARININ ANLIK KATILIMCI BİLGİLERİNİ GETİRİR
+ */
 export const getConversationVoicePresences = async (conversationId: string) => {
   const redis = getRealtimeRedis();
   if (!redis) {
@@ -198,3 +250,4 @@ export const getConversationVoicePresences = async (conversationId: string) => {
   const channels = await Promise.all(channelIds.map(getRedisChannelPresences));
   return channels.flat().filter((presence) => presence.conversationId === conversationId);
 };
+

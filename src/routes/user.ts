@@ -1,4 +1,12 @@
-//Kullanıcı ile ilgili olan apiler
+/**
+ * ============================================================================
+ * KULLANICI HESAP VE AYAR ROTALARI (User Account & Settings Routes)
+ * ============================================================================
+ * 
+ * Bu dosya, kullanıcının kendi profil bilgilerini (kullanıcı adı, e-posta, şifre,
+ * avatar) güncellemesi, görüldü tercihlerini değiştirmesi, kendi profilini çekmesi (/me)
+ * ve hesabını tamamen silmesi (cascade cleanup) rotalarını içerir.
+ */
 
 import express from 'express';
 import bcrypt from 'bcryptjs';
@@ -16,7 +24,7 @@ import { respondWithError } from '../errors/AppError';
 
 const router = express.Router();
 
-// Profil adı güncelleme
+/** PUT /api/v1/username -> Kullanıcı Adı Güncelleme */
 router.put('/username', authenticateToken, validateRequest({ body: userSchemas.username }), async (req: CustomRequest, res: any) => {
   const userId = getUserId(req);
   try {
@@ -37,7 +45,7 @@ router.put('/username', authenticateToken, validateRequest({ body: userSchemas.u
   }
 });
 
-// E-posta hesabın kimlik bilgisidir; güncelleme yalnızca JWT sahibi kullanıcı için yapılır.
+/** PUT /api/v1/email -> E-posta Adresi Güncelleme */
 router.put('/email', authenticateToken, validateRequest({ body: userSchemas.email }), async (req: CustomRequest, res: any) => {
   const userId = getUserId(req);
   try {
@@ -58,6 +66,7 @@ router.put('/email', authenticateToken, validateRequest({ body: userSchemas.emai
   }
 });
 
+/** PUT /api/v1/password -> Şifre Değiştirme (Tüm Oturumları İptal Eder) */
 router.put('/password', authenticateToken, validateRequest({ body: userSchemas.password }), async (req: CustomRequest, res: any) => {
   const userId = getUserId(req);
   try {
@@ -75,6 +84,7 @@ router.put('/password', authenticateToken, validateRequest({ body: userSchemas.p
         where: { id: userId },
         data: { password_hash: hashedNewPassword }
       });
+      // Şifre değiştiği için güvenlik amacıyla diğer cihazlardaki tüm aktif oturumları iptal et
       await tx.refreshSession.updateMany({
         where: { userId, revokedAt: null },
         data: { revokedAt: new Date() }
@@ -89,7 +99,10 @@ router.put('/password', authenticateToken, validateRequest({ body: userSchemas.p
   }
 });
 
-// Hesap, ilişkili sohbetler ve dosya referansları tek transaction içinde ele alınır.
+/**
+ * DELETE /api/v1/account -> Kullanıcı Hesabını Tamamen Silme (Cascading Delete)
+ * Kullanıcının üyeliklerini, yönetici olduğu tek kişilik grupları, özel mesajlarını ve dosyalarını temizler.
+ */
 router.delete('/account', authenticateToken, async (req: CustomRequest, res: any) => {
   const userId = getUserId(req);
   try {
@@ -209,7 +222,7 @@ router.delete('/account', authenticateToken, async (req: CustomRequest, res: any
   }
 });
 
-// Sessiz oturum açılışından sonra güncel kullanıcı profilini döndürür.
+/** GET /api/v1/me -> Kendi Profil Bilgilerini Getirme */
 router.get('/me', authenticateToken, async (req: CustomRequest, res: any) => {
   const userId = getUserId(req);
   try {
@@ -232,7 +245,7 @@ router.get('/me', authenticateToken, async (req: CustomRequest, res: any) => {
   }
 });
 
-// Birebir sohbetlerde kullanılan okundu bilgisi tercihi
+/** PUT /api/v1/settings/read-receipts -> Okundu Bilgisi (Görüldü) Tercihini Değiştirme */
 router.put('/settings/read-receipts', authenticateToken, validateRequest({ body: userSchemas.readReceipts }), async (req: CustomRequest, res: any) => {
   const userId = getUserId(req);
   try {
@@ -250,6 +263,7 @@ router.put('/settings/read-receipts', authenticateToken, validateRequest({ body:
   }
 });
 
+/** PUT /api/v1/avatar -> Profil Fotoğrafı (Avatar) Güncelleme */
 router.put('/avatar', authenticateToken, validateRequest({ body: userSchemas.avatar }), async (req: CustomRequest, res: any) => {
   const userId = getUserId(req);
   const { fileKey } = req.body;
@@ -286,3 +300,4 @@ router.put('/avatar', authenticateToken, validateRequest({ body: userSchemas.ava
 });
 
 export default router;
+

@@ -1,10 +1,23 @@
+/**
+ * ============================================================================
+ * OPENAPI 3.0 SPESİFİKASYON TANIMI (REST API Documentation Schema)
+ * ============================================================================
+ * 
+ * Bu dosya, tüm backend REST API'lerinin OpenAPI 3.0 standartlarına uygun olarak 
+ * hazırlanmış şemasını içerir. Swagger UI dokümantasyonu ve Otomatik SDK Üretici 
+ * (`scripts/generate-client.mjs`) bu nesneyi temel alır.
+ */
+
 export const openapiSpec = {
+  /** OpenAPI Sürümü */
   openapi: '3.0.3',
+  /** API Hakkında Genel Bilgiler */
   info: {
     title: 'Mesajlaşma Uygulaması REST API',
     version: '1.0.0',
     description: 'Birebir sohbetler, grup mesajlaşması, sesli/yazılı oyun kanalları, zamanlanmış mesajlar ve dosya paylaşımı için güvenli REST API dokümantasyonu.'
   },
+  /** API Sunucu Adresleri */
   servers: [
     {
       url: '/api/v1',
@@ -15,7 +28,9 @@ export const openapiSpec = {
       description: 'API Legacy Sunucusu (Takma Ad)'
     }
   ],
+  /** Paylaşılan Bileşenler (Güvenlik Şemaları ve Veri Modelleri) */
   components: {
+    /** Güvenlik Modelleri (JWT Bearer Token ve HttpOnly Cookie) */
     securitySchemes: {
       BearerAuth: {
         type: 'http',
@@ -30,7 +45,9 @@ export const openapiSpec = {
         description: 'Yalnızca /auth/refresh uç noktasında kullanılan HttpOnly refresh token cookie'
       }
     },
+    /** Veri Nesnesi Şemaları (DTO Schemas) */
     schemas: {
+      /** Standart API Hata Yanıt Şeması */
       AppErrorResponse: {
         type: 'object',
         properties: {
@@ -71,6 +88,7 @@ export const openapiSpec = {
         },
         required: ['error', 'code']
       },
+      /** Kullanıcı Profil Şeması */
       User: {
         type: 'object',
         properties: {
@@ -82,6 +100,7 @@ export const openapiSpec = {
         },
         required: ['id', 'username']
       },
+      /** Sohbet Odası Şeması */
       Conversation: {
         type: 'object',
         properties: {
@@ -95,6 +114,7 @@ export const openapiSpec = {
         },
         required: ['id', 'isGroup']
       },
+      /** Mesaj Nesnesi Şeması */
       Message: {
         type: 'object',
         properties: {
@@ -114,6 +134,7 @@ export const openapiSpec = {
         },
         required: ['id', 'conversationId', 'senderId', 'content', 'createdAt']
       },
+      /** Oyun Kanalı Şeması */
       GameChannel: {
         type: 'object',
         properties: {
@@ -128,9 +149,11 @@ export const openapiSpec = {
       }
     }
   },
+  /** Küresel Güvenlik Tanımı (Varsayılan olarak tüm uç noktalar Bearer Token gerektirir) */
   security: [
     { BearerAuth: [] }
   ],
+  /** Rotalar ve Uç Nokta Detayları */
   paths: {
     '/auth/register': {
       post: {
@@ -373,3 +396,4 @@ export const openapiSpec = {
     }
   }
 };
+

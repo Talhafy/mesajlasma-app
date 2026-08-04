@@ -1,4 +1,18 @@
-//Zamanlanmış mesajlar için ayrı bir route
+/**
+ * ============================================================================
+ * ZAMANLANMIŞ MESAJ ROTALARI (Scheduled Messages Routes)
+ * ============================================================================
+ * 
+ * Bu dosya, kullanıcıların ileri bir tarihte/saatte otomatik olarak gönderilmek
+ * üzere planladığı mesajların (Scheduled Messages) yönetimi ve anlık tetiklenmesi
+ * rotalarını içerir.
+ * 
+ * TASARIM İLKELERİ:
+ * 1. İdempotency (`clientId`): İstek tekrarlandığında mükerrer mesaj zamanlanmasını engeller.
+ * 2. Yarış Durumu Koruması (Race Condition Prevention): `send-now` ile arka plan worker'ı
+ *    aynı anda mesajı göndermeye kalkarsa, atomik `deleteMany` silme işlemi sayesinde
+ *    mesaj yalnızca bir defa veritabanına mesaj olarak yazılır ve Socket ile iletilir.
+ */
 
 import express, { Response } from 'express';
 import { Prisma } from '@prisma/client';
@@ -17,10 +31,10 @@ import { chatSchemas } from '../validation/schemas';
 const router = express.Router();
 router.use(authenticateToken);
 
-// Bu dosyada zamanlanmış mesajlar normal mesajlardan ayrı tutulur.
-// Kullanıcı zamanlanmış mesajı düzenlediğinde chat'e mesaj düşmez; yalnızca ScheduledMessage kaydı güncellenir.
-
-// Zamanlama route'ları normal mesaj route'larından ayrıdır; düzenleme işlemi sohbet mesajı üretmez.
+/**
+ * POST /api/v1/messages/schedule -> İleri Tarihli Mesaj Zamanlama
+ * Kullanıcının seçtiği `sendAt` tarihini doğrular ve planlanan kaydı veritabanına ekler.
+ */
 router.post('/messages/schedule', validateRequest({ body: chatSchemas.scheduledMessage }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const { conversationId, clientId, content, sendAt, fileKey, fileType, fileName } = req.body;
@@ -64,6 +78,9 @@ router.post('/messages/schedule', validateRequest({ body: chatSchemas.scheduledM
   }
 });
 
+/**
+ * GET /api/v1/messages/scheduled/:conversationId -> Sohbetin Bekleyen Zamanlanmış Mesajlarını Listeleme
+ */
 router.get('/messages/scheduled/:conversationId', validateRequest({ params: chatSchemas.scheduledConversationParams }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const conversationId = getRouteParam(req, 'conversationId');
@@ -85,6 +102,9 @@ router.get('/messages/scheduled/:conversationId', validateRequest({ params: chat
   }
 });
 
+/**
+ * DELETE /api/v1/messages/schedule/:id -> Zamanlanmış Mesajı İptal Etme / Silme
+ */
 router.delete('/messages/schedule/:id', validateRequest({ params: chatSchemas.idParams }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const id = getRouteParam(req, 'id');
@@ -106,6 +126,10 @@ router.delete('/messages/schedule/:id', validateRequest({ params: chatSchemas.id
   }
 });
 
+/**
+ * POST /api/v1/messages/schedule/send-now/:id -> Zamanlanmış Mesajı Beklemeden Anında Gönderme
+ * Atomik `deleteMany` kullanarak yarış durumlarını engeller ve mesajı gerçek sohbet mesajına dönüştürür.
+ */
 router.post('/messages/schedule/send-now/:id', validateRequest({ params: chatSchemas.idParams }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const id = getRouteParam(req, 'id');
@@ -120,8 +144,6 @@ router.post('/messages/schedule/send-now/:id', validateRequest({ params: chatSch
     }
 
     // deleteMany kaydı atomik olarak sahiplenir; worker ile aynı anda yalnızca biri kazanır.
-    // "Şimdi gönder" ile background worker aynı anda davranırsa ikisi de aynı kaydı göndermeye çalışabilir.
-    // deleteMany burada atomik sahiplenme görevi görür; count 1 değilse mesajı başka işlem kazanmıştır.
     const savedMessageId = await prisma.$transaction(async (tx) => {
       const claimed = await tx.scheduledMessage.deleteMany({ where: { id, senderId: userId } });
       if (claimed.count !== 1) return null;
@@ -150,8 +172,7 @@ router.post('/messages/schedule/send-now/:id', validateRequest({ params: chatSch
     });
     if (!savedMessageId) return res.status(409).json({ error: 'Mesaj başka bir işlem tarafından gönderildi veya iptal edildi.' });
 
-    // Transaction içinde yalnızca mesaj id'si döndürülür; ilişkili sender/conversation verisi dışarıda okunur.
-    // Bu ayrım Prisma adapter-pg'nin aynı transaction client'ında paralel include sorgusu çalıştırmasını engeller.
+    // Transaction dışında ilişkili veriler okunur
     const savedMessage = await prisma.message.findUnique({
       where: { id: savedMessageId },
       include: {
@@ -173,7 +194,7 @@ router.post('/messages/schedule/send-now/:id', validateRequest({ params: chatSch
         }
       }
     });
-    // Socket olayı hem conversation odasına hem de kullanıcı odalarına gider; sidebar ve açık chat aynı anda güncellenir.
+    // Socket olayı hem conversation odasına hem de kullanıcı odalarına yayınlanır
     const rooms = [scheduled.conversationId, ...(conversation?.participants.map(({ userId: participantId }) => participantId) || [])];
     req.app.get('io').to([...new Set(rooms)]).emit('yeni_mesaj_geldi', await serializeMessage(savedMessage));
     return res.status(200).json({ success: true, message: 'Mesaj hemen gönderildi.' });
@@ -182,6 +203,9 @@ router.post('/messages/schedule/send-now/:id', validateRequest({ params: chatSch
   }
 });
 
+/**
+ * PUT /api/v1/messages/schedule/:id -> Bekleyen Zamanlanmış Mesajı Düzenleme
+ */
 router.put('/messages/schedule/:id', validateRequest({
   params: chatSchemas.idParams,
   body: chatSchemas.editScheduledMessage
@@ -203,7 +227,6 @@ router.put('/messages/schedule/:id', validateRequest({
     const nextFileKey = fileKey !== undefined ? fileKey : scheduled.fileKey;
     if (!nextContent && !nextFileKey) return res.status(400).json({ error: 'Zamanlanmış mesaj tamamen boş olamaz.' });
 
-    // Zamanlanmış mesaj düzenlenirken hem metin hem dosya tamamen boş hale getirilemez.
     if (fileKey && fileKey !== scheduled.fileKey) await attachOwnedAsset(fileKey, userId);
     const updated = await prisma.scheduledMessage.update({
       where: { id },
@@ -215,7 +238,7 @@ router.put('/messages/schedule/:id', validateRequest({
       }
     });
     if (fileKey !== undefined && scheduled.fileKey !== nextFileKey) {
-      // Dosya değiştirildiyse eski dosya başka kayıt tarafından kullanılmıyorsa silinir.
+      // Dosya değiştirildiyse eski dosya silinir
       await deleteFileIfUnreferenced(scheduled.fileKey);
     }
     return res.status(200).json({ success: true, updatedMessage: await withSignedFileUrl(updated) });
@@ -225,3 +248,4 @@ router.put('/messages/schedule/:id', validateRequest({
 });
 
 export default router;
+

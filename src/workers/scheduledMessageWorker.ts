@@ -1,3 +1,21 @@
+/**
+ * ============================================================================
+ * ZAMANLANMIŞ MESAJ VE ÇÖP TEMİZLİK WORKER SERVİSİ (Scheduled Worker Core)
+ * ============================================================================
+ * 
+ * Bu dosya, arka planda zamanı gelen mesajları teslim eden ve süresi dolmuş
+ * (kaybolan) mesajlar ile yetim kalmış dosyaları periyodik olarak temizleyen
+ * bağımsız arka plan servis (worker) mantığını barındırır.
+ * 
+ * ESNEK VE GÜVENLİ MİMARİ:
+ * 1. HTTP ve Socket.IO bağımlılığı yoktur; bağımsız bir Container/Process olarak çalışabilir.
+ * 2. Eşzamanlı Dağıtık Çalışma Güvenliği (`FOR UPDATE SKIP LOCKED`): Birden fazla worker 
+ *    replikası aynı anda çalışsa bile tek bir zamanlanmış mesaj yalnızca bir worker 
+ *    tarafından işlenir ve mükerrer gönderim önlenir.
+ * 3. PostgreSQL Transaction & NOTIFY: Mesaj kaydedildiği transaction commit edilince
+ *    `pg_notify` ile dinleyici sunuculara bildirim atılır.
+ */
+
 import { scheduledMessageWorkerIntervalMs } from '../config/env';
 import { logger } from '../config/logger';
 import prisma from '../db';
@@ -5,14 +23,17 @@ import { requireActiveParticipant } from '../services/conversationAccess';
 import { deleteFileIfUnreferenced } from '../services/fileCleanup';
 import { removeExpiredUnattachedAssets } from '../services/uploadedAssetService';
 
+/** PostgreSQL NOTIFY kanalı adı */
 const SCHEDULED_MESSAGE_DELIVERED_CHANNEL = 'scheduled_message_delivered';
 
-// This process owns scheduled-message delivery and expired-file cleanup. It intentionally has no
-// HTTP or Socket.IO dependency, so it can run as an independent deployment.
+/**
+ * Zamanlanmış mesaj teslimatını ve süresi dolmuş medya temizliğini başlatan worker döngüsü.
+ */
 export const startScheduledMessageWorker = () => {
   let workerRunning = false;
   let lastCleanupTime = 0;
 
+  /** Zamanı gelmiş mesajları bulan ve Message tablosuna aktaran ana fonksiyon */
   const deliverScheduledMessages = async () => {
     if (workerRunning) return;
     workerRunning = true;
@@ -20,7 +41,7 @@ export const startScheduledMessageWorker = () => {
     try {
       const result = await prisma.$transaction(async (tx) => {
         const now = new Date();
-        // Row locks make concurrent worker replicas safe: a due job is claimed by at most one worker.
+        // Satır kilitleme (FOR UPDATE SKIP LOCKED) ile çoklu worker örnekleri çakışmadan çalışır
         const candidates = await tx.$queryRaw<Array<{ id: string }>>`
           SELECT "id"
           FROM "ScheduledMessage"
@@ -35,7 +56,7 @@ export const startScheduledMessageWorker = () => {
           const scheduled = await tx.scheduledMessage.findUnique({ where: { id: candidate.id } });
           if (!scheduled) continue;
 
-          // A removed sender and a deleted conversation can never produce a scheduled message.
+          // Gönderenin gruptan ayrılıp ayrılmadığı veya grubun silinip silinmediği denetlenir
           const membership = await requireActiveParticipant(
             scheduled.conversationId,
             scheduled.senderId,
@@ -71,8 +92,7 @@ export const startScheduledMessageWorker = () => {
           });
 
           await tx.scheduledMessage.delete({ where: { id: scheduled.id } });
-          // The notification becomes visible only after this transaction commits. API instances use
-          // the message id to load and emit the normal socket payload to their local clients.
+          // Transaction commit edildikten sonra API sunucularına pg_notify atılır
           await tx.$executeRaw`
             SELECT pg_notify(${SCHEDULED_MESSAGE_DELIVERED_CHANNEL}, ${createdMessage.id})
           `;
@@ -85,6 +105,7 @@ export const startScheduledMessageWorker = () => {
         await deleteFileIfUnreferenced(fileKey);
       }
 
+      // 60 saniyede bir süresi dolan mesajları ve yetim kalmış R2 dosyalarını temizler
       const nowMs = Date.now();
       if (nowMs - lastCleanupTime > 60_000) {
         lastCleanupTime = nowMs;
@@ -133,3 +154,4 @@ export const startScheduledMessageWorker = () => {
     clearInterval(interval);
   };
 };
+

@@ -1,9 +1,20 @@
+/**
+ * ============================================================================
+ * OPERASYONEL HATA SINIFI BİRİM TESTLERİ (AppError Unit Tests)
+ * ============================================================================
+ * 
+ * Bu dosya, uygulama genelinde kullanılan `AppError` operasyonel hata sınıfını,
+ * statik kurucu yardımcılarını (`notFound`, `forbidden`, `validation`), 
+ * `respondWithError` formatlayıcısını ve `errorHandler` Express middleware'ini test eder.
+ */
+
 import { describe, expect, it, vi } from 'vitest';
 import { AppError, respondWithError } from '../../src/errors/AppError';
 import { errorHandler } from '../../src/middleware/errorHandler';
 
 describe('AppError unit tests', () => {
   it('should instantiate AppError with correct properties', () => {
+    // AppError doğru statü kodu, hata kodu ve operasyonel bayrak taşımalıdır
     const err = new AppError('CONVERSATION_FORBIDDEN', 'Bu sohbete erişim yetkiniz yok.', 403);
     expect(err).toBeInstanceOf(Error);
     expect(err).toBeInstanceOf(AppError);
@@ -14,6 +25,7 @@ describe('AppError unit tests', () => {
   });
 
   it('should create AppError via static factory methods', () => {
+    // Statik yardımcılar doğru statü kodlarını atamalıdır
     const notFound = AppError.notFound('MESSAGE_NOT_FOUND', 'Mesaj bulunamadı.');
     expect(notFound.statusCode).toBe(404);
     expect(notFound.code).toBe('MESSAGE_NOT_FOUND');
@@ -28,6 +40,7 @@ describe('AppError unit tests', () => {
   });
 
   it('should format JSON response in respondWithError helper', () => {
+    // respondWithError standart { error, code } JSON yanıtı üretmelidir
     const jsonMock = vi.fn();
     const statusMock = vi.fn().mockReturnValue({ json: jsonMock });
     const res = { status: statusMock } as any;
@@ -43,6 +56,7 @@ describe('AppError unit tests', () => {
   });
 
   it('should handle unhandled Error in respondWithError helper', () => {
+    // Standart JS Error nesnesi geldiğinde 500 INTERNAL_ERROR dönmelidir
     const jsonMock = vi.fn();
     const statusMock = vi.fn().mockReturnValue({ json: jsonMock });
     const res = { status: statusMock } as any;
@@ -57,6 +71,7 @@ describe('AppError unit tests', () => {
   });
 
   it('errorHandler middleware should handle AppError correctly', () => {
+    // Express errorHandler middleware'i AppError nesnelerini yakalayıp yanıt dönmelidir
     const jsonMock = vi.fn();
     const statusMock = vi.fn().mockReturnValue({ json: jsonMock });
     const req = { id: 'req-123', method: 'GET', originalUrl: '/test', ip: '127.0.0.1' } as any;
@@ -73,3 +88,4 @@ describe('AppError unit tests', () => {
     });
   });
 });
+

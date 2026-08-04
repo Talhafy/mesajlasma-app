@@ -5,7 +5,7 @@
  * 
  * Bu dosya, uygulamadaki hassas uç noktalara (Giriş, Kayıt, Dosya Yükleme vb.)
  * yapılan aşırı istekleri (Brute-Force & DDoS) engellemek için kullanılan
- * hız sınırlayıcılarını tanımlar.
+ * hız sınırlayıcılarını (Rate Limiters) tanımlar.
  * 
  * GÜVENLİK İLKELERİ:
  * 1. Her hassas işlem için ayrı bir `windowMs` (zaman penceresi) ve `limit` tanımlanır.
@@ -19,6 +19,7 @@ import { rateLimit } from 'express-rate-limit';
 import { logger } from './logger';
 import { createRedisRateLimitStore } from './redisStore';
 
+/** İstek loglama bağlamı eklenmiş Express Request arayüzü */
 type RequestWithLogContext = Request & {
   id?: unknown;
   user?: { userId?: string };
@@ -26,7 +27,7 @@ type RequestWithLogContext = Request & {
 
 /**
  * Tüm sınırlayıcıların paylaştığı standart HTTP RateLimit başlık ayarları.
- * modern `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` başlıklarını otomatik ekler.
+ * Modern `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` başlıklarını yanıt kartına ekler.
  */
 const commonOptions = {
   standardHeaders: 'draft-7' as const,
@@ -34,7 +35,8 @@ const commonOptions = {
 };
 
 /**
- * Hız sınırına takılan istekleri güvenlik uyarısı olarak loglayan ve 429 yanıtı dönen işleyici.
+ * Hız sınırına takılan (kotayı aşan) istekleri güvenlik uyarısı olarak günlüğe kaydeden (log) ve
+ * istemciye HTTP 429 Too Many Requests yanıtı dönen işleyici fonksiyon.
  */
 const sendRateLimitResponse = (
   req: RequestWithLogContext,
@@ -57,7 +59,7 @@ const sendRateLimitResponse = (
 
 /**
  * GİRİŞ İSTEKLERİ SINIRLAYICISI (Login Rate Limiter)
- * - Pencere: 15 Dakika
+ * - Pencere (Window): 15 Dakika
  * - Maksimum Başarısız Deneme: 20
  * - `skipSuccessfulRequests: true` sayesinde doğru şifreyle yapılan başarılı girişler kotayı tüketmez.
  */
@@ -100,7 +102,7 @@ export const registerLimiter = rateLimit({
  * REFRESH TOKEN SINIRLAYICISI (Refresh Rate Limiter)
  * - Pencere: 5 Dakika
  * - Maksimum İstek: 30
- * - Refresh token döngüsünün kötüye kullanılmasını engeller.
+ * - Refresh token döngüsünün kötüye kullanılmasını ve sonsuz token oluşturulmasını engeller.
  */
 export const refreshLimiter = rateLimit({
   ...commonOptions,
@@ -120,7 +122,7 @@ export const refreshLimiter = rateLimit({
  * DOSYA YÜKLEME SINIRLAYICISI (Upload Rate Limiter)
  * - Pencere: 5 Dakika
  * - Maksimum Yükleme: 10
- * - Depolama maliyetini (Cloudflare R2) ve bant genişliği tüketimini korur.
+ * - Depolama maliyetini (Cloudflare R2) ve sunucu bant genişliği tüketimini korur.
  */
 export const uploadLimiter = rateLimit({
   ...commonOptions,
@@ -140,7 +142,7 @@ export const uploadLimiter = rateLimit({
  * GENEL API SINIRLAYICISI (Global API Limiter)
  * - Pencere: 15 Dakika
  * - IP Başına Maksimum İstek: 500
- * - Tüm API uç noktaları için genel DDoS ve kaynak tüketim koruması sağlar.
+ * - Tüm API uç noktaları için genel DDoS ve anormal kaynak tüketim koruması sağlar.
  */
 export const globalApiLimiter = rateLimit({
   ...commonOptions,
@@ -155,3 +157,4 @@ export const globalApiLimiter = rateLimit({
     'Çok fazla API isteği gönderdiniz. Lütfen daha sonra tekrar deneyin.'
   )
 });
+

@@ -3,24 +3,43 @@ import './Modals.css';
 import type { User } from '../../types/chat';
 import Button from '../UI/Button';
 
+/**
+ * CreateGroupModal bileşenine iletilen prop'ların tip tanımlamaları.
+ * Modal kendi durumunu (state) tutmaz; ana uygulama (App.tsx) seviyesindeki state ve handler'ları alarak çalışır.
+ * Bu sayede grup kurulduktan sonra sohbet ve grup listeleri tek bir merkezden güncellenebilir.
+ */
 interface CreateGroupModalProps {
-  // Modal kendi state'ini tutmaz; App.tsx'teki state ve handler'lar props olarak gelir.
-  // Böylece grup kurulduktan sonra App sohbet/grup listelerini tek merkezden güncelleyebilir.
+  /** Grup oluşturma modalının görünürlüğünü kontrol eden tetikleyici fonksiyon */
   setIsGroupModalOpen: (isOpen: boolean) => void;
+  /** Giriş yapılan mevcut yeni grup adı metni */
   newGroupName: string;
+  /** Grup adını güncellemek için kullanılan setter fonksiyonu */
   setNewGroupName: (name: string) => void;
+  /** Gruba eklenebilecek mevcut sistem kullanıcılarının listesi */
   usersList: User[];
+  /** Gruba dahil edilmek üzere seçilmiş kullanıcıların ID dizisi */
   selectedMembers: string[];
+  /** Bir kullanıcının gruba eklenme / çıkarılma seçimini tersine çeviren fonksiyon */
   toggleMemberSelection: (userId: string) => void;
+  /** Grup oluşturma işlemini API tarafında başlatacak fonksiyon */
   handleCreateGroup: () => void;
 }
 
+/**
+ * Kullanıcının yeni bir grup sohbeti oluşturmasına olanak tanıyan modal bileşeni.
+ * Grup adı girdisini doğrular ve listeden üye seçilmesini sağlar.
+ */
 export default function CreateGroupModal({
   setIsGroupModalOpen, newGroupName, setNewGroupName, usersList,
   selectedMembers, toggleMemberSelection, handleCreateGroup
 }: CreateGroupModalProps) {
+  // Modal içi lokal hata mesajı durumu (Örn: grup adı boş bırakıldığında gösterilir)
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  /**
+   * Form gönderilmek istendiğinde çalışan doğrulama fonksiyonu.
+   * Grup adının boş olup olmadığını kontrol eder, geçerliyse üst bileşendeki `handleCreateGroup` fonksiyonunu çağırır.
+   */
   const handleSubmit = () => {
     if (!newGroupName.trim()) {
       setErrorMessage("Grup adı boş bırakılamaz. Lütfen bir grup adı girin.");
@@ -30,28 +49,37 @@ export default function CreateGroupModal({
     handleCreateGroup();
   };
 
+  // Gruba en az 1 üye seçilmemişse "Grubu Kur" butonunu pasif hale getirir
   const isButtonDisabled = selectedMembers.length === 0;
 
-  // Bu component yalnızca arayüzü çizer; doğrulama ve API çağrısı handleCreateGroup içinde App.tsx tarafında yapılır.
   return (
+    // Modal karartılmış arka plan overlay alanı
     <div className="settings-overlay">
+      {/* Modal pencere kapsayıcısı */}
       <div className="settings-modal" style={{width: '350px'}}>
+        {/* Modal Başlık ve Kapat Butonu */}
         <div className="settings-header">
           <h2>👥 Yeni Grup Oluştur</h2>
-         <Button text="✕" onClick={() => setIsGroupModalOpen(false)} variant="ghost" />
+          <Button text="✕" onClick={() => setIsGroupModalOpen(false)} variant="ghost" />
         </div>
+
+        {/* Modal Gövde İçeriği */}
         <div className="settings-body">
+          {/* Hata Mesajı Alanı (Varsa gösterilir) */}
           {errorMessage && (
             <div className="settings-msg error" style={{ marginBottom: '15px' }}>
               ⚠️ {errorMessage}
             </div>
           )}
+
+          {/* Grup Adı Giriş Kutusu (Input) */}
           <input 
             type="text" 
             placeholder="Grup Adı (Örn: Proje Ekibi)" 
             value={newGroupName} 
             onChange={(e) => {
               setNewGroupName(e.target.value);
+              // Kullanıcı yazı yazmaya başladığında hata mesajını temizle
               if (errorMessage) setErrorMessage(null);
             }} 
             style={{
@@ -67,8 +95,13 @@ export default function CreateGroupModal({
               fontSize: '14px'
             }} 
           />
-          <h4 style={{fontSize: '14px', color: 'var(--text-color, #555)', margin: '0 0 10px 0', fontWeight: 600}}>Kişileri Seçin</h4>
 
+          {/* Üye Seçim Başlığı */}
+          <h4 style={{fontSize: '14px', color: 'var(--text-color, #555)', margin: '0 0 10px 0', fontWeight: 600}}>
+            Kişileri Seçin
+          </h4>
+
+          {/* Kullanıcı Listesi Kaydırılabilir Alanı */}
           <div style={{
             maxHeight: '220px', 
             overflowY: 'auto', 
@@ -82,7 +115,9 @@ export default function CreateGroupModal({
             boxSizing: 'border-box'
           }}>
             {usersList.length === 0 ? (
-              <p style={{fontSize: '13px', color: '#888', padding: '15px', textAlign: 'center'}}>Sisteme kayıtlı başka kullanıcı yok.</p>
+              <p style={{fontSize: '13px', color: '#888', padding: '15px', textAlign: 'center'}}>
+                Sisteme kayıtlı başka kullanıcı yok.
+              </p>
             ) : (
               usersList.map(user => {
                 const isSelected = selectedMembers.includes(user.id);
@@ -101,7 +136,7 @@ export default function CreateGroupModal({
                     }}
                     className="group-member-select-item"
                   >
-                    {/* Custom Circular Checkbox */}
+                    {/* Özel Dairesel Seçim İkonu (Checkbox) */}
                     <div style={{
                       width: '20px',
                       height: '20px',
@@ -118,7 +153,7 @@ export default function CreateGroupModal({
                       {isSelected && <span style={{ color: 'white', fontSize: '11px', fontWeight: 'bold' }}>✓</span>}
                     </div>
 
-                    {/* Avatar */}
+                    {/* Kullanıcı Profil Resmi veya Baş Harf Avatarı */}
                     <div style={{
                       width: '36px',
                       height: '36px',
@@ -141,13 +176,15 @@ export default function CreateGroupModal({
                       )}
                     </div>
 
-                    {/* Username */}
+                    {/* Kullanıcı Adı */}
                     <span style={{ fontSize: '14px', fontWeight: 500 }}>{user.username}</span>
                   </div>
                 );
               })
             )}
           </div>
+
+          {/* Grubu Oluşturma Butonu */}
           <Button
             text="Grubu Kur"
             onClick={handleSubmit}
@@ -159,3 +196,4 @@ export default function CreateGroupModal({
     </div>
   );
 }
+

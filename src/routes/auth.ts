@@ -39,7 +39,10 @@ import { disconnectUserSockets } from '../socket/sessionControl';
 
 const router = express.Router();
 
+/** İstek için uniq ID üretir veya okur */
 const getRequestId = (req: Request) => (req as Request & { id?: string }).id;
+
+/** Güvenlik ve oturum logları için bağlam nesnesi üreticisi */
 const authLogContext = (req: Request, extra: Record<string, unknown> = {}) => ({
   requestId: getRequestId(req),
   method: req.method,
@@ -66,7 +69,7 @@ const requireTrustedOrigin = (req: Request, res: Response, next: NextFunction) =
 
 /**
  * HASSAS VERİLERDEN ARINDIRILMIŞ KULLANICI NESNESİ ÜRETİCİ
- * Şifre hash'i veya oturum detayları response'a asla eklenmez.
+ * Şifre hash'i veya oturum detayları response'a asla eklenmez. Profil fotoğrafı için imzalı URL üretilir.
  */
 const publicUser = async (user: {
   id: string;
@@ -87,6 +90,7 @@ const publicUser = async (user: {
 
 /**
  * POST /api/v1/register -> Yeni Kullanıcı Kaydı
+ * Şifreyi bcrypt (cost factor 10) ile hash'ler ve yeni hesabı veritabanına kaydeder.
  */
 router.post('/register', requireTrustedOrigin, validateRequest({ body: authSchemas.register }), async (req, res) => {
   try {
@@ -96,6 +100,7 @@ router.post('/register', requireTrustedOrigin, validateRequest({ body: authSchem
       data: { username, email, password_hash: hashedPassword }
     });
 
+    // Yeni kullanıcı katıldı bildirimini tüm Socket odalarına yayınla
     req.app.get('io')?.emit('kullanici_eklendi', await publicUser(newUser));
     logger.info(authLogContext(req, {
       event: 'auth.register_success',
@@ -117,6 +122,7 @@ router.post('/register', requireTrustedOrigin, validateRequest({ body: authSchem
 
 /**
  * POST /api/v1/login -> Kullanıcı Girişi ve Oturum Açma
+ * Kullanıcı kimliğini doğrular, Access Token döndürür ve HttpOnly Refresh Cookie yerleştirir.
  */
 router.post('/login', requireTrustedOrigin, validateRequest({ body: authSchemas.login }), async (req, res) => {
   try {
@@ -166,9 +172,11 @@ router.post('/login', requireTrustedOrigin, validateRequest({ body: authSchemas.
     const refreshExpiresAt = getRefreshExpiry();
 
     await prisma.$transaction(async (tx) => {
+      // Süresi dolmuş eski oturumları temizle
       await tx.refreshSession.deleteMany({
         where: { expiresAt: { lt: new Date() } }
       });
+      // Yeni oturumu kaydet
       await tx.refreshSession.create({
         data: {
           userId: user.id,
@@ -176,6 +184,7 @@ router.post('/login', requireTrustedOrigin, validateRequest({ body: authSchemas.
           expiresAt: refreshExpiresAt
         }
       });
+      // Hatalı giriş sayacını sıfırla
       await tx.user.update({
         where: { id: user.id },
         data: { failedLoginAttempts: 0 }
@@ -204,6 +213,7 @@ router.post('/login', requireTrustedOrigin, validateRequest({ body: authSchemas.
 
 /**
  * POST /api/v1/refresh -> Access Token Yenileme (Refresh Token Rotation)
+ * HttpOnly cookie'deki refresh token'ı doğrular, eski token'ı iptal edip yenisini verir.
  */
 router.post('/refresh', requireTrustedOrigin, async (req, res) => {
   try {
@@ -303,6 +313,7 @@ router.post('/refresh', requireTrustedOrigin, async (req, res) => {
 
 /**
  * POST /api/v1/logout -> Tekli Oturum Çıkışı
+ * O anki cihazdaki refresh token'ı iptal eder ve cookie'yi temizler.
  */
 router.post('/logout', requireTrustedOrigin, async (req, res) => {
   try {
@@ -327,6 +338,7 @@ router.post('/logout', requireTrustedOrigin, async (req, res) => {
 
 /**
  * POST /api/v1/logout-all -> Tüm Cihazlardan Çıkış Yapma
+ * Kullanıcının veritabanındaki tüm aktif oturumlarını iptal eder ve canlı WebSocket bağlantılarını kapatır.
  */
 router.post('/logout-all', requireTrustedOrigin, authenticateToken, async (req: CustomRequest, res) => {
   try {
@@ -353,3 +365,4 @@ router.post('/logout-all', requireTrustedOrigin, authenticateToken, async (req: 
 });
 
 export default router;
+

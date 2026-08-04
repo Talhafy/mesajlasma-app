@@ -1,4 +1,11 @@
-//Engellenen kullanıcılar için ayrı bir servis
+/**
+ * ============================================================================
+ * KULLANICI VE ENGELLENENLER SERVİSİ (User & Blocked User Management)
+ * ============================================================================
+ * 
+ * Bu dosya; kullanıcı arama/listeleme, kullanıcı profil detaylarını getirme ve
+ * kullanıcı engelleme/engeli kaldırma (BlockedUser) iş mantıklarını yürütür.
+ */
 
 import prisma from '../db';
 import { AppError } from '../errors/AppError';
@@ -142,3 +149,4 @@ export const unblockUser = async (currentUserId: string, targetId: string, io: a
 
   return { isBlocked: false };
 };
+

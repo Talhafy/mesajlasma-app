@@ -1,4 +1,12 @@
-//Logger ayarları
+/**
+ * ============================================================================
+ * MERKEZİ LOGGING (GÜNLÜK) YAPILANDIRMASI (Pino Logger Config)
+ * ============================================================================
+ * 
+ * Bu dosya, tüm backend uygulamasında `console.log` veya `console.error` yerine 
+ * kullanılan yüksek performanslı, yapay zekaya ve Logstash/Elasticsearch 
+ * indekslemesine uygun JSON formatında günlükleme (logging) motorunu yapılandırır.
+ */
 
 import fs from 'fs';
 import os from 'os';
@@ -13,11 +21,16 @@ import {
   serviceName
 } from './env';
 
+/** Dosyaya yazma akışı (WriteStream) referansı */
 let fileStream: fs.WriteStream | null = null;
+/** Log dosyasının tam sistem yolu */
 let logFilePath: string | null = null;
 
-// Logger iki hedefe yazabilir: terminal ve dosya.
-// Dosya açılamazsa uygulama durmaz; terminal loglarıyla çalışmaya devam eder.
+/**
+ * Dosyaya Günlükleme Ayarı:
+ * Eğer LOG_FILE_ENABLED=true ise hedef klasörü oluşturur ve append ('a') modunda dosyayı açar.
+ * Herhangi bir dosya hatasında sunucu çökmez, loglar terminale (stdout) akmaya devam eder.
+ */
 if (logFileEnabled) {
   try {
     fs.mkdirSync(logDirectory, { recursive: true });
@@ -34,19 +47,21 @@ if (logFileEnabled) {
   }
 }
 
+/** Log akış hedefleri: Terminal (stdout) ve isteğe bağlı log dosyası */
 const streams = fileStream
   ? [{ stream: process.stdout }, { stream: fileStream }]
   : [{ stream: process.stdout }];
 
-// Merkezi logger: backend'deki tüm modüller console.* yerine bunu kullanır.
-// Pino JSON log ürettiği için Logstash/Elasticsearch tarafında alan bazlı filtreleme kolaylaşır.
+/**
+ * MERKEZİ PINO LOGGER NESNESİ
+ * Tüm backend servislerinde `logger.info()`, `logger.error()`, `logger.warn()` olarak kullanılır.
+ */
 export const logger = pino(
   {
     level: logLevel,
     messageKey: 'message',
     base: {
-      // Her log kaydına servis ve environment bilgisi eklenir.
-      // Aynı Elastic cluster içinde birden fazla servis olursa ayırmayı kolaylaştırır.
+      // Her log satırına otomatik eklenen ortak servis ve ortam bilgisi
       service: serviceName,
       env: nodeEnv
     },
@@ -61,8 +76,9 @@ export const logger = pino(
       err: pino.stdSerializers.err
     },
     redact: {
-      // Güvenlik: token, cookie ve şifre benzeri alanlar loga düz metin yazılmaz.
-      // Bir hata objesi request body taşısa bile bu alanlar [REDACTED] olarak maskelenir.
+      // GÜVENLİK VE GİZLİLİK (Data Masking):
+      // Şifreler, token'lar ve cookie bilgileri günlüklere asla düz metin yazılmaz.
+      // Bu yollar üzerindeki tüm hassas veriler otomatik olarak [REDACTED] ile maskelenir.
       paths: [
         'req.headers.authorization',
         'req.headers.cookie',
@@ -89,8 +105,11 @@ export const logger = pino(
   pino.multistream(streams)
 );
 
+/**
+ * Uygulamanın anlık loglama durumunu ve dosya konumunu raporlayan çalışma zamanı bilgisi.
+ * (Sağlık `/health/ready` uç noktasında kullanılır).
+ */
 export const loggerRuntime = Object.freeze({
-  // Health endpoint bu bilgiyi döner; logging gerçekten dosyaya yazıyor mu hızlıca kontrol edilir.
   level: logLevel,
   service: serviceName,
   env: nodeEnv,
@@ -100,8 +119,11 @@ export const loggerRuntime = Object.freeze({
   logFilePath
 });
 
+/**
+ * Sunucu güvenli olarak kapatılırken (Graceful Shutdown) askıdaki son logların 
+ * dosyaya tam yazılmasını garanti eden boşaltma (flush) fonksiyonu.
+ */
 export const flushLogs = () => new Promise<void>((resolve) => {
-  // Graceful shutdown sırasında dosya stream'i kapanmadan process sonlanırsa son loglar kaybolabilir.
   if (!fileStream || fileStream.destroyed || fileStream.writableEnded) {
     resolve();
     return;
@@ -109,3 +131,4 @@ export const flushLogs = () => new Promise<void>((resolve) => {
 
   fileStream.end(resolve);
 });
+

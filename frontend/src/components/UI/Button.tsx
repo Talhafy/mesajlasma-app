@@ -1,20 +1,38 @@
 import React from 'react';
 import './Button.css';
 
+/**
+ * Button bileşenine iletilen prop'ların tip tanımlamaları.
+ */
 interface ButtonProps {
-  text?: React.ReactNode; // DÜZELTME: Artık sadece metin değil, her türlü React objesi (SVG vs.) alabilir
-  icon?: React.ReactNode; // YENİ: Yazının yanına ikon eklemek için
+  /** Buton içerisinde görüntülenecek metin veya React bileşeni (SVG vs.) */
+  text?: React.ReactNode;
+  /** Buton yazısının sol tarafına yerleştirilecek ikon bileşeni */
+  icon?: React.ReactNode;
+  /** Butona tıklandığında çalıştırılacak fonksiyon */
   onClick?: () => void;
+  /** HTML buton tipi: 'button', 'submit' veya 'reset' (Varsayılan: 'button') */
   type?: 'button' | 'submit' | 'reset';
-  variant?: 'primary' | 'danger' | 'outline' | 'ghost' | 'icon'; // YENİ: 'icon' varyasyonu
+  /** Butonun stil varyasyonu ('primary', 'danger', 'outline', 'ghost', 'icon') */
+  variant?: 'primary' | 'danger' | 'outline' | 'ghost' | 'icon';
+  /** Butonun boyut seçeneği ('normal', 'small', 'large') */
   size?: 'normal' | 'small' | 'large';
+  /** Butonun bulunduğu kapsayıcının tüm genişliğini kaplamasını sağlar (true/false) */
   fullWidth?: boolean;
+  /** Butonun etkileşime kapalı / pasif olma durumu (true/false) */
   disabled?: boolean;
+  /** Fare üzerine geldiğinde gösterilecek araç ipucu (tooltip) metni */
   title?: string;
-  style?: React.CSSProperties; // YENİ: Dışarıdan renk vb. müdahaleler için
-  'aria-label'?: string; // YENİ: Erişilebilirlik desteği
+  /** Özel CSS stil müdahaleleri için stil nesnesi */
+  style?: React.CSSProperties;
+  /** Ekran okuyucular için erişilebilirlik (accessibility) etiketi */
+  'aria-label'?: string;
 }
 
+/**
+ * Uygulama genelinde kullanılan yeniden kullanılabilir ve özelleştirilebilir Buton bileşeni.
+ * Farklı tema (variant), boyut (size), ikon ve tam genişlik (fullWidth) gibi özellikleri destekler.
+ */
 export default function Button({
   text,
   icon,
@@ -29,6 +47,7 @@ export default function Button({
   'aria-label': ariaLabel
 }: ButtonProps) {
 
+  // Prop verilerine göre birleştirilmiş dinamik CSS sınıflarını oluşturur
   const btnClasses = `custom-btn ${variant} ${size === 'small' ? 'small' : ''} ${size === 'large' ? 'large' : ''} ${fullWidth ? 'full-width' : ''}`;
 
   return (
@@ -41,11 +60,11 @@ export default function Button({
       style={style}
       aria-label={ariaLabel}
     >
-      {/* Eğer sol tarafa bir ikon verildiyse önce onu çiz */}
+      {/* Eğer sol tarafa bir ikon verildiyse kapsayıcı span içerisinde çiz */}
       {icon && <span className="btn-icon-wrapper">{icon}</span>}
 
-      {/* Eğer text (yazı veya tekil SVG) varsa onu çiz */}
+      {/* Eğer metin veya ana içerik tanımlandıysa span içerisinde çiz */}
       {text && <span>{text}</span>}
     </button>
   );
-}
+}

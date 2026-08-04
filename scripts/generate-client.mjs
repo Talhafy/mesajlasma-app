@@ -14,8 +14,10 @@
 import { writeFileSync } from 'fs';
 import { resolve } from 'path';
 
+// Üretilecek TypeScript dosyasının hedef dosya yolu
 const targetPath = resolve(process.cwd(), 'frontend/src/api/generatedClient.ts');
 
+// Üretilecek dosyaya yazılacak olan TypeScript kaynak koda ilişkin şablon metin
 const clientCode = `/**
  * ============================================================================
  * OTOMATİK ÜRETİLMİŞ FRONTEND API İSTEMCİ SDK'SI (Generated Client SDK)
@@ -152,5 +154,7 @@ export const generatedApiClient = {
 };
 `;
 
+// Üretilen kod metnini dosyaya yazar
 writeFileSync(targetPath, clientCode, 'utf8');
 console.log(`Generated frontend API client at: ${targetPath}`);
+

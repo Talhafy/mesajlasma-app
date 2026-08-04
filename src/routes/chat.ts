@@ -1,4 +1,12 @@
-// Uygulama için genel olarak gerekli olan apiler
+/**
+ * ============================================================================
+ * ANA SOHBET VE MESAJLAŞMA ROTALARI (Chat, Group & Message Routes)
+ * ============================================================================
+ * 
+ * Bu dosya; dosya yükleme (Direct-to-R2 & ClamAV karantina taraması), kullanıcı engelleme/listeleme,
+ * sohbet/grup yönetimi, mesaj gönderme/düzenleme/silme, okundu bilgisi gönderme ve mesaj arama
+ * gibi tüm mesajlaşma API uç noktalarını (endpoints) içerir.
+ */
 
 import express, { Response } from 'express';
 import { uploadSingleFile } from '../config/fileUpload';
@@ -28,11 +36,14 @@ const router = express.Router();
 // Bu router altındaki tüm mesaj, sohbet ve dosya endpoint'leri access token gerektirir.
 router.use(authenticateToken);
 
-// ==========================================
-// 1. DOSYA YÜKLEME VE GÜVENLİK API'LERİ
-// ==========================================
+// ============================================================================
+// 1. DOSYA YÜKLEME VE GÜVENLİK API'LERİ (File Storage & Scan)
+// ============================================================================
 
-// Direct-to-R2 Presigned Upload URL Alma Uç Noktası
+/**
+ * POST /api/v1/upload/presigned -> Doğrudan Cloudflare R2'ye Yükleme Adresi Üretme
+ * İstemciye önceden imzalanmış yükleme adresi (Presigned URL) verir ve varlığı QUARANTINE statüsünde kaydeder.
+ */
 router.post('/upload/presigned', async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const { fileName, contentType, sizeBytes } = req.body;
@@ -59,7 +70,10 @@ router.post('/upload/presigned', async (req: CustomRequest, res: Response): Prom
   }
 });
 
-// Direct Upload Karantina Onay ve Tarama Uç Noktası
+/**
+ * POST /api/v1/upload/confirm -> Doğrudan Yükleme Karantina Onayı ve Tarama
+ * Cloudflare R2'ye yüklenen dosyanın karantinadan çıkarılıp READY statüsüne geçirilmesini sağlar.
+ */
 router.post('/upload/confirm', async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const { fileKey } = req.body;
@@ -76,6 +90,10 @@ router.post('/upload/confirm', async (req: CustomRequest, res: Response): Promis
   }
 });
 
+/**
+ * POST /api/v1/upload -> Sunucu Üzerinden Güvenli Tekli Dosya Yükleme
+ * İmzayı doğrular, ClamAV antivirüs taraması yapar ve R2'ye yükleyip geçici URL döndürür.
+ */
 router.post('/upload', uploadSingleFile, async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     if (!req.file) return res.status(400).json({ error: "Dosya bulunamadı." });
@@ -85,7 +103,6 @@ router.post('/upload', uploadSingleFile, async (req: CustomRequest, res: Respons
     const originalNameDecoded = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
 
     // Dosya içeriğinin beyan edilen MIME tipi ile uyuşup uyuşmadığını doğrula.
-    // Bu sayede uzantısı sahtelenmiş zararlı dosyaları kesinlikle engelleriz.
     if (!verifyFileSignature(req.file.buffer, req.file.mimetype)) {
       logger.warn({
         event: 'security.file_signature_mismatch',
@@ -96,6 +113,7 @@ router.post('/upload', uploadSingleFile, async (req: CustomRequest, res: Respons
       return res.status(400).json({ error: 'Dosya içeriği beyan edilen dosya türü (MIME tipi) ile uyuşmuyor.', code: 'VALIDATION_ERROR' });
     }
 
+    // ClamAV Antivirüs Taraması
     await scanBufferForMalware(req.file.buffer);
 
     const fileKey = await uploadPrivateFile(
@@ -139,10 +157,11 @@ router.post('/upload', uploadSingleFile, async (req: CustomRequest, res: Respons
   }
 });
 
-// ==========================================
+// ============================================================================
 // 2. KULLANICI YÖNETİMİ API'LERİ (UserService)
-// ==========================================
+// ============================================================================
 
+/** GET /api/v1/users -> Rehberdeki Kullanıcıları Listeleme */
 router.get('/users', validateRequest({ query: chatSchemas.paginationQuery }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const currentUserId = getUserId(req);
@@ -156,6 +175,7 @@ router.get('/users', validateRequest({ query: chatSchemas.paginationQuery }), as
   }
 });
 
+/** GET /api/v1/users/:id -> Kullanıcı Profilini Getirme */
 router.get('/users/:id', validateRequest({ params: chatSchemas.idParams }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const targetId = getParam(req, 'id');
@@ -169,6 +189,7 @@ router.get('/users/:id', validateRequest({ params: chatSchemas.idParams }), asyn
   }
 });
 
+/** GET /api/v1/users/blocked/list -> Engellenen Kullanıcıları Listeleme */
 router.get('/users/blocked/list', async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const currentUserId = getUserId(req);
@@ -180,6 +201,7 @@ router.get('/users/blocked/list', async (req: CustomRequest, res: Response): Pro
   }
 });
 
+/** POST /api/v1/users/:id/block -> Kullanıcı Engelleme */
 router.post('/users/:id/block', validateRequest({ params: chatSchemas.idParams }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const currentUserId = getUserId(req);
@@ -194,6 +216,7 @@ router.post('/users/:id/block', validateRequest({ params: chatSchemas.idParams }
   }
 });
 
+/** DELETE /api/v1/users/:id/block -> Engeli Kaldırma */
 router.delete('/users/:id/block', validateRequest({ params: chatSchemas.idParams }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const currentUserId = getUserId(req);
@@ -207,10 +230,11 @@ router.delete('/users/:id/block', validateRequest({ params: chatSchemas.idParams
   }
 });
 
-// ==========================================
+// ============================================================================
 // 3. SOHBET VE GRUP YÖNETİMİ API'LERİ (ConversationService)
-// ==========================================
+// ============================================================================
 
+/** GET /api/v1/conversations -> Kullanıcının Sohbet Listesini Getirme */
 router.get('/conversations', validateRequest({ query: chatSchemas.paginationQuery }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const userId = getUserId(req);
@@ -224,6 +248,7 @@ router.get('/conversations', validateRequest({ query: chatSchemas.paginationQuer
   }
 });
 
+/** DELETE /api/v1/conversations/:id -> Sohbet Geçmişini Temizleme/Silme */
 router.delete('/conversations/:id', validateRequest({ params: chatSchemas.conversationIdParams }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const conversationId = getParam(req, 'id');
@@ -237,6 +262,7 @@ router.delete('/conversations/:id', validateRequest({ params: chatSchemas.conver
   }
 });
 
+/** PUT /api/v1/conversations/:id/pin -> Sohbeti Başa Sabitleme / Sabitlemeyi Kaldırma */
 router.put('/conversations/:id/pin', validateRequest({ params: chatSchemas.conversationIdParams }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const conversationId = getParam(req, 'id');
@@ -249,6 +275,7 @@ router.put('/conversations/:id/pin', validateRequest({ params: chatSchemas.conve
   }
 });
 
+/** PUT /api/v1/conversations/:id/archive -> Sohbeti Arşivleme / Arşivden Çıkarma */
 router.put('/conversations/:id/archive', validateRequest({ params: chatSchemas.conversationIdParams }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const conversationId = getParam(req, 'id');
@@ -261,6 +288,7 @@ router.put('/conversations/:id/archive', validateRequest({ params: chatSchemas.c
   }
 });
 
+/** PUT /api/v1/conversations/:id/mute -> Sohbet Bildirimlerini Sessize Alma */
 router.put('/conversations/:id/mute', validateRequest({ params: chatSchemas.conversationIdParams }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const conversationId = getParam(req, 'id');
@@ -273,6 +301,7 @@ router.put('/conversations/:id/mute', validateRequest({ params: chatSchemas.conv
   }
 });
 
+/** PUT /api/v1/conversations/:id/disappearing -> Kaybolan Mesaj Süresini Ayarlama */
 router.put('/conversations/:id/disappearing', validateRequest({
   params: chatSchemas.conversationIdParams,
   body: chatSchemas.disappearingMode
@@ -290,6 +319,7 @@ router.put('/conversations/:id/disappearing', validateRequest({
   }
 });
 
+/** POST /api/v1/conversations/direct -> Birebir Sohbet Başlatma */
 router.post('/conversations/direct', validateRequest({ body: chatSchemas.directConversation }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const { targetUserId } = req.body;
@@ -302,6 +332,7 @@ router.post('/conversations/direct', validateRequest({ body: chatSchemas.directC
   }
 });
 
+/** POST /api/v1/conversations/group -> Yeni Grup Sohbeti Oluşturma */
 router.post('/conversations/group', validateRequest({ body: chatSchemas.group }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const { name, participantIds } = req.body;
@@ -315,6 +346,7 @@ router.post('/conversations/group', validateRequest({ body: chatSchemas.group })
   }
 });
 
+/** GET /api/v1/conversations/groups -> Üye Olunan Grupları Listeleme */
 router.get('/conversations/groups', async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const currentUserId = getUserId(req);
@@ -326,6 +358,7 @@ router.get('/conversations/groups', async (req: CustomRequest, res: Response): P
   }
 });
 
+/** GET /api/v1/conversations/group/:id/participants -> Grup Üyelerini Listeleme */
 router.get('/conversations/group/:id/participants', validateRequest({ params: chatSchemas.groupParams }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const groupId = getParam(req, 'id');
@@ -338,6 +371,7 @@ router.get('/conversations/group/:id/participants', validateRequest({ params: ch
   }
 });
 
+/** PUT /api/v1/conversations/group/:id/name -> Grup Adını Değiştirme */
 router.put('/conversations/group/:id/name', validateRequest({
   params: chatSchemas.groupParams,
   body: chatSchemas.groupName
@@ -354,6 +388,7 @@ router.put('/conversations/group/:id/name', validateRequest({
   }
 });
 
+/** PUT /api/v1/conversations/group/:id/avatar -> Grup Profil Resmi Güncelleme */
 router.put('/conversations/group/:id/avatar', validateRequest({
   params: chatSchemas.groupParams,
   body: chatSchemas.groupAvatar
@@ -371,6 +406,7 @@ router.put('/conversations/group/:id/avatar', validateRequest({
   }
 });
 
+/** DELETE /api/v1/conversations/group/:id/participants/:userId -> Gruptan Üye Çıkarma / Gruptan Ayrılma */
 router.delete('/conversations/group/:id/participants/:userId', validateRequest({ params: chatSchemas.groupMemberParams }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const groupId = getParam(req, 'id');
@@ -385,6 +421,7 @@ router.delete('/conversations/group/:id/participants/:userId', validateRequest({
   }
 });
 
+/** POST /api/v1/conversations/group/:id/participants -> Gruba Yeni Üyeler Ekleme */
 router.post('/conversations/group/:id/participants', validateRequest({
   params: chatSchemas.groupParams,
   body: chatSchemas.addGroupMembers
@@ -402,6 +439,7 @@ router.post('/conversations/group/:id/participants', validateRequest({
   }
 });
 
+/** PUT /api/v1/conversations/group/:id/admin -> Grup Yöneticiliğini Devretme */
 router.put('/conversations/group/:id/admin', validateRequest({
   params: chatSchemas.groupParams,
   body: chatSchemas.transferAdmin
@@ -419,6 +457,7 @@ router.put('/conversations/group/:id/admin', validateRequest({
   }
 });
 
+/** DELETE /api/v1/conversations/group/:id -> Grubu Tamamen Silme (Yönetici Yetkisi) */
 router.delete('/conversations/group/:id', validateRequest({ params: chatSchemas.groupParams }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const groupId = getParam(req, 'id');
@@ -432,10 +471,11 @@ router.delete('/conversations/group/:id', validateRequest({ params: chatSchemas.
   }
 });
 
-// ==========================================
+// ============================================================================
 // 4. MESAJLAŞMA VE OKUNDU API'LERİ (MessageService)
-// ==========================================
+// ============================================================================
 
+/** POST /api/v1/messages -> Yeni Mesaj Gönderme */
 router.post('/messages', validateRequest({ body: chatSchemas.message }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const senderId = getUserId(req);
@@ -448,6 +488,7 @@ router.post('/messages', validateRequest({ body: chatSchemas.message }), async (
   }
 });
 
+/** GET /api/v1/conversations/:conversationId/messages -> Sohbet Mesajlarını Sayfalamalı (Cursor) Getirme */
 router.get('/conversations/:conversationId/messages', validateRequest({
   params: chatSchemas.conversationParams,
   query: chatSchemas.conversationMessagesQuery
@@ -465,6 +506,7 @@ router.get('/conversations/:conversationId/messages', validateRequest({
   }
 });
 
+/** POST /api/v1/conversations/:id/read -> Okundu Bilgisi Gönderme (Görüldü Atma) */
 router.post('/conversations/:id/read', validateRequest({
   params: chatSchemas.groupParams,
   body: chatSchemas.readConversation
@@ -482,6 +524,7 @@ router.post('/conversations/:id/read', validateRequest({
   }
 });
 
+/** GET /api/v1/unread-counts -> Sohbet Bazlı Okunmamış Mesaj Sayılarını Getirme */
 router.get('/unread-counts', async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const userId = getUserId(req);
@@ -493,6 +536,7 @@ router.get('/unread-counts', async (req: CustomRequest, res: Response): Promise<
   }
 });
 
+/** GET /api/v1/messages/search -> Mesaj Geçmişinde Arama Yapma */
 router.get('/messages/search', validateRequest({ query: chatSchemas.searchQuery }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const { q } = req.query;
@@ -505,6 +549,7 @@ router.get('/messages/search', validateRequest({ query: chatSchemas.searchQuery 
   }
 });
 
+/** GET /api/v1/messages/starred -> Yıldızlanmış Mesajları Listeleme */
 router.get('/messages/starred', async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const userId = getUserId(req);
@@ -516,6 +561,7 @@ router.get('/messages/starred', async (req: CustomRequest, res: Response): Promi
   }
 });
 
+/** PUT /api/v1/messages/:id -> Gönderilen Mesajı Düzenleme */
 router.put('/messages/:id', validateRequest({
   params: chatSchemas.idParams,
   body: chatSchemas.editMessage
@@ -533,6 +579,7 @@ router.put('/messages/:id', validateRequest({
   }
 });
 
+/** GET /api/v1/conversations/:conversationId/media -> Sohbet İçi Paylaşılan Medyaları Listeleme */
 router.get('/conversations/:conversationId/media', validateRequest({
   params: chatSchemas.conversationParams
 }), async (req: CustomRequest, res: Response): Promise<any> => {
@@ -547,6 +594,7 @@ router.get('/conversations/:conversationId/media', validateRequest({
   }
 });
 
+/** PUT /api/v1/messages/:id/pin -> Mesajı Başa Sabitleme / Sabitlemeyi Kaldırma */
 router.put('/messages/:id/pin', validateRequest({ params: chatSchemas.idParams }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const id = getParam(req, 'id');
@@ -560,6 +608,7 @@ router.put('/messages/:id/pin', validateRequest({ params: chatSchemas.idParams }
   }
 });
 
+/** PUT /api/v1/messages/:id/star -> Mesajı Yıldızlama / Yıldızı Kaldırma */
 router.put('/messages/:id/star', validateRequest({ params: chatSchemas.idParams }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const id = getParam(req, 'id');
@@ -573,6 +622,7 @@ router.put('/messages/:id/star', validateRequest({ params: chatSchemas.idParams 
   }
 });
 
+/** DELETE /api/v1/messages/:id -> Mesaj Silme (Benden Sil / Herkesten Sil) */
 router.delete('/messages/:id', validateRequest({
   params: chatSchemas.idParams,
   query: chatSchemas.deleteMessageQuery
@@ -591,3 +641,4 @@ router.delete('/messages/:id', validateRequest({
 });
 
 export default router;
+

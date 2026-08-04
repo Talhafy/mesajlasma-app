@@ -1,19 +1,38 @@
+/**
+ * ============================================================================
+ * ZAMANLANMIŞ MESAJ BİLDİRİM DİNLEYİCİSİ (Scheduled Message Delivery Listener)
+ * ============================================================================
+ * 
+ * Bu modül, arka planda çalışan zamanlanmış mesaj servisi (worker) tarafından
+ * gönderilme zamanı gelip veritabanına yazılan mesajların bildirimini alır.
+ * 
+ * PostgreSQL `LISTEN/NOTIFY` mekanizmasını kullanarak çoklu API sunucusu (multi-instance)
+ * mimarisinde tüm sunucu örneklerinin kendi Socket.IO istemcilerine anında bildirim 
+ * (`yeni_mesaj_geldi`) yayınlamasını sağlar.
+ */
+
 import type { PoolClient } from 'pg';
 import { Server } from 'socket.io';
 import { logger } from '../config/logger';
 import prisma, { pool } from '../db';
 import { serializeMessage } from '../services/messageService';
 
+/** PostgreSQL NOTIFY kanal adı */
 const CHANNEL = 'scheduled_message_delivered';
+
+/** Bağlantı kopması durumunda yeniden bağlanma bekleme süresi (5 saniye) */
 const RETRY_DELAY_MS = 5_000;
 
-// The worker cannot share an in-memory Socket.IO server with API instances. PostgreSQL LISTEN/NOTIFY
-// delivers a committed message id to every API instance, each of which emits to its own local sockets.
+/**
+ * PostgreSQL NOTIFY kanalını dinleyerek zamanlanmış mesajlar teslim edildikçe 
+ * Socket.IO odalarına yayını başlatan fonksiyon.
+ */
 export const startScheduledMessageDeliveryListener = (io: Server) => {
   let listener: PoolClient | null = null;
   let stopped = false;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
+  /** Bağlantı koptuğunda yeniden bağlanmayı zamanlayan yardımcı */
   const scheduleReconnect = () => {
     if (stopped || reconnectTimer) return;
     reconnectTimer = setTimeout(() => {
@@ -22,6 +41,7 @@ export const startScheduledMessageDeliveryListener = (io: Server) => {
     }, RETRY_DELAY_MS);
   };
 
+  /** Teslim edilen mesajı veritabanından çekip Socket.IO ile ilgili odalara yayınlar */
   const broadcastMessage = async (messageId: string) => {
     const message = await prisma.message.findUnique({
       where: { id: messageId },
@@ -50,6 +70,7 @@ export const startScheduledMessageDeliveryListener = (io: Server) => {
     io.to(rooms).emit('yeni_mesaj_geldi', await serializeMessage(message));
   };
 
+  /** PostgreSQL havuzundan istemci alıp LISTEN komutunu çalıştıran ana bağlantı döngüsü */
   const connect = async (): Promise<void> => {
     try {
       const nextListener = await pool.connect();
@@ -85,6 +106,7 @@ export const startScheduledMessageDeliveryListener = (io: Server) => {
 
   void connect();
 
+  // Temizlik (Cleanup) fonksiyonu - Dinleyiciyi kapatır
   return () => {
     stopped = true;
     if (reconnectTimer) clearTimeout(reconnectTimer);
@@ -98,3 +120,4 @@ export const startScheduledMessageDeliveryListener = (io: Server) => {
     logger.info({ event: 'socket.scheduled_message_listener_stopped' }, 'Scheduled message delivery listener stopped');
   };
 };
+

@@ -17,9 +17,12 @@ import type { Prisma } from '@prisma/client';
 import prisma from '../db';
 import { AppError } from '../errors/AppError';
 
+/** Veritabanı transaction istemcisi veya ana prisma örneği tipi */
 type ConversationAccessClient = Pick<Prisma.TransactionClient, 'participant'>;
 
-/** Katılımcı kaydını veritabanından sorgulayan dahili yardımcı fonksiyon */
+/**
+ * Katılımcı kaydını veritabanından ilişkili verileriyle (User & Conversation) sorgulayan dahili yardımcı fonksiyon.
+ */
 const findParticipant = (
   conversationId: string,
   userId: string,
@@ -90,3 +93,4 @@ export const requireHistoryParticipant = async (
   }
   return participant;
 };
+

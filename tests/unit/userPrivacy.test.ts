@@ -1,3 +1,12 @@
+/**
+ * ============================================================================
+ * KULLANICI GİZLİLİĞİ VE E-POSTA KORUMASI BİRİM TESTLERİ (User Privacy Tests)
+ * ============================================================================
+ * 
+ * Bu dosya; kullanıcı arama/rehber listelerinde ve başkasının profil detaylarında
+ * kullanıcı e-posta adreslerinin kamuya sızdırılmadığını (`email` alanının silindiğini) test eder.
+ */
+
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { prismaMock, createSignedFileUrlMock } = vi.hoisted(() => ({
@@ -30,6 +39,7 @@ describe('public user privacy', () => {
   });
 
   it('does not expose email addresses in the public user directory', async () => {
+    // Kamuya açık kullanıcı arama rehberinde e-posta adresleri kesinlikle gizlenmelidir
     prismaMock.user.findMany.mockResolvedValue([{
       id: 'user-2',
       username: 'deniz',
@@ -46,6 +56,7 @@ describe('public user privacy', () => {
   });
 
   it('does not expose email addresses in another user profile', async () => {
+    // Başka bir kullanıcının profili incelenirken e-posta adresi gizlenmelidir
     prismaMock.user.findUnique.mockResolvedValue({
       id: 'user-2',
       username: 'deniz',
@@ -65,3 +76,4 @@ describe('public user privacy', () => {
     });
   });
 });
+

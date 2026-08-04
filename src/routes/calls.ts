@@ -1,4 +1,11 @@
-//Livekit jwt koruması
+/**
+ * ============================================================================
+ * SESLİ VE GÖRÜNTÜLÜ ARAMA ROTALARI (LiveKit Call Token Routes)
+ * ============================================================================
+ * 
+ * Bu dosya, istemcilerin LiveKit WebRTC sunucusuna sesli veya görüntülü arama 
+ * başlatarak katılmasını sağlayan güvenli erişim jetonlarını (Call Token) üretir.
+ */
 
 import express, { Response } from 'express';
 import { authenticateToken, CustomRequest } from '../middleware/authMiddleware';
@@ -15,10 +22,16 @@ import {
 
 const router = express.Router();
 
-// Çağrı token'ı da diğer chat API'leri gibi JWT ile korunur.
-// Kullanıcı sadece üyesi olduğu konuşma için LiveKit odasına katılma token'ı alabilir.
+// Arama token rotalarının tamamı yetkilendirme (JWT Bearer Token) gerektirir.
 router.use(authenticateToken);
 
+/**
+ * POST /api/v1/calls/token -> Sesli/Görüntülü Görüşme Katılım Jetonu Üretme
+ * 
+ * 1. LiveKit konfigürasyonunun sunucuda hazır olup olmadığını doğrular (Yoksa 503 döner).
+ * 2. İsteği atan kullanıcının hedef sohbetin (birebir veya grup) aktif üyesi olduğunu kontrol eder.
+ * 3. Yalnızca bu sohbet/çağrı için geçerli olan süreli (TTL) bir LiveKit JWT token'ı üretip döndürür.
+ */
 router.post('/calls/token', validateRequest({ body: chatSchemas.callToken }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     // LiveKit ayarı eksikse mesajlaşma sistemi çalışmaya devam eder, yalnızca çağrı özelliği kapalı olur.
@@ -33,6 +46,7 @@ router.post('/calls/token', validateRequest({ body: chatSchemas.callToken }), as
       callType: CallType;
     };
 
+    // Kullanıcının sohbete üye olup olmadığını kontrol et
     const membership = await requireActiveParticipant(
       conversationId,
       userId,
@@ -43,7 +57,6 @@ router.post('/calls/token', validateRequest({ body: chatSchemas.callToken }), as
     }
 
     // LiveKit token yalnızca bu konuşma/callId için üretilen oda adına geçerlidir.
-    // bu endpoint üyelik kontrolü yapar.
     const livekit = await createConversationCallToken({
       conversationId,
       callId,

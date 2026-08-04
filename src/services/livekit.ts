@@ -1,3 +1,13 @@
+/**
+ * ============================================================================
+ * LIVEKIT WEBRTC VE SESLİ GÖRÜŞME SERVİSİ (LiveKit Audio/Video Call Service)
+ * ============================================================================
+ * 
+ * Bu servis, birebir sohbetlerde ve oyun kanallarındaki sesli/görüntülü aramalar
+ * için LiveKit WebRTC sunucusuyla iletişim kurar, dinamik odalar (room) oluşturur
+ * ve istemciler için katılım jetonları (JWT Video Grant) üretir.
+ */
+
 import { createHash } from 'crypto';
 import { AccessToken, RoomServiceClient, type VideoGrant } from 'livekit-server-sdk';
 import {
@@ -8,15 +18,21 @@ import {
 } from '../config/env';
 import { AppError } from '../errors/AppError';
 
+/** Arama Türü ('audio' -> Sesli, 'video' -> Görüntülü) */
 export type CallType = 'audio' | 'video';
 
-// LiveKit zorunlu altyapı değildir; ayarlar eksikse çağrı endpoint'i 503 döner.
-// Bu sayede mesajlaşma özellikleri çağrı servisi kurulmadan da geliştirilebilir.
+/**
+ * LiveKit konfigürasyonunun (URL, API Key, Secret) tam ve geçerli olup olmadığını denetler.
+ * Bu kontrol, LiveKit servisi kurulmamışsa uygulamanın hata vermesini engellemek için kullanılır.
+ */
 export const isLivekitConfigured = () => Boolean(livekitUrl && livekitApiKey && livekitApiSecret);
 
+/**
+ * LiveKit sunucusunda kullanılacak benzersiz ve güvenli oda adı türetir.
+ * Oda adında gerçek `conversationId` ve `callId` bilgilerini açık metin olarak tutmak yerine
+ * SHA-256 hash kullanarak uygulama içi ID'lerin tahmin edilmesini zorlaştırır.
+ */
 export const createLivekitRoomName = (conversationId: string, callId: string) => {
-  // Oda adında gerçek conversationId/callId'yi düz yazmak yerine hash kullanıyoruz.
-  // Böylece LiveKit tarafında oda adı tahmin edilse bile uygulama içi id'ler açıkça görünmez.
   const digest = createHash('sha256')
     .update(`${conversationId}:${callId}`)
     .digest('hex')
@@ -25,6 +41,11 @@ export const createLivekitRoomName = (conversationId: string, callId: string) =>
   return `mesajlasma-call-${digest}`;
 };
 
+/**
+ * Ses kanalları için kalıcı (persistent) veya otomatik kapanan LiveKit odasını garanti eder.
+ * Oda henüz oluşturulmamışsa yeni bir oda oluşturur, zaten mevcutsa odayı döner.
+ * Hatalı durumlarda `AppError` döndürerek servis katmanını bilgilendirir.
+ */
 export const ensurePersistentVoiceRoom = async ({
   conversationId,
   channelId,
@@ -50,13 +71,17 @@ export const ensurePersistentVoiceRoom = async ({
       metadata: JSON.stringify({ conversationId, channelId, kind: 'game-voice-channel' })
     });
   } catch (error) {
-    // Aynı anda iki katılım olursa ilk istek odayı oluşturmuş olabilir.
+    // Aynı anda iki katılım olursa ilk istek odayı oluşturmuş olabilir, bu durumda mevcut odayı al.
     const racedRoom = await roomService.listRooms([roomName]);
     if (racedRoom.length > 0) return racedRoom[0];
     throw error;
   }
 };
 
+/**
+ * Kullanıcının belirli bir sesli/görüntülü odaya katılması için imzalı LiveKit JWT erişim jetonu üretir.
+ * Kullanıcıya sadece ilgili oda için gerekli (VideoGrant) yetkilerini tanımlar.
+ */
 export const createConversationCallToken = async ({
   conversationId,
   callId,

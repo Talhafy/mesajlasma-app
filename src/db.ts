@@ -81,3 +81,4 @@ export const closeDatabasePool = async () => {
 };
 
 export default prisma;
+

@@ -1,3 +1,12 @@
+/**
+ * ============================================================================
+ * İLERİ SAYFALAMA VE BİLEŞİK SAYFALAMA TESTLERİ (Pagination Unit Tests)
+ * ============================================================================
+ * 
+ * Bu dosya, kullanıcı ve mesaj listelemede kullanılan determinitik cursor-based
+ * sayfalama mantığını ve çakışmasız bileşik sıralamayı (`createdAt`, `id`) test eder.
+ */
+
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.hoisted(() => {
@@ -44,6 +53,7 @@ describe('Deterministic Cursor & Composite Tuple Pagination unit tests', () => {
   });
 
   it('should paginate users with cursor and return nextCursor', async () => {
+    // Kullanıcı listesi istenen limitle çekilmeli ve bir sonraki cursor (nextCursor) dönmelidir
     userFindManyMock.mockResolvedValueOnce([
       { id: 'user-1', username: 'user1', avatarFileKey: null, lastSeenAt: new Date() },
       { id: 'user-2', username: 'user2', avatarFileKey: null, lastSeenAt: new Date() },
@@ -56,6 +66,7 @@ describe('Deterministic Cursor & Composite Tuple Pagination unit tests', () => {
   });
 
   it('should construct composite (createdAt, id) tuple OR query when cursor is passed in fetchMessages', async () => {
+    // Mesaj sayfalama sorgusu eşit zamanlı mesajlarda Atlamaları önlemek için (createdAt, id) bileşik sıralaması kullanmalıdır
     requireHistoryParticipantMock.mockResolvedValueOnce({
       joinedAt: new Date('2026-01-01T00:00:00Z'),
       leftAt: null
@@ -99,3 +110,4 @@ describe('Deterministic Cursor & Composite Tuple Pagination unit tests', () => {
     expect(res.items).toHaveLength(1);
   });
 });
+

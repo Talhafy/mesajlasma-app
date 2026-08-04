@@ -35,6 +35,7 @@ export const createRedisRateLimitStore = (prefix: string) => {
     // Redis istemcisini bağlantı adresi ile oluşturuyoruz
     const client = createClient({ url: redisUrl });
     
+    // Redis hata dinleyicisi
     client.on('error', (err) => {
       logger.error({ event: 'rate_limit.redis_error', err, prefix }, 'Redis rate limit store error');
     });
@@ -54,3 +55,4 @@ export const createRedisRateLimitStore = (prefix: string) => {
     return undefined;
   }
 };
+
