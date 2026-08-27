@@ -1,6 +1,9 @@
 -- CreateSchema
 CREATE SCHEMA IF NOT EXISTS "public";
 
+-- EnableExtension
+CREATE EXTENSION IF NOT EXISTS "pg_trgm";
+
 -- CreateEnum
 CREATE TYPE "UploadedAssetStatus" AS ENUM ('QUARANTINE', 'READY', 'ATTACHED', 'REJECTED');
 
