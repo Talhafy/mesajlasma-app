@@ -30,6 +30,7 @@ import {
 import { RoomEvent } from 'livekit-client';
 import type { TypedSocket } from '../../types/socket';
 import { api } from '../../api/httpClient';
+import { unwrapItems } from '../../api/pagination';
 import type { Conversation, GameChannel, GameChannelType, Message, User } from '../../types/chat';
 import AvatarViewerModal from '../Modals/AvatarViewerModal';
 import '@livekit/components-styles';
@@ -298,7 +299,7 @@ export default function GameHub({ currentUser, groups, users, socket, onExit, on
       : `/game/groups/${selectedGroupId}/channels/${selectedChannel.id}/messages`;
     setLoading(true);
     api.get(url).then((response) => {
-      if (!cancelled) setMessages(response.data);
+      if (!cancelled) setMessages(unwrapItems<Message>(response.data));
     }).catch(() => {
       if (!cancelled) setError('Mesajlar yüklenemedi.');
     }).finally(() => {

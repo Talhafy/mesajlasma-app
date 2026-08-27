@@ -25,8 +25,10 @@ import CreateGroupModal from './components/Modals/CreateGroupModal';
 import GroupSettingsModal from './components/Modals/GroupSettingsModal';
 import SettingsModal from './components/Modals/SettingsModal';
 import AvatarViewerModal from './components/Modals/AvatarViewerModal';
+import GameModeErrorBoundary from './components/UI/GameModeErrorBoundary';
 import { api } from './api/httpClient';
-import type { User } from './types/chat';
+import { unwrapItems } from './api/pagination';
+import type { Message, User } from './types/chat';
 import {
   closeRefreshSession,
   refreshAccessSession,
@@ -51,7 +53,7 @@ export default function App() {
   // EKRAN VE MOD DURUMLARI
   const [currentView, setCurrentView] = useState<'login' | 'register' | 'chat'>('login');
   const [appMode, setAppMode] = useState<'chat' | 'game'>(() => {
-    return (localStorage.getItem('appMode') as 'chat' | 'game') || 'chat';
+    return localStorage.getItem('appMode') === 'game' ? 'game' : 'chat';
   });
 
   const changeAppMode = (mode: 'chat' | 'game') => {
@@ -332,11 +334,12 @@ export default function App() {
     const oldestMessageId = messages[0].id;
     try {
       const res = await api.get(`/conversations/${activeConversation.id}/messages?cursor=${oldestMessageId}`);
-      if (res.data.length === 0) {
+      const olderMessages = unwrapItems<Message>(res.data);
+      if (olderMessages.length === 0) {
         setHasMore(false);
       } else {
         autoScrollRef.current = false;
-        setMessages((prev) => [...res.data, ...prev]);
+        setMessages((prev) => [...olderMessages, ...prev]);
       }
     } catch {
       console.error('Eski mesajlar yüklenemedi');
@@ -636,19 +639,21 @@ export default function App() {
       )}
 
       {appMode === 'game' && currentUser && (
-        <Suspense fallback={<div className="app-loading">Oyun alanı yükleniyor…</div>}>
-          <GameHub
-            currentUser={currentUser}
-            groups={groupsList}
-            users={usersList}
-            socket={socket}
-            onExit={() => changeAppMode('chat')}
-            onStartDirectChat={(targetUser: User) => {
-              changeAppMode('chat');
-              void startChat(targetUser);
-            }}
-          />
-        </Suspense>
+        <GameModeErrorBoundary onExit={() => changeAppMode('chat')}>
+          <Suspense fallback={<div className="app-loading">Oyun alanı yükleniyor…</div>}>
+            <GameHub
+              currentUser={currentUser}
+              groups={groupsList}
+              users={usersList}
+              socket={socket}
+              onExit={() => changeAppMode('chat')}
+              onStartDirectChat={(targetUser: User) => {
+                changeAppMode('chat');
+                void startChat(targetUser);
+              }}
+            />
+          </Suspense>
+        </GameModeErrorBoundary>
       )}
 
       {isGameModePromptOpen && (

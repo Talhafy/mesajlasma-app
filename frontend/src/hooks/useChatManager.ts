@@ -12,6 +12,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Conversation, Message, User } from '../types/chat';
 import type { TypedSocket } from '../types/socket';
 import { api } from '../api/httpClient';
+import { unwrapItems } from '../api/pagination';
 
 interface UseChatManagerOptions {
   socket: TypedSocket | null;
@@ -58,7 +59,7 @@ export function useChatManager({
   const fetchUsers = async () => {
     try {
       const res = await api.get('/users');
-      const enriched = res.data.map((user: User) => {
+      const enriched = unwrapItems<User>(res.data).map((user) => {
         const shouldHide = user.isBlocked || user.blockedByOther;
         return {
           ...user,
@@ -99,7 +100,7 @@ export function useChatManager({
   const fetchConversations = async () => {
     try {
       const res = await api.get('/conversations');
-      const merged = mergeLiveUsersIntoConversations(res.data).map((conversation) => {
+      const merged = mergeLiveUsersIntoConversations(unwrapItems<Conversation>(res.data)).map((conversation) => {
         if (!conversation.otherUser) return conversation;
         const shouldHide = conversation.otherUser.isBlocked || conversation.otherUser.blockedByOther;
         return {
@@ -126,7 +127,7 @@ export function useChatManager({
       setActiveConversation({ ...res.data, otherUser: chatUser });
       const msgs = await api.get(`/conversations/${res.data.id}/messages`);
       autoScrollRef.current = true;
-      setMessages(msgs.data);
+      setMessages(unwrapItems<Message>(msgs.data));
 
       if (currentUser) {
         await api.post(`/conversations/${res.data.id}/read`, { emitReceipt: currentUser.readReceiptsOn !== false });
@@ -146,7 +147,7 @@ export function useChatManager({
       setActiveConversation(group);
       const msgs = await api.get(`/conversations/${group.id}/messages`);
       autoScrollRef.current = true;
-      setMessages(msgs.data);
+      setMessages(unwrapItems<Message>(msgs.data));
 
       await api.post(`/conversations/${group.id}/read`, { emitReceipt: true });
       setUnreadCounts((prev) => ({ ...prev, [group.id]: 0 }));

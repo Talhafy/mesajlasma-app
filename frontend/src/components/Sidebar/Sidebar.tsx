@@ -241,8 +241,6 @@ export default function Sidebar({
     ? usersList.filter(user => user.username.toLowerCase().includes(searchTerm.toLowerCase()))
     : [];
 
-  const showLegacyContactsInMainList = false;
-
   /** Arama terimini tarayıcının yerel hafızasında (localStorage) saklar */
   const rememberSearchTerm = (term: string) => {
     const cleanTerm = term.trim();
@@ -773,4 +771,3 @@ export default function Sidebar({
     </div>
   );
 }
-
