@@ -6,7 +6,6 @@ export interface Message {
   sender?: { username: string };
   readByIds?: string[];
   conversationId: string;
-  gameChannelId?: string | null;
   conversation?: Conversation;
   createdAt?: string;
   isPinned?: boolean;
@@ -23,19 +22,6 @@ export interface Message {
   editedAt?: string;
   expiresAt?: string;
   isOffline?: boolean;
-}
-
-export type GameChannelType = 'TEXT' | 'VOICE';
-
-export interface GameChannel {
-  id: string;
-  conversationId: string;
-  createdById: string;
-  name: string;
-  type: GameChannelType;
-  position: number;
-  maxParticipants?: number | null;
-  createdAt: string;
 }
 
 export interface User {

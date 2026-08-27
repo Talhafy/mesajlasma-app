@@ -5,7 +5,7 @@
  * 
  * Bu dosya; Socket.IO bağlantılarının kimlik doğrulamasını (JWT Handshake),
  * inaktivite zaman aşımını ve modüler soket alt dinleyicilerinin 
- * (`registerChatSocketHandlers`, `registerVoiceSocketHandlers`, `registerCallSocketHandlers`)
+ * (`registerChatSocketHandlers`, `registerCallSocketHandlers`)
  * kaydını yönetir.
  */
 
@@ -18,11 +18,9 @@ import {
   markUserOfflineIfDisconnected,
   markUserOnline,
   presenceTtlMs,
-  touchUserPresence,
-  touchVoicePresence
+  touchUserPresence
 } from './realtimeState';
 import { registerChatSocketHandlers, type SocketUser } from './handlers/chatHandlers';
-import { registerVoiceSocketHandlers } from './handlers/voiceHandlers';
 import { registerCallSocketHandlers } from './handlers/callHandlers';
 
 /** Soket inaktivite zaman aşımı süresi (3 Saat) */
@@ -57,8 +55,6 @@ export const registerSocketHandlers = (io: Server) => {
   // SOKET BAĞLANTISI BAŞLADIĞINDA
   io.on('connection', async (socket) => {
     const currentUser = socket.data.user as SocketUser;
-    const activeVoicePresenceRef = { current: null as { conversationId: string; channelId: string } | null };
-
     // İNAKTİVİTE VE TOKEN ZAMAN AŞIMI YÖNETİMİ
     let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
     const remainingSessionMs = () => Math.max(0, Math.min(
@@ -78,7 +74,6 @@ export const registerSocketHandlers = (io: Server) => {
         socket.disconnect(true);
       }, timeoutMs);
       void touchUserPresence(currentUser.userId, Math.min(presenceTtlMs, timeoutMs));
-      if (activeVoicePresenceRef.current) void touchVoicePresence(socket.id, Math.min(presenceTtlMs, timeoutMs));
     };
     resetInactivityTimer();
 
@@ -101,13 +96,11 @@ export const registerSocketHandlers = (io: Server) => {
 
     // ALT HANDLER'LARIN BAĞLANMASI
     registerChatSocketHandlers(socket, currentUser, resetInactivityTimer);
-    const { leaveVoiceChannel } = registerVoiceSocketHandlers(socket, currentUser, resetInactivityTimer, remainingSessionMs, activeVoicePresenceRef);
     registerCallSocketHandlers(io, socket, currentUser, resetInactivityTimer);
 
     // SOKET KAPANMASI VEYA KOPMASI (Socket Disconnect)
     socket.on('disconnect', async () => {
       logger.info({ event: 'socket.disconnected', userId: currentUser.userId, socketId: socket.id }, 'Socket disconnected');
-      await leaveVoiceChannel();
       if (inactivityTimer) clearTimeout(inactivityTimer);
       if (!await markUserOfflineIfDisconnected(io, currentUser.userId, socket.id)) return;
       const lastSeenAt = new Date();

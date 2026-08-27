@@ -78,16 +78,6 @@ export interface MessageDto {
   createdAt: string;
 }
 
-/** Oyun Kanalı Veri Transfer Nesnesi (Game Channel DTO) */
-export interface GameChannelDto {
-  id: string;
-  conversationId: string;
-  name: string;
-  type: 'TEXT' | 'VOICE';
-  position: number;
-  maxParticipants?: number | null;
-}
-
 /**
  * TİP GÜVENLİ İSTEMCİ UÇ NOKTALARI (Generated API Client Methods)
  */
@@ -141,15 +131,6 @@ export const generatedApiClient = {
       api.put<MessageDto>(\`/messages/\${id}/pin\`),
     star: (id: string) =>
       api.put<MessageDto>(\`/messages/\${id}/star\`)
-  },
-  /** Oyun Kanalı Servisleri */
-  gameChannels: {
-    list: (groupId: string) =>
-      api.get<{ group: any; channels: GameChannelDto[] }>(\`/game/groups/\${groupId}/channels\`),
-    create: (groupId: string, data: { name: string; type: 'TEXT' | 'VOICE'; maxParticipants?: number | null }) =>
-      api.post<GameChannelDto>(\`/game/groups/\${groupId}/channels\`, data),
-    delete: (groupId: string, channelId: string) =>
-      api.delete(\`/game/groups/\${groupId}/channels/\${channelId}\`)
   }
 };
 `;
@@ -157,4 +138,3 @@ export const generatedApiClient = {
 // Üretilen kod metnini dosyaya yazar
 writeFileSync(targetPath, clientCode, 'utf8');
 console.log(`Generated frontend API client at: ${targetPath}`);
-

@@ -59,7 +59,7 @@ export const listConversations = async (userId: string, cursor?: string, limit: 
             }
           },
           messages: {
-            where: { gameChannelId: null, deletions: { none: { userId } }, ...visibleMessageWhere() },
+            where: { deletions: { none: { userId } }, ...visibleMessageWhere() },
             orderBy: { createdAt: 'desc' },
             take: 1,
             include: {
@@ -121,7 +121,6 @@ export const listConversations = async (userId: string, cursor?: string, limit: 
         lastMessageRaw = await prisma.message.findFirst({
           where: {
             conversationId: conversation.id,
-            gameChannelId: null,
             deletions: { none: { userId } },
             ...visibleMessageWhere(),
             createdAt: {
@@ -914,4 +913,3 @@ export const deleteConversationHistory = async (conversationId: string, userId: 
 
   return { message: "Sohbet başarıyla temizlendi." };
 };
-

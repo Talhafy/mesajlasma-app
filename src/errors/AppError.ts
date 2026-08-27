@@ -26,7 +26,6 @@ export type AppErrorCode =
   // Sohbet ve Mesajlaşma Kodları
   | 'CONVERSATION_NOT_FOUND'      // Sohbet oturumu bulunamadı
   | 'MESSAGE_FORBIDDEN'           // Mesaj üzerinde işlem yetkisi yok (örn: başkasının mesajını silme)
-  | 'CHANNEL_NOT_FOUND'           // Oyun kanalı bulunamadı
   | 'CHANNEL_FORBIDDEN'           // Kanala erişim yetkisi yok
   | 'CHANNEL_LIMIT_REACHED'       // Kanal katılımcı sınırı doldu
   | 'CHANNEL_DUPLICATE'           // Aynı isimde kanal zaten var

@@ -33,7 +33,6 @@ import authRoutes from './routes/auth';
 import callRoutes from './routes/calls';
 import chatRoutes from './routes/chat';
 import healthRoutes from './routes/health';
-import gameRoutes from './routes/game';
 import scheduledMessageRoutes from './routes/scheduledMessages';
 import userRoutes from './routes/user';
 import docsRoutes from './routes/docs';
@@ -82,7 +81,6 @@ v1Router.use(globalApiLimiter);
 v1Router.use(authRoutes);
 v1Router.use(healthRoutes);
 v1Router.use(callRoutes);
-v1Router.use(gameRoutes);
 v1Router.use(chatRoutes);
 v1Router.use(scheduledMessageRoutes);
 v1Router.use(docsRoutes);
@@ -164,4 +162,3 @@ process.on('uncaughtException', async (error) => {
   await flushLogs();
   process.exit(1);
 });
-

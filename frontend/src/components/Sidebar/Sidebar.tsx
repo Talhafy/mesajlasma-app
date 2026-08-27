@@ -53,8 +53,6 @@ interface SidebarProps {
   typingByConversation: Record<string, string>;
   /** Kullanıcının arama geçmişi listesi */
   callHistory: CallHistoryItem[];
-  /** Oyun modu penceresini açan fonksiyon */
-  onOpenGameMode: () => void;
   /** Kullanıcının kendi avatarını büyük boyutta görüntülemesini sağlayan fonksiyon */
   onViewOwnAvatar: () => void;
 }
@@ -67,7 +65,7 @@ interface SidebarProps {
 export default function Sidebar({
   currentUser, conversationList, usersList, activeConversation, selectedUser,
   unreadCounts, isDarkMode, setIsDarkMode, startGroupChat, startChat, setIsGroupModalOpen, setIsSettingsOpen,
-  socketConnectionStatus, onReconnectRealtime, typingByConversation, callHistory, onOpenGameMode, onViewOwnAvatar
+  socketConnectionStatus, onReconnectRealtime, typingByConversation, callHistory, onViewOwnAvatar
 }: SidebarProps) {
   // --- DURUM DEĞİŞKENLERİ (STATE) ---
   /** Genel arama kutusuna yazılan arama terimi */
@@ -362,16 +360,6 @@ export default function Sidebar({
         </div>
 
         <div style={{ flex: 1 }} />
-
-        {/* Oyun Modu Butonu */}
-        <button
-          title="Oyun modu"
-          aria-label="Oyun modu"
-          onClick={onOpenGameMode}
-          style={{ width: '38px', height: '38px', borderRadius: '12px', border: 'none', background: 'transparent', color: iconColor, cursor: 'pointer', display: 'grid', placeItems: 'center' }}
-        >
-          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8.5 8h7a5 5 0 0 1 4.7 3.3l1.3 3.7a3 3 0 0 1-5.1 3l-1.5-1.8H9.1L7.6 18a3 3 0 0 1-5.1-3l1.3-3.7A5 5 0 0 1 8.5 8ZM7 11v4m-2-2h4m8-1h.01M19 14h.01" /></svg>
-        </button>
 
         {/* Aramalar Görünümü Butonu */}
         <button

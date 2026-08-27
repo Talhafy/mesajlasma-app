@@ -157,24 +157,21 @@ export const serializeMessage = async (msg: MessageWithReads, cursorReadByIds: s
  */
 export const serializeMessages = async (messages: MessageWithReads[]) => {
   if (messages.length === 0) return [];
-  const windows = [...new Map(messages.map((message) => [
-    `${message.conversationId}:${message.gameChannelId || ''}`,
-    { conversationId: message.conversationId, channelKey: message.gameChannelId || '' }
-  ])).values()];
+  const conversationIds = [...new Set(messages.map((message) => message.conversationId))];
   const states = await prisma.conversationReadState.findMany({
-    where: { OR: windows },
-    select: { userId: true, conversationId: true, channelKey: true, lastReadAt: true }
+    where: { conversationId: { in: conversationIds } },
+    select: { userId: true, conversationId: true, lastReadAt: true }
   });
   const statesByWindow = new Map<string, typeof states>();
   for (const state of states) {
-    const key = `${state.conversationId}:${state.channelKey}`;
+    const key = state.conversationId;
     const current = statesByWindow.get(key) || [];
     current.push(state);
     statesByWindow.set(key, current);
   }
 
   return Promise.all(messages.map((message) => {
-    const stateReaders = (statesByWindow.get(`${message.conversationId}:${message.gameChannelId || ''}`) || [])
+    const stateReaders = (statesByWindow.get(message.conversationId) || [])
       .filter((state) => state.userId !== message.senderId && state.lastReadAt >= message.createdAt)
       .map((state) => state.userId);
     return serializeMessage(message, stateReaders);
@@ -197,11 +194,10 @@ export const sendMessage = async (
     fileKey?: string | null;
     fileType?: string | null;
     fileName?: string | null;
-    gameChannelId?: string | null;
   },
   io: any
 ) => {
-  const { conversationId, clientId, content, replyToId, isForwarded, fileKey, fileType, fileName, gameChannelId } = payload;
+  const { conversationId, clientId, content, replyToId, isForwarded, fileKey, fileType, fileName } = payload;
 
   const membership = await requireActiveParticipant(
     conversationId,
@@ -219,16 +215,6 @@ export const sendMessage = async (
   }
   if (!conversation.participants.some((participant: any) => participant.userId === senderId && participant.isActive)) {
     throw AppError.forbidden('CONVERSATION_FORBIDDEN', 'Bu sohbete mesaj gönderme yetkiniz yok.');
-  }
-
-  if (gameChannelId) {
-    const channel = await prisma.gameChannel.findFirst({
-      where: { id: gameChannelId, conversationId, type: 'TEXT' },
-      select: { id: true }
-    });
-    if (!conversation.isGroup || !channel) {
-      throw AppError.notFound('CHANNEL_NOT_FOUND', 'Yazı kanalı bulunamadı.');
-    }
   }
 
   // Birebir sohbetlerde engelleme durumları kontrol edilir
@@ -257,7 +243,6 @@ export const sendMessage = async (
       where: {
         id: String(replyToId),
         conversationId,
-        gameChannelId: gameChannelId || null,
         createdAt: { gte: membership.joinedAt }
       },
       select: { id: true }
@@ -275,7 +260,6 @@ export const sendMessage = async (
         content: content.trim(),
         senderId,
         conversationId,
-        gameChannelId: gameChannelId || null,
         replyToId: replyToId || null,
         isForwarded: isForwarded || false,
         fileKey: resolvedFileKey,
@@ -326,7 +310,7 @@ export const sendMessage = async (
   if (io) {
     const targetRooms = conversation.participants.filter((p: any) => p.isActive).map((p) => p.userId);
     targetRooms.push(conversationId);
-    io.to(targetRooms).emit(gameChannelId ? 'game:message' : 'yeni_mesaj_geldi', responseMessage);
+    io.to(targetRooms).emit('yeni_mesaj_geldi', responseMessage);
   }
 
   return responseMessage;
@@ -363,7 +347,6 @@ export const fetchMessages = async (conversationId: string, userId: string, curs
 
   const whereClause: any = {
     conversationId,
-    gameChannelId: null,
     deletions: { none: { userId } },
     ...visibleMessageWhere(),
     createdAt: {
@@ -413,8 +396,7 @@ export const searchMessages = async (userId: string, searchTerm: string) => {
       AND p."isActive" = true
       AND m."createdAt" >= p."joinedAt"
     INNER JOIN "Conversation" c ON c."id" = m."conversationId" AND c."isDeleted" = false
-    WHERE m."gameChannelId" IS NULL
-      AND m."content" ILIKE ${`%${term}%`}
+    WHERE m."content" ILIKE ${`%${term}%`}
       AND (m."expiresAt" IS NULL OR m."expiresAt" > NOW())
       AND NOT EXISTS (
         SELECT 1 FROM "MessageDeletion" d
@@ -460,7 +442,6 @@ export const fetchStarredMessages = async (userId: string) => {
 
   const messages = await prisma.message.findMany({
     where: {
-      gameChannelId: null,
       stars: { some: { userId } },
       deletions: { none: { userId } },
       AND: [
@@ -549,7 +530,6 @@ export const fetchConversationMedia = async (conversationId: string, userId: str
   const records = await prisma.message.findMany({
     where: {
       conversationId,
-      gameChannelId: null,
       deletions: { none: { userId } },
       AND: [
         visibleMessageWhere(),
@@ -739,8 +719,7 @@ export const markAsRead = async (
   userId: string,
   lastReadMessageId?: string,
   emitReceipt?: boolean,
-  io?: any,
-  gameChannelId?: string | null
+  io?: any
 ) => {
   const membership = await requireActiveParticipant(
     conversationId,
@@ -751,7 +730,7 @@ export const markAsRead = async (
   let lastReadMessage = null;
   if (lastReadMessageId) {
     lastReadMessage = await prisma.message.findFirst({
-      where: { id: lastReadMessageId, conversationId, gameChannelId: gameChannelId || null },
+      where: { id: lastReadMessageId, conversationId },
       select: { id: true, createdAt: true }
     });
     if (!lastReadMessage) {
@@ -762,10 +741,9 @@ export const markAsRead = async (
     }
   }
 
-  const channelKey = gameChannelId || '';
   const readCursor = lastReadMessage?.createdAt || new Date();
   const previousReadState = await prisma.conversationReadState.findUnique({
-    where: { userId_conversationId_channelKey: { userId, conversationId, channelKey } },
+    where: { userId_conversationId: { userId, conversationId } },
     select: { lastReadAt: true }
   });
   const previousReadAt = previousReadState?.lastReadAt || membership.joinedAt;
@@ -774,7 +752,6 @@ export const markAsRead = async (
     ? await prisma.message.count({
     where: {
       conversationId,
-      gameChannelId: gameChannelId || null,
       senderId: { not: userId },
       createdAt: {
         gt: previousReadAt,
@@ -788,10 +765,10 @@ export const markAsRead = async (
   // Monotonik cursor: iki sekmenin eş zamanlı read isteği daha eski bir konuma geri döndüremez.
   await prisma.$executeRaw`
     INSERT INTO "ConversationReadState"
-      ("id", "userId", "conversationId", "channelKey", "lastReadAt", "lastReadMessageId", "updatedAt")
+      ("id", "userId", "conversationId", "lastReadAt", "lastReadMessageId", "updatedAt")
     VALUES
-      (${crypto.randomUUID()}, ${userId}, ${conversationId}, ${channelKey}, ${readCursor}, ${lastReadMessageId || null}, CURRENT_TIMESTAMP)
-    ON CONFLICT ("userId", "conversationId", "channelKey") DO UPDATE
+      (${crypto.randomUUID()}, ${userId}, ${conversationId}, ${readCursor}, ${lastReadMessageId || null}, CURRENT_TIMESTAMP)
+    ON CONFLICT ("userId", "conversationId") DO UPDATE
     SET
       "lastReadAt" = GREATEST("ConversationReadState"."lastReadAt", EXCLUDED."lastReadAt"),
       "lastReadMessageId" = CASE
@@ -805,8 +782,7 @@ export const markAsRead = async (
     io.to(conversationId).emit('mesajlar_okundu', {
       conversationId,
       readByUserId: userId,
-      lastReadMessageId: lastReadMessageId || null,
-      gameChannelId: gameChannelId || null
+      lastReadMessageId: lastReadMessageId || null
     });
   }
 
@@ -840,10 +816,8 @@ export const getUnreadCounts = async (userId: string) => {
     LEFT JOIN "ConversationReadState" rs
       ON rs."userId" = p."userId"
       AND rs."conversationId" = p."conversationId"
-      AND rs."channelKey" = ''
     LEFT JOIN "Message" m
       ON m."conversationId" = p."conversationId"
-      AND m."gameChannelId" IS NULL
       AND m."senderId" <> ${userId}
       AND m."createdAt" >= p."joinedAt"
       AND (rs."lastReadAt" IS NULL OR m."createdAt" > rs."lastReadAt")

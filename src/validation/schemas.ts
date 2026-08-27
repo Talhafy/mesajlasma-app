@@ -146,39 +146,3 @@ export const chatSchemas = {
   editMessage: z.object({ content: z.string().trim().min(1).max(10_000) }).strict(),
   deleteMessageQuery: z.object({ forEveryone: z.enum(['true', 'false']).optional() })
 };
-
-/** Oyun Grupları ve Kanalları Şemaları */
-export const gameSchemas = {
-  groupParams: z.object({ groupId: uuid }),
-  channelParams: z.object({ groupId: uuid, channelId: uuid }),
-  channelIdParams: z.object({ channelId: uuid }),
-  channelMessagesQuery: z.object({ cursor: uuid.optional() }),
-  createChannel: z.object({
-    name: z.string().trim().min(2).max(40).regex(/^[\p{L}\p{N} _.-]+$/u),
-    type: z.enum(['TEXT', 'VOICE']),
-    maxParticipants: z.number().int().min(2).max(25).optional().nullable()
-  }).strict().superRefine((data, context) => {
-    // İş kuralı: Yazı kanalları katılımcı sınırı desteklemez.
-    if (data.type === 'TEXT' && data.maxParticipants != null) {
-      context.addIssue({ code: 'custom', path: ['maxParticipants'], message: 'Yazı kanallarında katılımcı limiti kullanılamaz.' });
-    }
-  }),
-  channelMessage: z.object({
-    clientId,
-    content: messageContent,
-    ...fileFields
-  }).strict().refine(
-    (data) => Boolean(data.content.trim() || data.fileKey),
-    { message: 'Mesaj içeriği veya dosya gereklidir.' }
-  ),
-  readChannel: z.object({
-    lastReadMessageId: uuid.optional()
-  }).strict(),
-  updateChannel: z.object({
-    name: z.string().trim().min(2).max(40).regex(/^[\p{L}\p{N} _.-]+$/u).optional(),
-    maxParticipants: z.number().int().min(2).max(25).optional().nullable()
-  }).strict(),
-  reorderChannels: z.object({
-    orderedIds: z.array(uuid)
-  }).strict()
-};

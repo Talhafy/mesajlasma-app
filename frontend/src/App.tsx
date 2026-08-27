@@ -3,8 +3,8 @@
  * ANA UYGULAMA BİLEŞENİ (App.tsx - Modüler Orkestratör)
  * ============================================================================
  * 
- * Bu bileşen; uygulamanın görünüm durumlarını (Auth / Chat / Game), modalları 
- * ve alt bileşenleri (Sidebar, ChatArea, GameHub, CallModal) birleştiren 
+ * Bu bileşen; uygulamanın görünüm durumlarını (Auth / Chat), modalları
+ * ve alt bileşenleri (Sidebar, ChatArea, CallModal) birleştiren
  * modüler bir orkestratördür.
  * 
  * İş mantığı 3 ana Custom Hook'a devredilmiştir:
@@ -25,7 +25,6 @@ import CreateGroupModal from './components/Modals/CreateGroupModal';
 import GroupSettingsModal from './components/Modals/GroupSettingsModal';
 import SettingsModal from './components/Modals/SettingsModal';
 import AvatarViewerModal from './components/Modals/AvatarViewerModal';
-import GameModeErrorBoundary from './components/UI/GameModeErrorBoundary';
 import { api } from './api/httpClient';
 import { unwrapItems } from './api/pagination';
 import type { Message, User } from './types/chat';
@@ -42,7 +41,6 @@ import { useCallManager, type CallHistoryItem } from './hooks/useCallManager';
 import { useChatManager } from './hooks/useChatManager';
 
 // İhtiyaç anında yüklenen bileşenler (Lazy Loading)
-const GameHub = lazy(() => import('./components/GameHub/GameHub'));
 const CallModal = lazy(() => import('./components/Call/CallModal'));
 
 export type { CallHistoryItem };
@@ -52,16 +50,6 @@ export default function App() {
 
   // EKRAN VE MOD DURUMLARI
   const [currentView, setCurrentView] = useState<'login' | 'register' | 'chat'>('login');
-  const [appMode, setAppMode] = useState<'chat' | 'game'>(() => {
-    return localStorage.getItem('appMode') === 'game' ? 'game' : 'chat';
-  });
-
-  const changeAppMode = (mode: 'chat' | 'game') => {
-    setAppMode(mode);
-    localStorage.setItem('appMode', mode);
-  };
-  const [isGameModePromptOpen, setIsGameModePromptOpen] = useState(false);
-
   // KULLANICI DURUMU
   const [currentUser, setCurrentUser] = useState<User | null>(null);
 
@@ -97,7 +85,6 @@ export default function App() {
     setIsSettingsOpen(false);
     setIsGroupModalOpen(false);
     setIsGroupSettingsOpen(false);
-    setAppMode('chat');
     setCurrentView('login');
   };
 
@@ -570,7 +557,7 @@ export default function App() {
 
   return (
     <div className={`app-container ${activeConversation || selectedUser ? 'chat-active' : ''}`}>
-      {appMode === 'chat' && currentUser && (
+      {currentUser && (
         <Sidebar
           currentUser={currentUser}
           conversationList={conversationList}
@@ -588,12 +575,11 @@ export default function App() {
           onReconnectRealtime={reconnectRealtime}
           typingByConversation={typingByConversation}
           callHistory={callHistory}
-          onOpenGameMode={() => setIsGameModePromptOpen(true)}
           onViewOwnAvatar={() => setIsAvatarViewerOpen(true)}
         />
       )}
 
-      {appMode === 'chat' && currentUser && (
+      {currentUser && (
         <ChatArea
           currentUser={currentUser}
           activeConversation={activeConversation}
@@ -636,35 +622,6 @@ export default function App() {
           onSetDisappearingMode={handleSetDisappearingMode}
           onStartCall={startConversationCall}
         />
-      )}
-
-      {appMode === 'game' && currentUser && (
-        <GameModeErrorBoundary onExit={() => changeAppMode('chat')}>
-          <Suspense fallback={<div className="app-loading">Oyun alanı yükleniyor…</div>}>
-            <GameHub
-              currentUser={currentUser}
-              groups={groupsList}
-              users={usersList}
-              socket={socket}
-              onExit={() => changeAppMode('chat')}
-              onStartDirectChat={(targetUser: User) => {
-                changeAppMode('chat');
-                void startChat(targetUser);
-              }}
-            />
-          </Suspense>
-        </GameModeErrorBoundary>
-      )}
-
-      {isGameModePromptOpen && (
-        <div className="game-mode-prompt-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setIsGameModePromptOpen(false); }}>
-          <section className="game-mode-prompt" role="dialog" aria-modal="true" aria-labelledby="game-mode-title">
-            <div className="game-mode-prompt-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 8h7a5 5 0 0 1 4.7 3.3l1.3 3.7a3 3 0 0 1-5.1 3l-1.5-1.8H9.1L7.6 18a3 3 0 0 1-5.1-3l1.3-3.7A5 5 0 0 1 8.5 8ZM7 11v4m-2-2h4m8-1h.01M19 14h.01" /></svg></div>
-            <h2 id="game-mode-title">Oyun moduna geçilsin mi?</h2>
-            <p>Grubuna bağlı yazı ve kalıcı ses kanallarını açabilir, arkadaşlarınla anında konuşabilirsin.</p>
-            <div className="game-mode-prompt-actions"><button onClick={() => setIsGameModePromptOpen(false)}>Vazgeç</button><button className="primary" onClick={() => { setIsGameModePromptOpen(false); changeAppMode('game'); }}>Oyun moduna geç</button></div>
-          </section>
-        </div>
       )}
 
       {isGroupModalOpen && (

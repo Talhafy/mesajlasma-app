@@ -1,13 +1,10 @@
 import type { Socket } from 'socket.io-client';
-import type { Message, User, Conversation, GameChannel } from './chat';
+import type { Message, User, Conversation } from './chat';
 
 export interface ClientToServerEvents {
   client_activity: () => void;
-  'game:voice-presence-snapshot': (groupId: string) => void;
-  'game:voice-presence': (payload: { action: 'join' | 'leave'; conversationId: string; channelId: string }) => void;
-  'game:voice-speaking': (payload: { channelId: string; isSpeaking: boolean }) => void;
   odaya_katil: (conversationId: string, acknowledge?: (result: { ok: boolean; error?: string }) => void) => void;
-  typing_changed: (payload: { conversationId: string; isTyping: boolean; gameChannelId?: string | null }) => void;
+  typing_changed: (payload: { conversationId: string; isTyping: boolean }) => void;
   voice_recording_changed: (payload: { conversationId: string; isRecording: boolean }) => void;
   'call:invite': (payload: { conversationId: string; callId: string; callType: 'audio' | 'video' }, acknowledge?: (result: { ok: boolean; error?: string }) => void) => void;
   'call:accepted': (payload: { conversationId: string; callId: string; callType: 'audio' | 'video' }, acknowledge?: (result: { ok: boolean; error?: string }) => void) => void;
@@ -20,11 +17,7 @@ export interface ServerToClientEvents {
   'auth:session-revoked': (payload: { reason: string }) => void;
   presence_snapshot: (payload: { onlineUserIds: string[] }) => void;
   presence_changed: (payload: { userId: string; isOnline: boolean; lastSeenAt?: string | null }) => void;
-  'game:voice-presence-snapshot': (payload: { groupId: string; presences: Array<{ conversationId: string; channelId: string; userId: string; username: string; isSpeaking: boolean }> }) => void;
-  'game:voice-presence-joined': (payload: { conversationId: string; channelId: string; userId: string; username: string; isSpeaking: boolean }) => void;
-  'game:voice-presence-left': (payload: { conversationId: string; channelId: string; userId: string }) => void;
-  'game:voice-speaking': (payload: { conversationId: string; channelId: string; userId: string; isSpeaking: boolean }) => void;
-  typing_changed: (payload: { conversationId: string; userId: string; username: string; isTyping: boolean; gameChannelId: string | null }) => void;
+  typing_changed: (payload: { conversationId: string; userId: string; username: string; isTyping: boolean }) => void;
   voice_recording_changed: (payload: { conversationId: string; userId: string; username: string; isRecording: boolean }) => void;
   'call:incoming': (payload: { conversationId: string; callId: string; callType: 'audio' | 'video'; isGroup: boolean; conversationName: string | null; caller: { id: string; username: string } }) => void;
   'call:accepted': (payload: { conversationId: string; callId: string; callType: 'audio' | 'video'; user: { id: string; username: string } }) => void;
@@ -53,11 +46,6 @@ export interface ServerToClientEvents {
     deletedGroupIds: string[];
     updatedGroups: Array<{ groupId: string; removedUserId: string; newAdminId: string | null }>;
   }) => void;
-  'game:message': (message: Message) => void;
-  'game:channel-created': (channel: GameChannel) => void;
-  'game:channel-updated': (channel: GameChannel) => void;
-  'game:channels-reordered': (payload: { groupId: string; channels: GameChannel[] }) => void;
-  'game:channel-deleted': (payload: { channelId: string; groupId: string }) => void;
 }
 
 export type TypedSocket = Socket<ServerToClientEvents, ClientToServerEvents>;

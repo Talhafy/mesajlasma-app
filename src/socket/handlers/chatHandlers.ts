@@ -74,23 +74,17 @@ export const registerChatSocketHandlers = (
     }
 
     if (!payload || typeof payload !== 'object') return;
-    const { conversationId, gameChannelId, isTyping } = payload as { conversationId?: unknown; gameChannelId?: unknown; isTyping?: unknown };
-    if (typeof conversationId !== 'string' || typeof isTyping !== 'boolean' || (gameChannelId !== undefined && gameChannelId !== null && typeof gameChannelId !== 'string')) return;
+    const { conversationId, isTyping } = payload as { conversationId?: unknown; isTyping?: unknown };
+    if (typeof conversationId !== 'string' || typeof isTyping !== 'boolean') return;
 
     try {
       const membership = await requireActiveParticipant(conversationId, currentUser.userId).catch(() => null);
       if (!membership) return;
-      if (typeof gameChannelId === 'string') {
-        const channel = await prisma.gameChannel.findFirst({ where: { id: gameChannelId, conversationId, type: 'TEXT' }, select: { id: true } });
-        if (!channel) return;
-      }
-
       socket.to(conversationId).emit('typing_changed', {
         conversationId,
         userId: currentUser.userId,
         username: currentUser.username,
-        isTyping,
-        gameChannelId: typeof gameChannelId === 'string' ? gameChannelId : null
+        isTyping
       });
     } catch (error) {
       logger.error({ event: 'socket.typing_failed', err: error, userId: currentUser.userId, roomId: conversationId }, 'Typing state delivery failed');

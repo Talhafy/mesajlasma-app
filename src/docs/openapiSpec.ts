@@ -15,7 +15,7 @@ export const openapiSpec = {
   info: {
     title: 'Mesajlaşma Uygulaması REST API',
     version: '1.0.0',
-    description: 'Birebir sohbetler, grup mesajlaşması, sesli/yazılı oyun kanalları, zamanlanmış mesajlar ve dosya paylaşımı için güvenli REST API dokümantasyonu.'
+    description: 'Birebir sohbetler, grup mesajlaşması, zamanlanmış mesajlar ve dosya paylaşımı için güvenli REST API dokümantasyonu.'
   },
   /** API Sunucu Adresleri */
   servers: [
@@ -62,7 +62,6 @@ export const openapiSpec = {
               'VALIDATION_ERROR',
               'CONVERSATION_NOT_FOUND',
               'MESSAGE_FORBIDDEN',
-              'CHANNEL_NOT_FOUND',
               'CHANNEL_FORBIDDEN',
               'CHANNEL_LIMIT_REACHED',
               'CHANNEL_DUPLICATE',
@@ -133,19 +132,6 @@ export const openapiSpec = {
           createdAt: { type: 'string', format: 'date-time' }
         },
         required: ['id', 'conversationId', 'senderId', 'content', 'createdAt']
-      },
-      /** Oyun Kanalı Şeması */
-      GameChannel: {
-        type: 'object',
-        properties: {
-          id: { type: 'string', format: 'uuid' },
-          conversationId: { type: 'string', format: 'uuid' },
-          name: { type: 'string' },
-          type: { type: 'string', enum: ['TEXT', 'VOICE'] },
-          position: { type: 'integer' },
-          maxParticipants: { type: 'integer', nullable: true }
-        },
-        required: ['id', 'conversationId', 'name', 'type', 'position']
       }
     }
   },
@@ -352,48 +338,6 @@ export const openapiSpec = {
           '403': { $ref: '#/components/schemas/AppErrorResponse' }
         }
       }
-    },
-    '/game/groups/{groupId}/channels': {
-      get: {
-        tags: ['Oyun Kanalları'],
-        summary: 'Oyun grubunun sesli ve yazılı kanallarını listeler',
-        parameters: [
-          { name: 'groupId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }
-        ],
-        responses: {
-          '200': { description: 'Kanal listesi' },
-          '403': { $ref: '#/components/schemas/AppErrorResponse' }
-        }
-      },
-      post: {
-        tags: ['Oyun Kanalları'],
-        summary: 'Oyun grubunda yeni kanal oluşturur',
-        parameters: [
-          { name: 'groupId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }
-        ],
-        requestBody: {
-          required: true,
-          content: {
-            'application/json': {
-              schema: {
-                type: 'object',
-                properties: {
-                  name: { type: 'string' },
-                  type: { type: 'string', enum: ['TEXT', 'VOICE'] },
-                  maxParticipants: { type: 'integer', nullable: true }
-                },
-                required: ['name', 'type']
-              }
-            }
-          }
-        },
-        responses: {
-          '201': { $ref: '#/components/schemas/GameChannel' },
-          '400': { $ref: '#/components/schemas/AppErrorResponse' },
-          '409': { $ref: '#/components/schemas/AppErrorResponse' }
-        }
-      }
     }
   }
 };
-

@@ -3,12 +3,12 @@
  * ZOD İSTEK ŞEMALARI BİRİM TESTLERİ (Zod Request Schemas Unit Tests)
  * ============================================================================
  * 
- * Bu dosya, Zod doğrulama şemalarının (authSchemas, chatSchemas, gameSchemas vb.)
+ * Bu dosya, Zod doğrulama şemalarının (authSchemas ve chatSchemas)
  * geçerli ve geçersiz istek şemalarını doğru ayrıştırıp ayrıştırmadığını denetler.
  */
 
 import { describe, expect, it } from 'vitest';
-import { authSchemas, chatSchemas, gameSchemas } from '../../src/validation/schemas';
+import { authSchemas, chatSchemas } from '../../src/validation/schemas';
 
 const conversationId = '11111111-1111-4111-8111-111111111111';
 const clientId = '22222222-2222-4222-8222-222222222222';
@@ -54,17 +54,4 @@ describe('request schemas', () => {
     expect(chatSchemas.editScheduledMessage.safeParse({ content: 'Güncellendi' }).success).toBe(true);
     expect(chatSchemas.editScheduledMessage.safeParse({}).success).toBe(false);
   });
-
-  it('rejects participant limits for text game channels', () => {
-    // Oyun kanallarında TEXT türü katılımcı limiti alamaz; VOICE türü alabilir
-    expect(gameSchemas.createChannel.safeParse({ name: 'sohbet', type: 'TEXT', maxParticipants: 5 }).success).toBe(false);
-    expect(gameSchemas.createChannel.safeParse({ name: 'takım sesi', type: 'VOICE', maxParticipants: 5 }).success).toBe(true);
-  });
-
-  it('requires content or a file in game channel messages', () => {
-    // Oyun kanalı mesajlarında en az içerik veya dosya zorunludur
-    expect(gameSchemas.channelMessage.safeParse({ clientId, content: 'Takım hazır' }).success).toBe(true);
-    expect(gameSchemas.channelMessage.safeParse({ clientId, content: ' ' }).success).toBe(false);
-  });
 });
-
