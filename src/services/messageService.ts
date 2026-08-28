@@ -28,6 +28,16 @@ const visibleMessageWhere = () => ({
   ]
 });
 
+/** Yanıt önizlemesinin metin yanında medya türünü de koruması için ortak seçim. */
+const replyToSelect = {
+  id: true,
+  content: true,
+  fileKey: true,
+  fileType: true,
+  fileName: true,
+  sender: { select: { username: true } }
+} satisfies Prisma.MessageSelect;
+
 /** Kullanıcının aktif olduğu sohbet pencerelerini getirir */
 const getActiveMessageWindows = (userId: string) => (
   prisma.participant.findMany({
@@ -275,7 +285,7 @@ export const sendMessage = async (
       where: { id: createdMessage.id },
       include: {
         sender: { select: { username: true } },
-        replyTo: { select: { id: true, content: true, sender: { select: { username: true } } } },
+        replyTo: { select: replyToSelect },
         conversation: { select: { isGroup: true } },
         reads: { select: { userId: true } },
         stars: { select: { userId: true } },
@@ -291,7 +301,7 @@ export const sendMessage = async (
         where: { senderId_clientId: { senderId, clientId } },
         include: {
           sender: { select: { username: true } },
-          replyTo: { select: { id: true, content: true, sender: { select: { username: true } } } },
+          replyTo: { select: replyToSelect },
           conversation: { select: { isGroup: true } },
           reads: { select: { userId: true } },
           stars: { select: { userId: true } },
@@ -365,7 +375,7 @@ export const fetchMessages = async (conversationId: string, userId: string, curs
     ],
     include: {
       sender: { select: { username: true } },
-      replyTo: { select: { id: true, content: true, sender: { select: { username: true } } } },
+      replyTo: { select: replyToSelect },
       reads: { select: { userId: true } },
       stars: { select: { userId: true } },
       deletions: { select: { userId: true } }
@@ -499,7 +509,7 @@ export const editMessage = async (messageId: string, userId: string, content: st
     where: { id: updatedMessageRecord.id },
     include: {
       sender: { select: { username: true } },
-      replyTo: { select: { id: true, content: true, sender: { select: { username: true } } } },
+      replyTo: { select: replyToSelect },
       conversation: { select: { isGroup: true } },
       reads: { select: { userId: true } },
       stars: { select: { userId: true } },
@@ -578,7 +588,7 @@ export const pinMessage = async (messageId: string, userId: string, io: any) => 
     data: { isPinned: !message.isPinned },
     include: {
       sender: { select: { username: true } },
-      replyTo: { select: { id: true, content: true, sender: { select: { username: true } } } },
+      replyTo: { select: replyToSelect },
       reads: { select: { userId: true } },
       stars: { select: { userId: true } },
       deletions: { select: { userId: true } }
@@ -624,7 +634,7 @@ export const starMessage = async (messageId: string, userId: string, io: any) =>
     where: { id: messageId },
     include: {
       sender: { select: { username: true } },
-      replyTo: { select: { id: true, content: true, sender: { select: { username: true } } } },
+      replyTo: { select: replyToSelect },
       reads: { select: { userId: true } },
       stars: { select: { userId: true } },
       deletions: { select: { userId: true } }

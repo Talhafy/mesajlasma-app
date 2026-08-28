@@ -52,7 +52,7 @@ export default function ConversationInfoSidebar({
   isConversationInfoOpen, setIsConversationInfoOpen, activeConversation, chatPartner, partnerStatus,
   openGroupSettings, handleBlockToggle: _handleBlockToggle, isBlockedLocally: _isBlockedLocally, mediaMessages, linkItems, pendingMessages,
   conversationStarredMessages, conversationInfoTab, setConversationInfoTab, scrollToMessage,
-  panelBg, inputBg, borderColor, textColor, iconColor, isDarkMode: _isDarkMode, lightboxImageUrl: _lightboxImageUrl, setLightboxImageUrl,
+  panelBg, inputBg, borderColor, textColor, iconColor, isDarkMode: _isDarkMode, lightboxImageUrl, setLightboxImageUrl,
   avatarProfileUser: _avatarProfileUser, setAvatarProfileUser: _setAvatarProfileUser, onStartDirectChat: _onStartDirectChat, onStartCallWithUser: _onStartCallWithUser
 }: ConversationInfoSidebarProps) {
   const [viewerUser, setViewerUser] = useState<{ avatarUrl: string | null; username: string } | null>(null);
@@ -170,17 +170,44 @@ export default function ConversationInfoSidebar({
           <div style={{ flex: 1, overflowY: 'auto', padding: '16px' }}>
             {/* 1. MEDYA VE DOSYALAR TABI */}
             {conversationInfoTab === 'media' && (
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                 {mediaMessages.length === 0 ? (
-                  <p style={{ gridColumn: '1 / -1', textAlign: 'center', color: iconColor, fontSize: '13px' }}>Henüz medya paylaşılmadı.</p>
+                  <p style={{ textAlign: 'center', color: iconColor, fontSize: '14px', padding: '20px 0' }}>Henüz medya paylaşılmadı.</p>
                 ) : (
-                  mediaMessages.map((msg) => (
-                    <div key={msg.id} style={{ aspectRatio: '1', borderRadius: '8px', overflow: 'hidden', background: inputBg, cursor: 'pointer' }} onClick={() => msg.fileUrl && setLightboxImageUrl(msg.fileUrl)}>
-                      {msg.fileType === 'image' && msg.fileUrl ? (
-                        <img src={msg.fileUrl} alt="Medya" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                      ) : (
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', fontSize: '20px' }}>📄</div>
-                      )}
+                  mediaMessages.map((message) => (
+                    <div
+                      key={message.id}
+                      style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '10px', borderRadius: '10px', background: inputBg }}
+                    >
+                      <button
+                        type="button"
+                        aria-label={message.fileName ? `${message.fileName} dosyasını aç` : 'Medyayı aç'}
+                        onClick={() => {
+                          if (!message.fileUrl) return;
+                          if (message.fileType === 'image' || message.fileType?.startsWith('image')) {
+                            setLightboxImageUrl(message.fileUrl);
+                          } else {
+                            window.open(message.fileUrl, '_blank', 'noopener,noreferrer');
+                          }
+                        }}
+                        style={{ width: '50px', height: '50px', padding: 0, borderRadius: '8px', border: 'none', background: '#f97316', color: '#ffffff', cursor: message.fileUrl ? 'pointer' : 'default', overflow: 'hidden', flexShrink: 0 }}
+                      >
+                        {(message.fileType === 'image' || message.fileType?.startsWith('image')) && message.fileUrl
+                          ? <img src={message.fileUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                          : <span aria-hidden="true" style={{ fontSize: '20px' }}>📎</span>}
+                      </button>
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div style={{ color: textColor, fontSize: '14px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {message.fileName || (message.fileType === 'image' ? 'Görsel' : 'Dosya')}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => scrollToMessage(message.id)}
+                          style={{ border: 'none', background: 'transparent', color: '#f97316', padding: 0, cursor: 'pointer', fontSize: '13px', marginTop: '4px' }}
+                        >
+                          Mesaja git
+                        </button>
+                      </div>
                     </div>
                   ))
                 )}
@@ -234,6 +261,25 @@ export default function ConversationInfoSidebar({
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {lightboxImageUrl && (
+        <div className="lightbox-overlay" onClick={() => setLightboxImageUrl(null)}>
+          <button
+            type="button"
+            className="lightbox-close-btn"
+            onClick={() => setLightboxImageUrl(null)}
+            aria-label="Görsel önizlemeyi kapat"
+          >
+            ✕
+          </button>
+          <img
+            src={lightboxImageUrl}
+            alt="Görsel önizleme"
+            className="lightbox-img"
+            onClick={(event) => event.stopPropagation()}
+          />
         </div>
       )}
 

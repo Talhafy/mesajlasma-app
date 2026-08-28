@@ -21,6 +21,7 @@ import { tr } from 'date-fns/locale';
 import EmojiPicker, { Theme, EmojiStyle, type EmojiClickData, SuggestionMode } from 'emoji-picker-react';
 import type { User, Message } from '../../../types/chat';
 import Button from '../../UI/Button';
+import { getMessagePreview } from '../chatTimeline';
 
 interface ChatInputProps {
   isBlockedLocally: boolean;
@@ -140,7 +141,7 @@ export default function ChatInput({
         <div className="reply-preview-bar" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px', background: inputBg, borderRadius: '8px', marginBottom: '8px', borderLeft: '3px solid #f97316' }}>
           <div style={{ fontSize: '12px', color: textColor, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             <span style={{ fontWeight: 'bold', color: '#f97316' }}>{replyingTo.sender?.username || 'Kullanıcı'}: </span>
-            {replyingTo.content}
+            {getMessagePreview(replyingTo) || 'Mesaj'}
           </div>
           <button onClick={() => setReplyingTo(null)} style={{ background: 'none', border: 'none', color: iconColor, cursor: 'pointer', fontSize: '16px' }}>✖</button>
         </div>
@@ -206,10 +207,26 @@ export default function ChatInput({
           <div ref={attachmentMenuRef} style={{ position: 'relative' }}>
             <Button variant="icon" onClick={() => setShowAttachmentMenu(!showAttachmentMenu)} title="Dosya ekle" aria-label="Dosya ekle" style={{ color: iconColor }} icon={<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5a2.5 2.5 0 0 1 5 0v10.5c0 .83-.67 1.5-1.5 1.5s-1.5-.67-1.5-1.5V6H9v9.5a3 3 0 0 0 6 0V5c0-2.21-1.79-4-4-4s-4 1.79-4 4v12.5c0 3.31 2.69 6 6 6s6-2.69 6-6V6h-2.5z"></path></svg>} />
             {showAttachmentMenu && (
-              <div className="attachment-dropdown-menu" style={{ position: 'absolute', bottom: '50px', left: '0', background: panelBg, border: `1px solid ${borderColor}`, borderRadius: '12px', padding: '8px', display: 'flex', flexDirection: 'column', gap: '4px', zIndex: 1000, boxShadow: '0 8px 24px rgba(0,0,0,0.3)', width: '180px' }}>
-                <button className="attachment-btn" onClick={() => { openFilePicker('image/*,video/*'); setShowAttachmentMenu(false); }}>🖼️ Fotoğraf & Video</button>
-                <button className="attachment-btn" onClick={() => { openFilePicker('application/pdf,application/zip,text/plain,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document'); setShowAttachmentMenu(false); }}>📄 Belge</button>
-                <button className="attachment-btn" onClick={() => { openFilePicker('audio/*'); setShowAttachmentMenu(false); }}>🎵 Ses Dosyası</button>
+              <div className="attachment-dropdown-menu" style={{ position: 'absolute', bottom: '52px', left: '0', background: panelBg, border: `1px solid ${borderColor}`, borderRadius: '16px', padding: '8px', display: 'flex', flexDirection: 'column', gap: '3px', zIndex: 1000, boxShadow: isDarkMode ? '0 16px 40px rgba(0,0,0,0.45)' : '0 16px 40px rgba(15,23,42,0.18)', width: '232px' }}>
+                <div style={{ padding: '5px 10px 7px', color: iconColor, fontSize: '11px', fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase' }}>Dosya paylaş</div>
+                <button type="button" className="attachment-btn" style={{ color: textColor }} onClick={() => { openFilePicker('image/*,video/*'); setShowAttachmentMenu(false); }}>
+                  <span className="attachment-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="8.5" cy="9" r="1.5" /><path d="m4 17 4.5-4.5 3.5 3 2.5-2.5L20 18" /></svg>
+                  </span>
+                  <span className="attachment-copy"><strong>Fotoğraf ve video</strong><small style={{ color: iconColor }}>Galerinden medya seç</small></span>
+                </button>
+                <button type="button" className="attachment-btn" style={{ color: textColor }} onClick={() => { openFilePicker('application/pdf,application/zip,text/plain,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document'); setShowAttachmentMenu(false); }}>
+                  <span className="attachment-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M6 2.75h8l4 4V21.25H6z" /><path d="M14 2.75v4h4M9 12h6M9 16h6" /></svg>
+                  </span>
+                  <span className="attachment-copy"><strong>Belge</strong><small style={{ color: iconColor }}>PDF, ZIP veya metin dosyası</small></span>
+                </button>
+                <button type="button" className="attachment-btn" style={{ color: textColor }} onClick={() => { openFilePicker('audio/*'); setShowAttachmentMenu(false); }}>
+                  <span className="attachment-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l10-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="16" cy="16" r="3" /></svg>
+                  </span>
+                  <span className="attachment-copy"><strong>Ses dosyası</strong><small style={{ color: iconColor }}>Müzik veya kayıt seç</small></span>
+                </button>
               </div>
             )}
           </div>

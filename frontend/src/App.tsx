@@ -39,6 +39,7 @@ import { useConfirm } from './context/useConfirm';
 import { useSocketSession } from './hooks/useSocketSession';
 import { useCallManager, type CallHistoryItem } from './hooks/useCallManager';
 import { useChatManager } from './hooks/useChatManager';
+import { mergeMessage } from './components/ChatArea/chatTimeline';
 
 // İhtiyaç anında yüklenen bileşenler (Lazy Loading)
 const CallModal = lazy(() => import('./components/Call/CallModal'));
@@ -307,7 +308,7 @@ export default function App() {
         replyToId
       });
       autoScrollRef.current = true;
-      setMessages((prev) => [...prev, res.data]);
+      setMessages((prev) => mergeMessage(prev, res.data));
       setNewMessage('');
       fetchConversations();
     } catch {
@@ -585,6 +586,7 @@ export default function App() {
           activeConversation={activeConversation}
           selectedUser={selectedUser}
           messages={messages}
+          setMessages={setMessages}
           newMessage={newMessage}
           setNewMessage={setNewMessage}
           mesajGonder={mesajGonder}

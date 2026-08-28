@@ -19,7 +19,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import type { RefObject } from 'react';
+import type { Dispatch, RefObject, SetStateAction } from 'react';
 import { api } from '../../api/httpClient';
 import type { User, Conversation, Message, ScheduledMessage } from '../../types/chat';
 import './ChatArea.css';
@@ -48,9 +48,10 @@ interface ChatAreaProps {
   activeConversation: Conversation | null;
   selectedUser: User | null;
   messages: Message[];
+  setMessages: Dispatch<SetStateAction<Message[]>>;
   newMessage: string;
   setNewMessage: (val: string) => void;
-  mesajGonder: (replyToId?: string) => void;
+  mesajGonder: (replyToId?: string) => Promise<void>;
   messagesEndRef: RefObject<HTMLDivElement | null>;
   openGroupSettings: () => void;
   closeChat: () => void;
@@ -84,12 +85,13 @@ const formatSeconds = (totalSeconds: number) => {
 
 export default function ChatArea({
   currentUser, activeConversation, selectedUser, messages, newMessage: newMessageProp,
-  setNewMessage: setNewMessageProp, mesajGonder, messagesEndRef, openGroupSettings, closeChat, isDarkMode,
+  setMessages, setNewMessage: setNewMessageProp, mesajGonder, messagesEndRef, openGroupSettings, closeChat, isDarkMode,
   usersList, groupMembers, loadMoreMessages, hasMore, isLoadingMore, typingUsername, recordingUsername, onTyping, onVoiceRecording,
   onToggleConversationPin, onToggleConversationArchive, onToggleConversationMute, onSetDisappearingMode,
   onStartCall, socketConnectionStatus, onStartDirectChat, onStartCallWithUser
 }: ChatAreaProps) {
   const confirm = useConfirm();
+  const sendInFlightRef = useRef(false);
 
   // ARAMA VE MENÜ DURUMLARI
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -418,7 +420,7 @@ export default function ChatArea({
     } catch { alert("Mesaj güncellenemedi."); }
   };
 
-  const handleSend = async () => {
+  const performSend = async () => {
     if (!newMessage.trim() && !selectedFile) return;
     onTyping(false);
 
@@ -511,9 +513,19 @@ export default function ChatArea({
         }
       }
       else {
-        mesajGonder(replyingTo?.id);
+        await mesajGonder(replyingTo?.id);
         clearMessageInput();
       }
+    }
+  };
+
+  const handleSend = async () => {
+    if (sendInFlightRef.current) return;
+    sendInFlightRef.current = true;
+    try {
+      await performSend();
+    } finally {
+      sendInFlightRef.current = false;
     }
   };
 
@@ -555,6 +567,15 @@ export default function ChatArea({
       } else {
         next.add(msgId);
       }
+      return next;
+    });
+  };
+
+  const handleSelectMessage = (msgId: string) => {
+    setIsSelectMode(true);
+    setSelectedMessageIds((previous) => {
+      const next = new Set(previous);
+      next.add(msgId);
       return next;
     });
   };
@@ -629,13 +650,21 @@ export default function ChatArea({
 
   const handleStar = async (msgId: string) => {
     try {
-      await api.put(`/messages/${msgId}/star`);
+      const response = await api.put(`/messages/${msgId}/star`);
+      setMessages((previous) => previous.map((message) => (
+        message.id === msgId ? { ...message, ...response.data } : message
+      )));
       fetchSidebarData();
     } catch { alert("İşlem başarısız."); }
   };
 
   const handlePin = async (msgId: string) => {
-    try { await api.put(`/messages/${msgId}/pin`); } catch { alert("İşlem başarısız."); }
+    try {
+      const response = await api.put(`/messages/${msgId}/pin`);
+      setMessages((previous) => previous.map((message) => (
+        message.id === msgId ? { ...message, ...response.data } : message
+      )));
+    } catch { alert("İşlem başarısız."); }
   };
 
   const handleDisappearingMode = () => {
@@ -730,7 +759,10 @@ export default function ChatArea({
       return;
     }
     try {
-      await api.put(`/messages/${editingMessage.id}`, { content });
+      const response = await api.put(`/messages/${editingMessage.id}`, { content });
+      setMessages((previous) => previous.map((message) => (
+        message.id === editingMessage.id ? { ...message, ...response.data } : message
+      )));
       setEditingMessage(null);
       setNewMessage('');
     } catch { alert('Mesaj düzenlenemedi.'); }
@@ -793,7 +825,10 @@ export default function ChatArea({
       isDanger: true
     });
     if (!isConfirmed) return;
-    try { await api.delete(`/messages/${msgId}?forEveryone=false`); } catch { alert("İşlem başarısız."); }
+    try {
+      await api.delete(`/messages/${msgId}?forEveryone=false`);
+      setMessages((previous) => previous.filter((message) => message.id !== msgId));
+    } catch { alert("İşlem başarısız."); }
   };
 
   const handleDeleteForEveryone = async (msgId: string) => {
@@ -805,7 +840,20 @@ export default function ChatArea({
       isDanger: true
     });
     if (!isConfirmed) return;
-    try { await api.delete(`/messages/${msgId}?forEveryone=true`); } catch { alert("İşlem başarısız."); }
+    try {
+      await api.delete(`/messages/${msgId}?forEveryone=true`);
+      setMessages((previous) => previous.map((message) => message.id === msgId ? {
+        ...message,
+        content: '🚫 Bu mesaj silindi',
+        fileKey: undefined,
+        fileUrl: undefined,
+        fileType: undefined,
+        fileName: undefined,
+        replyToId: undefined,
+        replyTo: undefined,
+        isForwarded: false
+      } : message));
+    } catch { alert("İşlem başarısız."); }
   };
 
   const scrollToMessage = (messageId?: string) => {
@@ -1124,6 +1172,7 @@ export default function ChatArea({
                   isSelectMode={isSelectMode}
                   selectedMessageIds={selectedMessageIds}
                   toggleSelectMessage={toggleSelectMessage}
+                  handleSelectMessage={handleSelectMessage}
                   highlightedMessageId={highlightedMessageId}
                   setAvatarProfileUser={setAvatarProfileUser}
                   setLightboxImageUrl={setLightboxImageUrl}
@@ -1295,6 +1344,7 @@ export default function ChatArea({
         <style>{`
           .msg-dropdown-btn { width: 100%; text-align: left; padding: 12px 15px; border: none; background: transparent; color: ${textColor}; font-size: 14px; cursor: pointer; transition: background 0.2s; }
           .msg-dropdown-btn:hover { background: ${isDarkMode ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)'}; }
+          .msg-dropdown-menu .msg-dropdown-btn { padding: 10px 12px; border-radius: 8px; line-height: 1.25; white-space: nowrap; }
           .msg-dropdown-btn.danger-text { color: #e53935; font-weight: bold; }
           .msg-dropdown-btn.danger-text:hover { background: ${isDarkMode ? 'rgba(229, 57, 53, 0.15)' : '#ffebee'}; }
           .date-separator-row { display: flex; justify-content: center; margin: 12px 0; }

@@ -13,9 +13,10 @@
  * 4. Mesaj Durum İkonları: Tek tık (Sunucuya ulaştı), Çift tık (İletildi), Mavi çift tık (Okundu).
  */
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
 import type { User, Conversation, Message } from '../../../types/chat';
+import { getMessagePreview } from '../chatTimeline';
 
 interface TimelineRenderItem {
   type: 'message' | 'system' | 'date';
@@ -40,6 +41,7 @@ interface MessageBubbleProps {
   isSelectMode: boolean;
   selectedMessageIds: Set<string>;
   toggleSelectMessage: (msgId: string) => void;
+  handleSelectMessage: (msgId: string) => void;
   highlightedMessageId: string | null;
   setAvatarProfileUser: (user: User) => void;
   setLightboxImageUrl: (url: string | null) => void;
@@ -210,26 +212,91 @@ function CustomAudioPlayer({ src, isDarkMode }: { src: string; isDarkMode: boole
  */
 export default function MessageBubble({
   item, currentUser, activeConversation, groupMembers, usersList,
-  isSelectMode, selectedMessageIds, toggleSelectMessage, highlightedMessageId,
+  isSelectMode, selectedMessageIds, toggleSelectMessage, handleSelectMessage, highlightedMessageId,
   setAvatarProfileUser, setLightboxImageUrl, isDarkMode, textColor, iconColor,
   borderColor, inputBg, panelBg, handleReply, handleForward, handleStar, handlePin,
   handleDeleteForMe, handleDeleteForEveryone, handleEditMessage, setMessageInfo, selectedUser: _selectedUser
 }: MessageBubbleProps) {
   const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number } | null>(null);
+  const [dropdownAnchor, setDropdownAnchor] = useState<{
+    top: number;
+    right: number;
+    bottom: number;
+    left: number;
+    align: 'left' | 'right';
+  } | null>(null);
+  const [isDropdownPositioned, setIsDropdownPositioned] = useState(false);
   const [activeDropdownMsgId, setActiveDropdownMsgId] = useState<string | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  // Açılır menü dışına tıklandığında menüyü kapatan useEffect
+  const closeDropdown = () => {
+    setActiveDropdownMsgId(null);
+    setDropdownPos(null);
+    setDropdownAnchor(null);
+    setIsDropdownPositioned(false);
+  };
+
+  // Menü dışına tıklanınca, sohbet/pencere kaydırılınca veya ekran boyutu değişince kapatır.
   useEffect(() => {
+    if (!activeDropdownMsgId) return;
+
     const handleClickOutside = (event: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-        setActiveDropdownMsgId(null);
-        setDropdownPos(null);
+        closeDropdown();
       }
     };
+
+    const handleViewportChange = (event: Event) => {
+      if (event.type === 'scroll' && dropdownRef.current?.contains(event.target as Node)) return;
+      closeDropdown();
+    };
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeDropdown();
+    };
+
     document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
+    window.addEventListener('scroll', handleViewportChange, true);
+    window.addEventListener('resize', handleViewportChange);
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      window.removeEventListener('scroll', handleViewportChange, true);
+      window.removeEventListener('resize', handleViewportChange);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [activeDropdownMsgId]);
+
+  // Portal render edildikten sonra gerçek menü boyutuna göre viewport içinde konumlandırır.
+  useLayoutEffect(() => {
+    if (!activeDropdownMsgId || !dropdownAnchor || !dropdownRef.current) return;
+
+    const viewportPadding = 8;
+    const menuGap = 6;
+    const menuRect = dropdownRef.current.getBoundingClientRect();
+    const spaceBelow = window.innerHeight - dropdownAnchor.bottom - viewportPadding;
+    const spaceAbove = dropdownAnchor.top - viewportPadding;
+
+    let top: number;
+    if (menuRect.height <= spaceBelow) {
+      top = dropdownAnchor.bottom + menuGap;
+    } else if (menuRect.height <= spaceAbove) {
+      top = dropdownAnchor.top - menuRect.height - menuGap;
+    } else if (spaceBelow >= spaceAbove) {
+      top = Math.max(viewportPadding, window.innerHeight - menuRect.height - viewportPadding);
+    } else {
+      top = viewportPadding;
+    }
+
+    const preferredLeft = dropdownAnchor.align === 'right'
+      ? dropdownAnchor.right - menuRect.width
+      : dropdownAnchor.left;
+    const maxLeft = Math.max(viewportPadding, window.innerWidth - menuRect.width - viewportPadding);
+    const left = Math.min(Math.max(viewportPadding, preferredLeft), maxLeft);
+
+    setDropdownPos({ top, left });
+    setIsDropdownPositioned(true);
+  }, [activeDropdownMsgId, dropdownAnchor]);
 
   // 1. TARİH AYRACI (Date Separator Item)
   if (item.type === 'date') {
@@ -258,18 +325,47 @@ export default function MessageBubble({
   const isMe = msg.senderId === currentUser.id;
   const isSelected = selectedMessageIds.has(msg.id);
   const isHighlighted = highlightedMessageId === msg.id;
+  const isReadOnlyHistory = Boolean(
+    activeConversation?.isGroup
+    && (activeConversation.isActive === false || activeConversation.isDeleted)
+  );
 
   // Açılır Menü Konumunu Hesaplama
   const openMenu = (e: React.MouseEvent, msgId: string) => {
     e.stopPropagation();
     const rect = e.currentTarget.getBoundingClientRect();
-    setDropdownPos({ top: rect.bottom + window.scrollY, left: rect.left + window.scrollX - 120 });
+    setDropdownAnchor({
+      top: rect.top,
+      right: rect.right,
+      bottom: rect.bottom,
+      left: rect.left,
+      align: isMe ? 'right' : 'left'
+    });
+    setDropdownPos({ top: rect.bottom + 6, left: rect.left });
+    setIsDropdownPositioned(false);
     setActiveDropdownMsgId(msgId);
+  };
+
+  const copyMessageText = async (text: string) => {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+
+    const textArea = document.createElement('textarea');
+    textArea.value = text;
+    textArea.style.position = 'fixed';
+    textArea.style.opacity = '0';
+    document.body.appendChild(textArea);
+    textArea.select();
+    document.execCommand('copy');
+    textArea.remove();
   };
 
   return (
     <div
       id={`msg-${msg.id}`}
+      data-message-id={msg.id}
       className={`message-row ${isMe ? 'mine' : 'other'} ${isHighlighted ? 'highlighted' : ''}`}
       onClick={() => isSelectMode && toggleSelectMessage(msg.id)}
       style={{
@@ -331,7 +427,7 @@ export default function MessageBubble({
         {msg.replyTo && (
           <div style={{ background: isMe ? 'rgba(0,0,0,0.15)' : panelBg, borderLeft: '3px solid #f97316', borderRadius: '4px', padding: '4px 8px', marginBottom: '6px', fontSize: '12px' }}>
             <span style={{ fontWeight: 'bold', display: 'block', fontSize: '11px' }}>{msg.replyTo.sender?.username || 'Kullanıcı'}</span>
-            <span style={{ opacity: 0.9 }}>{msg.replyTo.content}</span>
+            <span style={{ opacity: 0.9 }}>{getMessagePreview(msg.replyTo) || 'Mesaj'}</span>
           </div>
         )}
 
@@ -376,6 +472,7 @@ export default function MessageBubble({
         {!isSelectMode && (
           <button
             onClick={(e) => openMenu(e, msg.id)}
+            aria-label="Mesaj seçeneklerini aç"
             style={{
               position: 'absolute',
               top: '4px',
@@ -398,27 +495,38 @@ export default function MessageBubble({
         <div
           ref={dropdownRef}
           className="msg-dropdown-menu"
+          role="menu"
+          aria-label="Mesaj işlemleri"
           style={{
-            position: 'absolute',
+            position: 'fixed',
             top: `${dropdownPos.top}px`,
             left: `${dropdownPos.left}px`,
             background: panelBg,
             border: `1px solid ${borderColor}`,
-            borderRadius: '8px',
-            boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
+            borderRadius: '12px',
+            boxShadow: '0 12px 32px rgba(0,0,0,0.24)',
             zIndex: 9999,
-            padding: '4px 0',
-            width: '140px'
+            padding: '6px',
+            width: '190px',
+            maxWidth: 'calc(100vw - 16px)',
+            maxHeight: 'calc(100vh - 16px)',
+            overflowY: 'auto',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '2px',
+            visibility: isDropdownPositioned ? 'visible' : 'hidden'
           }}
         >
-          <button className="msg-dropdown-btn" onClick={() => { handleReply(msg); setActiveDropdownMsgId(null); }}>↩️ Yanıtla</button>
-          <button className="msg-dropdown-btn" onClick={() => { handleForward(msg); setActiveDropdownMsgId(null); }}>↪️ İlet</button>
-          <button className="msg-dropdown-btn" onClick={() => { handleStar(msg.id); setActiveDropdownMsgId(null); }}>{msg.starredByIds?.includes(currentUser.id) ? '⭐ Yıldızı Kaldır' : '⭐ Yıldızla'}</button>
-          <button className="msg-dropdown-btn" onClick={() => { handlePin(msg.id); setActiveDropdownMsgId(null); }}>{msg.isPinned ? '📌 İğneyi Kaldır' : '📌 İğnele'}</button>
-          {isMe && <button className="msg-dropdown-btn" onClick={() => { handleEditMessage(msg); setActiveDropdownMsgId(null); }}>✏️ Düzenle</button>}
-          {isMe && <button className="msg-dropdown-btn" onClick={() => { setMessageInfo(msg); setActiveDropdownMsgId(null); }}>ℹ️ Bilgi</button>}
-          <button className="msg-dropdown-btn" onClick={() => { handleDeleteForMe(msg.id); setActiveDropdownMsgId(null); }}>🗑️ Benden Sil</button>
-          {isMe && <button className="msg-dropdown-btn danger-text" onClick={() => { handleDeleteForEveryone(msg.id); setActiveDropdownMsgId(null); }}>⛔ Herkesten Sil</button>}
+          <button className="msg-dropdown-btn" onClick={() => { setMessageInfo(msg); setActiveDropdownMsgId(null); }}>ℹ️ Bilgi</button>
+          {!isReadOnlyHistory && <button className="msg-dropdown-btn" onClick={() => { handleReply(msg); setActiveDropdownMsgId(null); }}>↩️ Yanıtla</button>}
+          {msg.content && <button className="msg-dropdown-btn" onClick={() => { void copyMessageText(msg.content); setActiveDropdownMsgId(null); }}>📋 Kopyala</button>}
+          {!isReadOnlyHistory && <button className="msg-dropdown-btn" onClick={() => { handleSelectMessage(msg.id); setActiveDropdownMsgId(null); }}>☑️ Seç</button>}
+          {!isReadOnlyHistory && isMe && <button className="msg-dropdown-btn" onClick={() => { handleEditMessage(msg); setActiveDropdownMsgId(null); }}>✏️ Düzenle</button>}
+          <button className="msg-dropdown-btn" onClick={() => { handleForward(msg); setActiveDropdownMsgId(null); }}>➡️ İlet</button>
+          {!isReadOnlyHistory && <button className="msg-dropdown-btn" onClick={() => { handleStar(msg.id); setActiveDropdownMsgId(null); }}>{msg.starredByIds?.includes(currentUser.id) ? '⭐ Yıldızı Kaldır' : '⭐ Yıldızla'}</button>}
+          {!isReadOnlyHistory && <button className="msg-dropdown-btn" onClick={() => { handlePin(msg.id); setActiveDropdownMsgId(null); }}>{msg.isPinned ? '📌 Sabitlemeyi Kaldır' : '📌 Sabitle'}</button>}
+          {!isReadOnlyHistory && <button className="msg-dropdown-btn" onClick={() => { handleDeleteForMe(msg.id); setActiveDropdownMsgId(null); }}>🗑️ Benden Sil</button>}
+          {!isReadOnlyHistory && isMe && <button className="msg-dropdown-btn danger-text" onClick={() => { handleDeleteForEveryone(msg.id); setActiveDropdownMsgId(null); }}>⛔ Herkesten Sil</button>}
         </div>,
         document.body
       )}

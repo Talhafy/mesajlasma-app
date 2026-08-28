@@ -66,6 +66,70 @@
   gap: 10px;
 }
 
+/* DOSYA EKLEME MENÜSÜ */
+.attachment-dropdown-menu {
+  transform-origin: bottom left;
+  animation: attachment-menu-in 140ms ease-out;
+}
+
+.attachment-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 140ms ease, transform 140ms ease;
+}
+
+.attachment-btn:hover,
+.attachment-btn:focus-visible {
+  background: rgba(249, 115, 22, 0.11);
+  transform: translateX(2px);
+  outline: none;
+}
+
+.attachment-icon {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: rgba(249, 115, 22, 0.13);
+  color: #f97316;
+}
+
+.attachment-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.attachment-copy strong {
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.attachment-copy small {
+  font-size: 11px;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
+@keyframes attachment-menu-in {
+  from { opacity: 0; transform: translateY(5px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
 /* =========================================
    BOŞ SOHBET EKRANI (EMPTY STATE) TASARIMI
 ========================================= */

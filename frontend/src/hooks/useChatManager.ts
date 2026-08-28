@@ -13,6 +13,7 @@ import type { Conversation, Message, User } from '../types/chat';
 import type { TypedSocket } from '../types/socket';
 import { api } from '../api/httpClient';
 import { unwrapItems } from '../api/pagination';
+import { mergeMessage } from '../components/ChatArea/chatTimeline';
 
 interface UseChatManagerOptions {
   socket: TypedSocket | null;
@@ -168,7 +169,7 @@ export function useChatManager({
 
       const currentConv = activeConversationRef.current;
       if (currentConv && gelenMesaj.conversationId === currentConv.id) {
-        setMessages((prev) => [...prev, gelenMesaj]);
+        setMessages((prev) => mergeMessage(prev, gelenMesaj));
         if (currentUserRef.current) {
           void api.post(`/conversations/${currentConv.id}/read`, {
             emitReceipt: currentConv.isGroup ? true : currentUserRef.current.readReceiptsOn !== false
@@ -203,12 +204,42 @@ export function useChatManager({
       });
     };
 
+    const handleMessagesRead = (payload: { conversationId: string; readByUserId: string }) => {
+      if (activeConversationRef.current?.id !== payload.conversationId) return;
+      setMessages((previous) => previous.map((message) => {
+        if (message.senderId === payload.readByUserId || message.readByIds?.includes(payload.readByUserId)) return message;
+        return { ...message, readByIds: [...(message.readByIds || []), payload.readByUserId] };
+      }));
+    };
+
+    const handleMessageUpdated = (updatedMessage: Message) => {
+      if (activeConversationRef.current?.id === updatedMessage.conversationId) {
+        setMessages((previous) => previous.map((message) => (
+          message.id === updatedMessage.id ? { ...message, ...updatedMessage } : message
+        )));
+      }
+      void fetchConversations();
+    };
+
+    const handleMessageDeleted = (payload: { messageId: string; conversationId: string }) => {
+      if (activeConversationRef.current?.id === payload.conversationId) {
+        setMessages((previous) => previous.filter((message) => message.id !== payload.messageId));
+      }
+      void fetchConversations();
+    };
+
     socket.on('yeni_mesaj_geldi', handleYeniMesaj);
+    socket.on('mesajlar_okundu', handleMessagesRead);
+    socket.on('mesaj_guncellendi', handleMessageUpdated);
+    socket.on('mesaj_silindi', handleMessageDeleted);
     socket.on('typing_changed', handleTypingChanged);
     socket.on('voice_recording_changed', handleVoiceRecordingChanged);
 
     return () => {
       socket.off('yeni_mesaj_geldi', handleYeniMesaj);
+      socket.off('mesajlar_okundu', handleMessagesRead);
+      socket.off('mesaj_guncellendi', handleMessageUpdated);
+      socket.off('mesaj_silindi', handleMessageDeleted);
       socket.off('typing_changed', handleTypingChanged);
       socket.off('voice_recording_changed', handleVoiceRecordingChanged);
     };

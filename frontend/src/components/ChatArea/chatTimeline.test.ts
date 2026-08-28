@@ -18,7 +18,8 @@ import {
   buildTimelineWithDateSeparators,
   formatDetailedDate,
   getMessagePreview,
-  getUnixEpoch
+  getUnixEpoch,
+  mergeMessage
 } from './chatTimeline';
 
 /** Testler için sahte mesaj üreten yardımcı mock fonksiyon */
@@ -55,5 +56,25 @@ describe('chat timeline helpers', () => {
     expect(getUnixEpoch()).toBe('-');
     expect(formatDetailedDate()).toBe('-');
     expect(formatDetailedDate('2026-08-01T10:00:00.000Z')).toContain('2026');
+  });
+
+  it('merges the HTTP response and socket event for the same message', () => {
+    const socketMessage = { ...message('message-1', '2026-08-01T10:00:00.000Z'), clientId: 'client-1' };
+    const httpMessage = { ...socketMessage, readByIds: ['user-2'] };
+
+    const result = mergeMessage(mergeMessage([], socketMessage), httpMessage);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].readByIds).toEqual(['user-2']);
+  });
+
+  it('uses clientId to replace an optimistic message with the persisted message', () => {
+    const optimistic = { ...message('offline-client-1', '2026-08-01T10:00:00.000Z'), clientId: 'client-1' };
+    const persisted = { ...message('message-1', '2026-08-01T10:00:01.000Z'), clientId: 'client-1' };
+
+    const result = mergeMessage([optimistic], persisted);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe('message-1');
   });
 });

@@ -108,3 +108,17 @@ export const getMessagePreview = (message?: Message | null) => {
   if (message.fileKey) return `📎 ${message.fileName || 'Dosya'}`;
   return '';
 };
+
+/** HTTP yanıtı ve socket olayıyla gelen aynı mesajı tek kayıtta birleştirir. */
+export const mergeMessage = (messages: Message[], incoming: Message) => {
+  const existingIndex = messages.findIndex((message) => (
+    message.id === incoming.id
+    || Boolean(incoming.clientId && message.clientId === incoming.clientId)
+  ));
+
+  if (existingIndex === -1) return [...messages, incoming];
+
+  const next = [...messages];
+  next[existingIndex] = { ...messages[existingIndex], ...incoming };
+  return next;
+};
