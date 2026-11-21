@@ -2,11 +2,12 @@ import type { Socket } from 'socket.io-client';
 import type { Message, User, Conversation } from './chat';
 
 export interface ClientToServerEvents {
+  'auth:refresh': (payload: { token: string }, acknowledge?: (result: { ok: boolean; error?: string }) => void) => void;
   client_activity: () => void;
   odaya_katil: (conversationId: string, acknowledge?: (result: { ok: boolean; error?: string }) => void) => void;
   typing_changed: (payload: { conversationId: string; isTyping: boolean }) => void;
   voice_recording_changed: (payload: { conversationId: string; isRecording: boolean }) => void;
-  'call:invite': (payload: { conversationId: string; callId: string; callType: 'audio' | 'video' }, acknowledge?: (result: { ok: boolean; error?: string }) => void) => void;
+  'call:invite': (payload: { conversationId: string; callId: string; callType: 'audio' | 'video'; mlsEpoch: number }, acknowledge?: (result: { ok: boolean; error?: string }) => void) => void;
   'call:accepted': (payload: { conversationId: string; callId: string; callType: 'audio' | 'video' }, acknowledge?: (result: { ok: boolean; error?: string }) => void) => void;
   'call:declined': (payload: { conversationId: string; callId: string; callType: 'audio' | 'video' }, acknowledge?: (result: { ok: boolean; error?: string }) => void) => void;
   'call:ended': (payload: { conversationId: string; callId: string; callType: 'audio' | 'video' }, acknowledge?: (result: { ok: boolean; error?: string }) => void) => void;
@@ -19,7 +20,7 @@ export interface ServerToClientEvents {
   presence_changed: (payload: { userId: string; isOnline: boolean; lastSeenAt?: string | null }) => void;
   typing_changed: (payload: { conversationId: string; userId: string; username: string; isTyping: boolean }) => void;
   voice_recording_changed: (payload: { conversationId: string; userId: string; username: string; isRecording: boolean }) => void;
-  'call:incoming': (payload: { conversationId: string; callId: string; callType: 'audio' | 'video'; isGroup: boolean; conversationName: string | null; caller: { id: string; username: string } }) => void;
+  'call:incoming': (payload: { conversationId: string; callId: string; callType: 'audio' | 'video'; mlsEpoch: number; isGroup: boolean; conversationName: string | null; caller: { id: string; username: string } }) => void;
   'call:accepted': (payload: { conversationId: string; callId: string; callType: 'audio' | 'video'; user: { id: string; username: string } }) => void;
   'call:declined': (payload: { callId: string; user?: { username?: string } }) => void;
   'call:ended': (payload: { callId: string }) => void;
@@ -45,6 +46,34 @@ export interface ServerToClientEvents {
     conversationIds: string[];
     deletedGroupIds: string[];
     updatedGroups: Array<{ groupId: string; removedUserId: string; newAdminId: string | null }>;
+  }) => void;
+  // MLS (RFC 9420) E2EE gerçek zamanlı senkronizasyon olayları
+  'mls:commit': (payload: {
+    id: string;
+    conversationId: string;
+    epoch: number;
+    senderDeviceId: string;
+    commitData: string;
+    ratchetTree?: string | null;
+    createdAt?: string;
+  }) => void;
+  'mls:welcome': (payload: {
+    conversationId: string;
+    epoch: number;
+    recipientDeviceId: string;
+    welcomeData: string;
+    ratchetTree?: string | null;
+  }) => void;
+  'mls:key_package_low': (payload: { deviceId: string; remainingCount: number }) => void;
+  'mls:device_registered': (payload: {
+    userId: string;
+    device: { id: string; deviceName: string; signaturePublicKey: string; createdAt: string };
+  }) => void;
+  'mls:device_approved': (payload: { userId: string; deviceId: string; conversationIds: string[] }) => void;
+  'mls:device_revoked': (payload: {
+    userId: string;
+    deviceId: string;
+    conversationIds?: string[];
   }) => void;
 }
 

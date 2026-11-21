@@ -16,16 +16,12 @@ interface UseMessageInputProps {
 }
 
 /**
- * Mesaj giriş alanının (Input) durumunu, yanıtlanan mesaj (reply), mesaj zamanlama (scheduling)
+ * Mesaj giriş alanının (Input) durumunu, yanıtlanan mesaj (reply)
  * ve 3 saniyelik "yazıyor..." (typing) durumlarının yaşam döngüsünü yöneten özel React Hook.
  */
 export function useMessageInput({ onTyping, conversationId, newMessageProp, setNewMessageProp }: UseMessageInputProps) {
   /** Yanıt verilmek üzere seçilmiş mesaj nesnesi (Varsayılan: null) */
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
-  /** Mesaj zamanlama panelinin açık olup olmadığı bilgisi */
-  const [isScheduling, setIsScheduling] = useState(false);
-  /** Mesajın gelecekte gönderilmesi için seçilen tarih ve saat */
-  const [scheduleTime, setScheduleTime] = useState<Date | null>(null);
   
   /** 3 saniyelik "yazıyor..." pasifleşme zamanlayıcısının (timer) referansı */
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -37,12 +33,10 @@ export function useMessageInput({ onTyping, conversationId, newMessageProp, setN
     callbacksRef.current = { onTyping, setNewMessageProp };
   }, [onTyping, setNewMessageProp]);
 
-  // Aktif sohbet (conversationId) değiştiğinde tüm girdi ve zamanlama durumlarını sıfırlar
+  // Aktif sohbet (conversationId) değiştiğinde mesaj girişi ve yanıt durumunu sıfırlar
   useEffect(() => {
     callbacksRef.current.setNewMessageProp('');
     setReplyingTo(null);
-    setIsScheduling(false);
-    setScheduleTime(null);
     if (typingTimeoutRef.current) {
       clearTimeout(typingTimeoutRef.current);
       callbacksRef.current.onTyping(false);
@@ -93,10 +87,6 @@ export function useMessageInput({ onTyping, conversationId, newMessageProp, setN
     clearMessageInput: handleClearInput,
     replyingTo,
     setReplyingTo,
-    isScheduling,
-    setIsScheduling,
-    scheduleTime,
-    setScheduleTime,
   };
 }
 

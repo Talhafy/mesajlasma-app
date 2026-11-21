@@ -55,11 +55,9 @@ describe('useMessageInput Hook Testleri', () => {
       { initialProps: { conversationId: 'conversation-1' } }
     );
 
-    // Yanıtlanan mesaj ve zamanlanmış mesaj durumlarını ayarla
+    // Yanıtlanan mesajı ayarla
     act(() => {
       result.current.setReplyingTo({ id: 'm1', content: 'x', senderId: 'u1', conversationId: 'conversation-1' });
-      result.current.setIsScheduling(true);
-      result.current.setScheduleTime(new Date());
     });
     setMessage.mockClear();
     
@@ -69,8 +67,6 @@ describe('useMessageInput Hook Testleri', () => {
     // Tüm girdilerin ve durumların sıfırlandığı doğrulanır
     expect(setMessage).toHaveBeenCalledWith('');
     expect(result.current.replyingTo).toBeNull();
-    expect(result.current.isScheduling).toBe(false);
-    expect(result.current.scheduleTime).toBeNull();
   });
 
   /**

@@ -14,6 +14,7 @@ import { logger } from '../config/logger';
 import prisma from '../db';
 import { verifyAccessToken } from '../services/authTokens';
 import {
+  checkDistributedSocketRateLimit,
   getOnlineUserIds,
   markUserOfflineIfDisconnected,
   markUserOnline,
@@ -57,15 +58,16 @@ export const registerSocketHandlers = (io: Server) => {
     const currentUser = socket.data.user as SocketUser;
     // İNAKTİVİTE VE TOKEN ZAMAN AŞIMI YÖNETİMİ
     let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
-    const remainingSessionMs = () => Math.max(0, Math.min(
-      SOCKET_INACTIVITY_TIMEOUT_MS,
-      currentUser.accessTokenExpiresAt - Date.now()
-    ));
-    const resetInactivityTimer = () => {
+    let inactivityDeadlineAt = Date.now() + SOCKET_INACTIVITY_TIMEOUT_MS;
+    const remainingSessionMs = () => Math.max(
+      0,
+      Math.min(inactivityDeadlineAt, currentUser.accessTokenExpiresAt) - Date.now()
+    );
+    const scheduleSessionTimer = () => {
       if (inactivityTimer) clearTimeout(inactivityTimer);
       const timeoutMs = remainingSessionMs();
       if (timeoutMs <= 0) {
-        socket.emit('auth:expired');
+        if (Date.now() >= currentUser.accessTokenExpiresAt) socket.emit('auth:expired');
         socket.disconnect(true);
         return;
       }
@@ -74,6 +76,10 @@ export const registerSocketHandlers = (io: Server) => {
         socket.disconnect(true);
       }, timeoutMs);
       void touchUserPresence(currentUser.userId, Math.min(presenceTtlMs, timeoutMs));
+    };
+    const resetInactivityTimer = () => {
+      inactivityDeadlineAt = Date.now() + SOCKET_INACTIVITY_TIMEOUT_MS;
+      scheduleSessionTimer();
     };
     resetInactivityTimer();
 
@@ -92,6 +98,56 @@ export const registerSocketHandlers = (io: Server) => {
     // İSTEMCİ AKTİVİTE TETİKLEYİCİSİ (User Activity Heartbeat)
     socket.on('client_activity', () => {
       resetInactivityTimer();
+    });
+
+    // ACCESS TOKEN YENİLEME (Aktif Soket Oturum Süresini Güncelleme)
+    socket.on('auth:refresh', async (
+      payload: unknown,
+      acknowledge?: (result: { ok: boolean; error?: string }) => void
+    ) => {
+      const token = payload && typeof payload === 'object'
+        ? (payload as { token?: unknown }).token
+        : null;
+      if (typeof token !== 'string' || !token) {
+        acknowledge?.({ ok: false, error: 'Geçersiz access token.' });
+        return;
+      }
+
+      try {
+        const withinLimit = await checkDistributedSocketRateLimit(currentUser.userId, 'auth:refresh', 10)
+          .catch(() => true);
+        if (!withinLimit) {
+          logger.warn({ event: 'security.socket_rate_limit', userId: currentUser.userId, eventName: 'auth:refresh' }, 'Socket event rate limit exceeded');
+          acknowledge?.({ ok: false, error: 'Çok fazla istek gönderdiniz. Lütfen bekleyin.' });
+          return;
+        }
+
+        const decoded = verifyAccessToken(token);
+        if (decoded.userId !== currentUser.userId) {
+          logger.warn({
+            event: 'security.socket_refresh_user_mismatch',
+            userId: currentUser.userId,
+            tokenUserId: decoded.userId,
+            socketId: socket.id
+          }, 'Socket auth refresh user mismatch');
+          acknowledge?.({ ok: false, error: 'Token kullanıcı kimliği ile eşleşmiyor.' });
+          return;
+        }
+
+        const nextExpiresAt = decoded.exp * 1000;
+        if (nextExpiresAt <= Date.now()) {
+          acknowledge?.({ ok: false, error: 'Access token süresi dolmuş.' });
+          return;
+        }
+
+        currentUser.accessTokenExpiresAt = Math.max(currentUser.accessTokenExpiresAt, nextExpiresAt);
+        currentUser.username = decoded.username;
+        scheduleSessionTimer();
+        acknowledge?.({ ok: true });
+      } catch (error) {
+        logger.warn({ event: 'socket.auth_refresh_failed', err: error, userId: currentUser.userId, socketId: socket.id }, 'Socket auth refresh failed');
+        acknowledge?.({ ok: false, error: 'Geçersiz veya süresi dolmuş access token.' });
+      }
     });
 
     // ALT HANDLER'LARIN BAĞLANMASI

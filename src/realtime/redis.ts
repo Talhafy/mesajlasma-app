@@ -42,7 +42,6 @@ export const getRealtimeRedis = () => commandClient;
  */
 export const configureRealtimeAdapter = async (io: Server) => {
   if (!redisUrl) {
-    logger.warn({ event: 'realtime.redis_disabled' }, 'Redis is not configured; using single-instance realtime fallback');
     return false;
   }
 

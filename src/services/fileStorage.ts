@@ -7,7 +7,7 @@
  * olarak Cloudflare R2 (S3 Uyumlu Nesne Depolama) üzerinde yönetir.
  * 
  * GÜVENLİK İLKELERİ:
- * 1. Hiçbir dosya sunucu yerel diskinde tutulmaz (Direct-to-R2 veya Stream modeli).
+ * 1. Hiçbir dosya sunucu yerel diskinde tutulmaz (bellekten R2’ye yükleme veya imzalı URL).
  * 2. Orijinal dosya adları depolama anahtarı (key) olarak kullanılmaz (`randomUUID()`).
  *    Bu sayede Path Traversal (dizin gezinme) ve çakışma riski engellenir.
  * 3. Dosyalar public URL'ye sahip değildir; yalnızca süreli (10-15 dk) Presigned URL ile okunabilir.
@@ -20,11 +20,9 @@ import {
   PutObjectCommand,
   S3Client
 } from '@aws-sdk/client-s3';
-import { Upload } from '@aws-sdk/lib-storage';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { randomUUID } from 'crypto';
 import path from 'path';
-import { Readable } from 'stream';
 import { logger } from '../config/logger';
 
 /** Zorunlu Cloudflare R2 ortam değişkenleri listesi */
@@ -91,42 +89,6 @@ export const createPresignedUploadUrl = async (
       originalName,
       contentType
     }, 'Direct-to-R2 presigned upload URL generation failed');
-    throw error;
-  }
-};
-
-/**
- * STREAM YÜKLEME (Stream Direct-to-R2)
- * Büyük dosyaları RAM tamponuna almadan doğrudan akış (stream) halinde R2'ye yazar.
- */
-export const uploadStreamToR2 = async (
-  stream: Readable,
-  contentType: string,
-  originalName: string
-) => {
-  const extension = path.extname(originalName).toLowerCase().slice(0, 12);
-  const fileKey = `${randomUUID()}${extension}`;
-
-  try {
-    const parallelUpload = new Upload({
-      client: s3,
-      params: {
-        Bucket: bucketName,
-        Key: fileKey,
-        Body: stream,
-        ContentType: contentType
-      }
-    });
-
-    await parallelUpload.done();
-    return fileKey;
-  } catch (error) {
-    logger.error({
-      event: 'storage.r2_stream_upload_failed',
-      err: error,
-      fileKey,
-      contentType
-    }, 'R2 stream upload failed');
     throw error;
   }
 };

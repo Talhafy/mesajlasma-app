@@ -12,22 +12,27 @@ import { logger } from '../config/logger';
 import { deletePrivateFile } from './fileStorage';
 
 /**
- * Belirtilen `fileKey` nesnesinin veritabanındaki (Mesajlar, Zamanlanmış Mesajlar, 
- * Kullanıcı Avatarları, Grup Avatarları) referans sayılarını kontrol eder.
+ * Mesaj, avatar ve şifreli yedek referanslarını kontrol eder.
  * Hiçbir yerde kullanılmıyorsa dosyayı Cloudflare R2'den ve `uploadedAsset` tablosundan siler.
  */
 export const deleteFileIfUnreferenced = async (fileKey: string | null) => {
   if (!fileKey) return;
 
-  // Aynı R2 nesnesi birden fazla mesajda, zamanlanmış mesajda veya avatar olarak referanslanabilir.
-  // Bu yüzden dosyayı silmeden önce dört tablodaki referansları sıralı sorguluyoruz (adapter-pg uyumu için).
+  // Referansları sıralı sorgula (adapter-pg uyumu için).
   const messageReferences = await prisma.message.count({ where: { fileKey } });
-  const scheduledReferences = await prisma.scheduledMessage.count({ where: { fileKey } });
   const userAvatarReferences = await prisma.user.count({ where: { avatarFileKey: fileKey } });
   const groupAvatarReferences = await prisma.conversation.count({ where: { avatarFileKey: fileKey } });
+  const backupReferences = await prisma.encryptedHistoryBackup?.count
+    ? await prisma.encryptedHistoryBackup.count({ where: { fileKey } })
+    : 0;
 
   // İletilen mesajlar aynı R2 nesnesini paylaşabildiği için son referans silinmeden nesne kaldırılmaz.
-  if (messageReferences === 0 && scheduledReferences === 0 && userAvatarReferences === 0 && groupAvatarReferences === 0) {
+  if (
+    messageReferences === 0 &&
+    userAvatarReferences === 0 &&
+    groupAvatarReferences === 0 &&
+    backupReferences === 0
+  ) {
     const asset = await prisma.uploadedAsset.findUnique({ where: { fileKey } });
     if (asset?.status === 'READY') return;
     try {

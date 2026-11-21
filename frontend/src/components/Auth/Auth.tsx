@@ -20,7 +20,7 @@ import type { User } from '../../types/chat';
 
 interface AuthProps {
   /** Giriş başarılı olduğunda token ve kullanıcı nesnesiyle çağrılan geribildirim fonksiyonu */
-  onLoginSuccess: (token: string, user: User) => void;
+  onLoginSuccess: (token: string, user: User, password: string) => Promise<void>;
 }
 
 export default function Auth({ onLoginSuccess }: AuthProps) {
@@ -83,7 +83,8 @@ export default function Auth({ onLoginSuccess }: AuthProps) {
     try {
       const response = await api.post('/login', { identifier, password });
       const { accessToken, user } = response.data;
-      onLoginSuccess(accessToken, user);
+      await onLoginSuccess(accessToken, user, password);
+      setPassword('');
     } catch (error: unknown) {
       const err = error as { response?: { data?: { error?: string; details?: Array<{ message: string }> } } };
       const serverError = err.response?.data;

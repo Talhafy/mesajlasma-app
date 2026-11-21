@@ -14,10 +14,21 @@ import { createSignedFileUrl } from './fileStorage';
 /**
  * Mevcut kullanıcı hariç tüm kullanıcıları engellenme durumlarıyla birlikte listeler.
  */
-export const listUsers = async (currentUserId: string, cursor?: string, limit: number = 20) => {
+export const listUsers = async (
+  currentUserId: string,
+  cursor?: string,
+  limit: number = 20,
+  searchTerm?: string
+) => {
   const takeLimit = Math.min(Math.max(limit || 20, 1), 100);
+  const normalizedSearchTerm = searchTerm?.trim();
   const users = await prisma.user.findMany({
-    where: { NOT: { id: currentUserId } },
+    where: {
+      NOT: { id: currentUserId },
+      ...(normalizedSearchTerm
+        ? { username: { contains: normalizedSearchTerm, mode: 'insensitive' as const } }
+        : {})
+    },
     take: takeLimit + 1,
     skip: cursor ? 1 : 0,
     ...(cursor ? { cursor: { id: String(cursor) } } : {}),

@@ -1,7 +1,31 @@
 services:
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: mesajlasma-livekit
+    restart: unless-stopped
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "7882:7882/udp"
+    environment:
+      LIVEKIT_CONFIG: |
+        port: 7880
+        bind_addresses:
+          - "0.0.0.0"
+        rtc:
+          node_ip: ${LIVEKIT_NODE_IP:-127.0.0.1}
+          use_external_ip: false
+          tcp_port: 7881
+          udp_port: 7882
+        keys:
+          ${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}
+        logging:
+          level: info
+
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.14.3
     container_name: mesajlasma-elasticsearch
+    restart: unless-stopped
     environment:
       discovery.type: single-node
       xpack.security.enabled: "false"
@@ -19,6 +43,7 @@ services:
   kibana:
     image: docker.elastic.co/kibana/kibana:8.14.3
     container_name: mesajlasma-kibana
+    restart: unless-stopped
     environment:
       ELASTICSEARCH_HOSTS: "http://elasticsearch:9200"
     ports:
@@ -30,6 +55,7 @@ services:
   logstash:
     image: docker.elastic.co/logstash/logstash:8.14.3
     container_name: mesajlasma-logstash
+    restart: unless-stopped
     environment:
       LS_JAVA_OPTS: "-Xms256m -Xmx256m"
       XPACK_MONITORING_ENABLED: "false"

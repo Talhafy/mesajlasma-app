@@ -34,6 +34,12 @@ export function useSocketSession({ currentView, onAuthExpired }: UseSocketSessio
   const lastUserActivityAtRef = useRef(Date.now());
   const onlineUserIdsRef = useRef<Set<string>>(new Set());
 
+  const clearOnlineUsers = () => {
+    const emptyOnlineUsers = new Set<string>();
+    onlineUserIdsRef.current = emptyOnlineUsers;
+    setOnlineUserIds(emptyOnlineUsers);
+  };
+
   useEffect(() => {
     onlineUserIdsRef.current = onlineUserIds;
   }, [onlineUserIds]);
@@ -59,6 +65,7 @@ export function useSocketSession({ currentView, onAuthExpired }: UseSocketSessio
   useEffect(() => {
     if (currentView !== 'chat') {
       if (socketInactivityTimerRef.current) clearTimeout(socketInactivityTimerRef.current);
+      clearOnlineUsers();
       setSocket((previous) => {
         previous?.disconnect();
         return null;
@@ -70,15 +77,29 @@ export function useSocketSession({ currentView, onAuthExpired }: UseSocketSessio
     if (!token) return;
 
     isSocketActiveRef.current = true;
+    let lastHandshakeToken = token;
     const newSocket: TypedSocket = io(API_ORIGIN, {
       auth: { token },
       transports: ['websocket', 'polling']
     });
 
+    const syncSocketToken = (nextToken: string) => {
+      newSocket.auth = { token: nextToken };
+      if (newSocket.connected) {
+        newSocket.emit('auth:refresh', { token: nextToken }, (result) => {
+          if (result?.ok) lastHandshakeToken = nextToken;
+        });
+      }
+    };
+
     scheduleSocketInactivityTimer(newSocket);
 
     newSocket.on('connect', () => {
       setSocketConnectionStatus('connected');
+      const latestToken = getAccessToken();
+      if (latestToken && latestToken !== lastHandshakeToken) {
+        syncSocketToken(latestToken);
+      }
       emitSocketActivityPing(newSocket);
     });
 
@@ -100,8 +121,9 @@ export function useSocketSession({ currentView, onAuthExpired }: UseSocketSessio
 
     newSocket.on('presence_snapshot', (payload) => {
       if (payload && Array.isArray(payload.onlineUserIds)) {
-        const set = new Set(payload.onlineUserIds);
-        setOnlineUserIds(set);
+        const nextOnlineUsers = new Set(payload.onlineUserIds);
+        onlineUserIdsRef.current = nextOnlineUsers;
+        setOnlineUserIds(nextOnlineUsers);
       }
     });
 
@@ -111,6 +133,7 @@ export function useSocketSession({ currentView, onAuthExpired }: UseSocketSessio
         const next = new Set(prev);
         if (payload.isOnline) next.add(payload.userId);
         else next.delete(payload.userId);
+        onlineUserIdsRef.current = next;
         return next;
       });
     });
@@ -118,14 +141,14 @@ export function useSocketSession({ currentView, onAuthExpired }: UseSocketSessio
     setSocket(newSocket);
 
     const unsubscribeToken = subscribeAccessToken((newToken) => {
+      if (!newToken) return;
+      newSocket.auth = { token: newToken };
       if (!isSocketActiveRef.current) return;
-      if (newToken) {
-        newSocket.auth = { token: newToken };
-        if (newSocket.connected) {
-          emitSocketActivityPing(newSocket);
-        } else {
-          newSocket.connect();
-        }
+      if (newSocket.connected) {
+        syncSocketToken(newToken);
+      } else if (!newSocket.active) {
+        lastHandshakeToken = newToken;
+        newSocket.connect();
       }
     });
 
@@ -135,8 +158,14 @@ export function useSocketSession({ currentView, onAuthExpired }: UseSocketSessio
         isSocketActiveRef.current = true;
         setSocketConnectionStatus(newSocket.connected ? 'connected' : 'reconnecting');
         scheduleSocketInactivityTimer(newSocket);
-        if (newSocket.disconnected) newSocket.connect();
-        else emitSocketActivityPing(newSocket);
+        const latestToken = getAccessToken();
+        if (latestToken) newSocket.auth = { token: latestToken };
+        if (newSocket.disconnected) {
+          if (latestToken) lastHandshakeToken = latestToken;
+          newSocket.connect();
+        } else {
+          emitSocketActivityPing(newSocket);
+        }
         return;
       }
       scheduleSocketInactivityTimer(newSocket);

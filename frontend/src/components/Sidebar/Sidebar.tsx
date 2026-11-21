@@ -1,8 +1,11 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { api } from '../../api/httpClient';
 import './Sidebar.css';
 import type { User, Conversation, Message } from '../../types/chat';
 import Button from '../UI/Button';
+import { getMessagePreview, isDeletedForEveryoneMessage, isVideoMessage } from '../ChatArea/chatTimeline';
+import { decryptMessageList } from '../../crypto/mlsClient';
+import { searchLocalMessages } from '../../crypto/vault';
 
 /**
  * Arama geçmişi kaydının veri yapısını tanımlayan arayüz.
@@ -70,10 +73,13 @@ export default function Sidebar({
   // --- DURUM DEĞİŞKENLERİ (STATE) ---
   /** Genel arama kutusuna yazılan arama terimi */
   const [searchTerm, setSearchTerm] = useState('');
-  /** Mesaj araması sonucunda API'den dönen mesajlar */
+  /** Yerel kasada bulunan mesajlar */
   const [messageResults, setMessageResults] = useState<Message[]>([]);
+  /** Yerel kullanıcı listesindeki eşleşmeler */
+  const [userResults, setUserResults] = useState<User[]>([]);
   /** Mesaj arama isteğinin devam edip etmediği durumu */
   const [isSearching, setIsSearching] = useState(false);
+  const searchRequestIdRef = useRef(0);
   /** Görünümün 'Arşivlenen Sohbetler' modunda olup olmadığı */
   const [isArchiveView, setIsArchiveView] = useState(false);
   /** Görünümün 'Kayıtlı Kullanıcılar / Rehber' modunda olup olmadığı */
@@ -108,23 +114,54 @@ export default function Sidebar({
    */
   const handleSearchChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value;
+    const cleanTerm = val.trim();
+    const requestId = ++searchRequestIdRef.current;
     setSearchTerm(val);
 
-    if (val.trim().length < 2) {
+    if (cleanTerm.length < 2) {
       setMessageResults([]);
+      setUserResults([]);
       setIsSearching(false);
       return;
     }
 
     setIsSearching(true);
-    rememberSearchTerm(val);
     try {
-      const res = await api.get(`/messages/search?q=${encodeURIComponent(val)}`);
-      setMessageResults(res.data);
+      const localHits = await searchLocalMessages(currentUser.id, cleanTerm);
+      if (requestId !== searchRequestIdRef.current) return;
+      const normalized = cleanTerm.toLocaleLowerCase('tr-TR');
+      const matches = usersList.filter((user) => user.username.toLocaleLowerCase('tr-TR').includes(normalized));
+
+      const mergedById = new Map<string, Message>();
+      for (const localMsg of localHits) {
+        if (!mergedById.has(localMsg.id)) {
+          const matchingConv = conversationList.find((c) => c.id === localMsg.conversationId);
+          mergedById.set(localMsg.id, {
+            id: localMsg.id,
+            conversationId: localMsg.conversationId,
+            senderId: localMsg.senderId,
+            sender: localMsg.senderUsername ? { username: localMsg.senderUsername } : undefined,
+            content: localMsg.content,
+            createdAt: localMsg.createdAt,
+            protocolVersion: localMsg.protocolVersion,
+            epoch: localMsg.epoch,
+            fileKey: localMsg.fileKey || undefined,
+            fileType: localMsg.fileType || undefined,
+            fileName: localMsg.fileName || undefined,
+            conversation: matchingConv
+          });
+        }
+      }
+
+      setMessageResults(Array.from(mergedById.values()));
+      setUserResults(matches.slice(0, 20));
     } catch (error) {
+      if (requestId !== searchRequestIdRef.current) return;
+      setMessageResults([]);
+      setUserResults([]);
       console.error('Global arama hatası:', error);
     } finally {
-      setIsSearching(false);
+      if (requestId === searchRequestIdRef.current) setIsSearching(false);
     }
   };
 
@@ -157,6 +194,7 @@ export default function Sidebar({
    */
   const getConversationPreview = (conversation: Conversation) => {
     if (!conversation.lastMessage) return 'Henüz mesaj yok';
+    if (isDeletedForEveryoneMessage(conversation.lastMessage)) return 'Bu mesaj silindi';
     const content = conversation.lastMessage.content;
     if (content) {
       if (content.startsWith('[SYSTEM_LEAVE]:')) {
@@ -203,7 +241,10 @@ export default function Sidebar({
       }
       return content;
     }
-    return conversation.lastMessage.fileType === 'image' ? '📷 Görsel' : '📎 Dosya';
+    if (conversation.lastMessage.fileType === 'image' || conversation.lastMessage.fileType?.startsWith('image')) return '📷 Görsel';
+    if (isVideoMessage(conversation.lastMessage)) return '🎬 Video';
+    if (conversation.lastMessage.fileType === 'audio') return '🎤 Ses kaydı';
+    return `📎 ${conversation.lastMessage.fileName || 'Dosya'}`;
   };
 
   // Arşivlenmiş sohbetlerin filtrelenmesi
@@ -235,22 +276,7 @@ export default function Sidebar({
 
   const filteredContactUsers = usersList.filter(user => user.username.toLowerCase().includes(contactsSearchTerm.toLowerCase()));
   
-  const searchUserResults = isGlobalSearchActive
-    ? usersList.filter(user => user.username.toLowerCase().includes(searchTerm.toLowerCase()))
-    : [];
-
-  /** Arama terimini tarayıcının yerel hafızasında (localStorage) saklar */
-  const rememberSearchTerm = (term: string) => {
-    const cleanTerm = term.trim();
-    if (cleanTerm.length < 2) return;
-    try {
-      const previous = JSON.parse(localStorage.getItem('chatSearchHistory') || '[]') as string[];
-      const next = [cleanTerm, ...previous.filter((item) => item.toLowerCase() !== cleanTerm.toLowerCase())].slice(0, 12);
-      localStorage.setItem('chatSearchHistory', JSON.stringify(next));
-    } catch {
-      localStorage.setItem('chatSearchHistory', JSON.stringify([cleanTerm]));
-    }
-  };
+  const searchUserResults = isGlobalSearchActive ? userResults : [];
 
   /** Yıldızlı mesajlar panelini açar ve kayıtlı mesajları yükler */
   const openStarredMessages = async () => {
@@ -260,7 +286,8 @@ export default function Sidebar({
     setIsLoadingStarred(true);
     try {
       const res = await api.get('/messages/starred');
-      setStarredMessages(res.data);
+      const decryptedStarred = await decryptMessageList(currentUser.id, res.data);
+      setStarredMessages(decryptedStarred);
     } catch {
       alert('Yıldızlı mesajlar getirilemedi.');
     } finally {
@@ -468,7 +495,7 @@ export default function Sidebar({
           />
           {searchTerm && (
             <button
-              onClick={() => { setSearchTerm(''); handleSearchChange({ target: { value: '' } } as any); }}
+              onClick={() => { void handleSearchChange({ target: { value: '' } } as React.ChangeEvent<HTMLInputElement>); }}
               style={{ position: 'absolute', right: '12px', background: 'none', border: 'none', cursor: 'pointer', color: iconColor, opacity: 0.7, fontSize: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '4px' }}
               title="Aramayı temizle"
             >
@@ -546,7 +573,15 @@ export default function Sidebar({
                     <span>{msg.createdAt ? new Date(msg.createdAt).toLocaleDateString('tr-TR') : ''}</span>
                   </div>
                   <div style={{ fontSize: '14px', color: textColor, opacity: 0.92, wordBreak: 'break-word' }}>
-                    {msg.content || (msg.fileType === 'image' ? 'Görsel' : msg.fileName || 'Dosya')}
+                    {isDeletedForEveryoneMessage(msg)
+                      ? 'Bu mesaj silindi'
+                      : msg.content || (msg.fileType === 'image' || msg.fileType?.startsWith('image')
+                        ? 'Görsel'
+                        : isVideoMessage(msg)
+                          ? 'Video'
+                          : msg.fileType === 'audio'
+                            ? 'Ses kaydı'
+                            : msg.fileName || 'Dosya')}
                   </div>
                 </div>
               ))
@@ -661,7 +696,7 @@ export default function Sidebar({
                 <div style={{ color: '#f97316', fontSize: '12px', fontWeight: 800, textTransform: 'uppercase' }}>Arama Sonuçları</div>
                 <div style={{ fontSize: '13px', color: iconColor, marginTop: '3px' }}>"{searchTerm}" için kişiler ve mesajlar</div>
               </div>
-              <button onClick={() => { setSearchTerm(''); setMessageResults([]); }} style={{ border: 'none', background: panelBg, color: iconColor, width: '32px', height: '32px', borderRadius: '50%', cursor: 'pointer', fontSize: '18px' }}>×</button>
+              <button onClick={() => { void handleSearchChange({ target: { value: '' } } as React.ChangeEvent<HTMLInputElement>); }} style={{ border: 'none', background: panelBg, color: iconColor, width: '32px', height: '32px', borderRadius: '50%', cursor: 'pointer', fontSize: '18px' }}>×</button>
             </div>
 
             <div style={{ flex: 1, overflowY: 'auto', paddingBottom: '10px' }}>
@@ -696,7 +731,7 @@ export default function Sidebar({
                       <strong style={{ color: textColor }}>{msg.sender?.username}</strong> yazdı:
                     </div>
                     <div style={{ fontSize: '14px', color: textColor, opacity: 0.9 }}>
-                      {msg.content.length > 40 ? msg.content.substring(0, 40) + '...' : msg.content}
+                      {getMessagePreview(msg).length > 40 ? `${getMessagePreview(msg).substring(0, 40)}...` : getMessagePreview(msg)}
                     </div>
                   </div>
                 ))

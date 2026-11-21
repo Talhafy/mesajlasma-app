@@ -11,7 +11,7 @@
  * 1. Ortam Değişkenleri & Güvenlik Başlıkları (Helmet, CORS, Trust Proxy)
  * 2. İstek Loglayıcıları (Request & Security Loggers)
  * 3. Versiyonlanmış Router (/api/v1) & Rate Limiting Koruma Katmanı
- * 4. WebSocket (Socket.IO) & Zamanlanmış Mesaj Dinleyicileri
+ * 4. WebSocket (Socket.IO)
  * 5. Global 404 & Hata Yakalama (ErrorHandler) Middleware'leri
  * 6. Graceful Shutdown (Temiz Kapanış) İşleyicileri
  */
@@ -26,18 +26,17 @@ import { Server } from 'socket.io';
 import { clientOrigin, port, trustProxy } from './config/env';
 import { flushLogs, logger } from './config/logger';
 import { loginLimiter, refreshLimiter, registerLimiter, uploadLimiter, globalApiLimiter } from './config/rateLimiters';
-import prisma, { closeDatabasePool } from './db';
+import { closeDatabasePool } from './db';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 import { requestLogger, securityStatusLogger } from './middleware/requestLogger';
 import authRoutes from './routes/auth';
 import callRoutes from './routes/calls';
 import chatRoutes from './routes/chat';
 import healthRoutes from './routes/health';
-import scheduledMessageRoutes from './routes/scheduledMessages';
 import userRoutes from './routes/user';
 import docsRoutes from './routes/docs';
+import mlsRoutes from './routes/mls';
 import { registerSocketHandlers } from './socket/registerSocketHandlers';
-import { startScheduledMessageDeliveryListener } from './socket/scheduledMessageDeliveryListener';
 import { closeRealtimeRedis, configureRealtimeAdapter } from './realtime/redis';
 
 // Express uygulamasını ve HTTP sunucusunu oluşturuyoruz
@@ -82,7 +81,7 @@ v1Router.use(authRoutes);
 v1Router.use(healthRoutes);
 v1Router.use(callRoutes);
 v1Router.use(chatRoutes);
-v1Router.use(scheduledMessageRoutes);
+v1Router.use(mlsRoutes);
 v1Router.use(docsRoutes);
 v1Router.use('/user', userRoutes);
 
@@ -95,7 +94,6 @@ app.get('/', (_req, res) => res.send('Mesajlaşma API çalışıyor 🚀'));
 
 // --- SOCKET.IO VE DİNLEYİCİLER ---
 registerSocketHandlers(io);
-const stopScheduledMessageDeliveryListener = startScheduledMessageDeliveryListener(io);
 
 // --- HATA YAKALAMA (ERROR HANDLING) ---
 app.use(notFoundHandler); // Tanımlanmamış rotalarda 404 döner
@@ -125,7 +123,6 @@ httpServer.on('error', (error) => {
 // --- GRACEFUL SHUTDOWN (TEMİZ KAPANIS) ---
 const shutdown = (signal: string) => {
   logger.info({ event: 'system.server_shutdown', signal }, 'Server shutting down');
-  stopScheduledMessageDeliveryListener();
   io.disconnectSockets(true);
   httpServer.close(async () => {
     try {

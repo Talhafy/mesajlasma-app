@@ -77,7 +77,7 @@ const resolveLogFileName = () => {
 /** Sunucunun çalışma ortamı ('development', 'production', 'test') */
 export const nodeEnv = process.env.NODE_ENV || 'development';
 
-/** Sunucu birden fazla örnek (instance) olarak çalıştığında Socket.IO, presence ve rate-limit paylaşımı sağlayan Redis URL'si */
+/** İsteğe bağlı Redis URL'si; tanımlanmazsa Socket.IO, presence ve rate-limit tek sunuculu bellek modunu kullanır */
 export const redisUrl = process.env.REDIS_URL || '';
 
 /** Frontend uygulamasının adresi (CORS ve CSRF origin kontrollerinde kullanılır) */
@@ -116,14 +116,6 @@ export const livekitApiSecret = process.env.LIVEKIT_API_SECRET || '';
 /** LiveKit katılım jetonlarının (token) yaşam süresi (Saniye) */
 export const livekitTokenTtlSeconds = Number(process.env.LIVEKIT_TOKEN_TTL_SECONDS || 60 * 60);
 
-/** Zamanlanmış mesaj işleyici arka plan servisinin çalışma sıklığı (Milisaniye) */
-export const scheduledMessageWorkerIntervalMs = parseIntegerInRange(
-  'SCHEDULED_MESSAGE_WORKER_INTERVAL_MS',
-  5_000,
-  1_000,
-  60_000
-);
-
 /** Yüklenen geçici dosyaların silinmeden önceki saklanma süresi (Saat) */
 export const uploadedAssetTtlHours = parseIntegerInRange('UPLOADED_ASSET_TTL_HOURS', 24, 1, 168);
 
@@ -147,11 +139,6 @@ export const dbPoolConnectionTimeoutMs = parseIntegerInRange('DB_POOL_CONNECTION
 
 /** Veritabanı sorgu zaman aşımı süresi (Milisaniye) */
 export const dbStatementTimeoutMs = parseIntegerInRange('DB_STATEMENT_TIMEOUT_MS', 10_000, 1_000, 120_000);
-
-// PRODUCTION ÖZEL KRİTİK KONTROLLER
-if (nodeEnv === 'production' && !redisUrl) {
-  throw new Error('Production ölçeklenebilir Socket.IO için REDIS_URL tanımlanmalıdır.');
-}
 
 if (!Number.isInteger(port) || port <= 0 || port > 65535) {
   throw new Error('PORT geçerli bir port numarası olmalıdır.');

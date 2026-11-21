@@ -53,6 +53,59 @@ const getDateSeparatorLabel = (dateString?: string) => {
   return date.toLocaleDateString('tr-TR', { day: 'numeric', month: 'long', year: 'numeric' });
 };
 
+/** Kalıcı mesaj olarak gelen sistem kodunu kullanıcıya okunabilir bildirime dönüştürür. */
+export const formatSystemMessage = (content: string, currentUsername?: string) => {
+  if (content.startsWith('[SYSTEM_LEAVE]:')) {
+    const username = content.slice('[SYSTEM_LEAVE]:'.length);
+    return username === currentUsername ? 'Gruptan ayrıldınız.' : `${username} gruptan ayrıldı.`;
+  }
+
+  const formatActorTargetEvent = (
+    prefix: string,
+    actorAction: (target: string) => string,
+    targetAction: (actor: string) => string,
+    neutralAction: (actor: string, target: string) => string
+  ) => {
+    if (!content.startsWith(prefix)) return null;
+    const [actor, target] = content.slice(prefix.length).split(':');
+    if (!actor || !target) return 'Grup bilgisi güncellendi.';
+    if (actor === currentUsername) return actorAction(target);
+    if (target === currentUsername) return targetAction(actor);
+    return neutralAction(actor, target);
+  };
+
+  const kicked = formatActorTargetEvent(
+    '[SYSTEM_KICK]:',
+    (target) => `${target} kullanıcısını gruptan çıkardınız.`,
+    (actor) => `${actor} sizi gruptan çıkardı.`,
+    (actor, target) => `${actor}, ${target} kullanıcısını gruptan çıkardı.`
+  );
+  if (kicked) return kicked;
+
+  const added = formatActorTargetEvent(
+    '[SYSTEM_ADD]:',
+    (target) => `${target} kullanıcısını gruba eklediniz.`,
+    (actor) => `${actor} sizi gruba ekledi.`,
+    (actor, target) => `${actor}, ${target} kullanıcısını gruba ekledi.`
+  );
+  if (added) return added;
+
+  if (content.startsWith('[SYSTEM_ADMIN_ASSIGN]:')) {
+    const username = content.slice('[SYSTEM_ADMIN_ASSIGN]:'.length);
+    return username === currentUsername ? 'Grup yöneticisi oldunuz.' : `${username} grup yöneticisi oldu.`;
+  }
+
+  const transferred = formatActorTargetEvent(
+    '[SYSTEM_ADMIN_TRANSFER]:',
+    (target) => `${target} kullanıcısını grup yöneticisi yaptınız.`,
+    (actor) => `${actor} sizi grup yöneticisi yaptı.`,
+    (actor, target) => `${actor}, ${target} kullanıcısını grup yöneticisi yaptı.`
+  );
+  if (transferred) return transferred;
+
+  return content.startsWith('[SYSTEM_') ? 'Grup bilgisi güncellendi.' : null;
+};
+
 /**
  * MESAJ VE SİSTEM KAYITLARINDAN BİRLEŞİK ZAMAN ÇİZELGESİ OLUŞTURUR
  * 
@@ -61,15 +114,28 @@ const getDateSeparatorLabel = (dateString?: string) => {
  */
 export const buildTimelineWithDateSeparators = (
   messages: Message[],
-  systemEntries: SystemTimelineEntry[]
+  systemEntries: SystemTimelineEntry[],
+  currentUsername?: string
 ) => {
   const items: TimelineItem[] = [
-    ...messages.map((message) => ({
-      type: 'message' as const,
-      createdAt: message.createdAt || new Date(0).toISOString(),
-      id: message.id,
-      message
-    })),
+    ...messages.map((message): TimelineItem => {
+      const createdAt = message.createdAt || new Date(0).toISOString();
+      const systemText = formatSystemMessage(message.content, currentUsername);
+      if (systemText) {
+        return {
+          type: 'system',
+          createdAt,
+          id: message.id,
+          entry: {
+            id: message.id,
+            conversationId: message.conversationId,
+            text: systemText,
+            createdAt
+          }
+        };
+      }
+      return { type: 'message', createdAt, id: message.id, message };
+    }),
     ...systemEntries.map((entry) => ({ type: 'system' as const, createdAt: entry.createdAt, id: entry.id, entry }))
   ].sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
 
@@ -102,11 +168,27 @@ export const getUnixEpoch = (dateString?: string) => dateString ? Math.floor(new
  */
 export const getMessagePreview = (message?: Message | null) => {
   if (!message) return '';
+  if (isDeletedForEveryoneMessage(message)) return 'Bu mesaj silindi';
   if (message.content?.trim()) return message.content;
   if (message.fileType === 'image' || message.fileType?.startsWith('image')) return '📷 Görsel';
+  if (isVideoMessage(message)) return '🎬 Video';
   if (message.fileType === 'audio') return '🎤 Ses kaydı';
   if (message.fileKey) return `📎 ${message.fileName || 'Dosya'}`;
   return '';
+};
+
+/** Herkesten silinen mesajlar backend tarafından bu özel içerikle saklanır. */
+export const isDeletedForEveryoneMessage = (message?: Pick<Message, 'content' | 'fileKey'> | null) => {
+  if (!message || message.fileKey) return false;
+  const content = message.content?.trim();
+  return content === '🚫 Bu mesaj silindi' || content === 'Bu mesaj silindi';
+};
+
+/** Yeni video türünü ve daha önce yanlışlıkla audio kaydedilmiş video eklerini tanır. */
+export const isVideoMessage = (message?: { fileType?: string | null; fileName?: string | null } | null) => {
+  if (!message) return false;
+  if (message.fileType === 'video' || message.fileType?.startsWith('video')) return true;
+  return message.fileType === 'audio' && /\.(?:mp4|webm|mov|m4v|ogv)$/i.test(message.fileName || '');
 };
 
 /** HTTP yanıtı ve socket olayıyla gelen aynı mesajı tek kayıtta birleştirir. */

@@ -12,11 +12,11 @@
  * 2. Normal Sohbet Modu (isSelectMode = false):
  *    - Karşı tarafın / Grubun adı, profil resmi ve çevrimiçi / yazıyor... durum bilgisi.
  *    - Sesli / Görüntülü arama başlatma butonları (WebRTC).
- *    - Mesaj içi arama, bekleyen zamanlanmış mesajlar modalı ve sohbet ayarları menüsü.
+ *    - Mesaj içi arama ve sohbet ayarları menüsü.
  */
 
 import type { SetStateAction, Dispatch } from 'react';
-import type { User, Conversation, Message, ScheduledMessage } from '../../../types/chat';
+import type { User, Conversation, Message } from '../../../types/chat';
 import Button from '../../UI/Button';
 
 interface ChatHeaderProps {
@@ -43,15 +43,12 @@ interface ChatHeaderProps {
   handleBulkDeleteForMe: () => void;
   handleBulkDeleteForEveryone: () => void;
   onStartCall: (callType: 'audio' | 'video') => void;
-  isPendingModalOpen: boolean;
-  setIsPendingModalOpen: (val: boolean) => void;
-  pendingMessages: ScheduledMessage[];
   isSearchOpen: boolean;
   setIsSearchOpen: (val: boolean) => void;
   setMessageSearchTerm: (val: string) => void;
   isChatMenuOpen: boolean;
   setIsChatMenuOpen: Dispatch<SetStateAction<boolean>>;
-  openConversationInfoPanel: (tab: 'media' | 'links' | 'scheduled' | 'starred') => void;
+  openConversationInfoPanel: (tab: 'media' | 'links' | 'starred') => void;
   onToggleConversationMute: (conversationId: string) => void;
   onToggleConversationPin: (conversationId: string) => void;
   onToggleConversationArchive: (conversationId: string) => void;
@@ -65,7 +62,7 @@ export default function ChatHeader({
   closeChat, activeConversation, chatPartner, partnerStatus, typingUsername, recordingUsername,
   handleHeaderClick, iconColor, textColor, panelBg, borderColor, messages, setForwardMessages,
   handleBulkStar, isBulkDeleteMenuOpen, setIsBulkDeleteMenuOpen, handleBulkDeleteForMe, handleBulkDeleteForEveryone,
-  onStartCall, isPendingModalOpen, setIsPendingModalOpen, pendingMessages, isSearchOpen, setIsSearchOpen,
+  onStartCall, isSearchOpen, setIsSearchOpen,
   setMessageSearchTerm, isChatMenuOpen, setIsChatMenuOpen, openConversationInfoPanel,
   onToggleConversationMute, onToggleConversationPin, onToggleConversationArchive,
   handleDisappearingMode, isBlockedLocally, handleBlockToggle
@@ -142,11 +139,10 @@ export default function ChatHeader({
           </div>
         </div>
       ) : (
-        /* Standart Sohbet Başlık Butonları (Arama, Zamanlanmış Mesaj, Menü) */
+        /* Standart Sohbet Başlık Butonları (Arama, Menü) */
         <div style={{ display: 'flex', alignItems: 'center', gap: '2px', flexShrink: 0 }}>
           <Button variant="icon" onClick={() => onStartCall('audio')} disabled={!activeConversation?.id || isReadOnlyHistory} title="Sesli Ara" aria-label="Sesli arama yap" style={{ color: iconColor }} icon={<svg viewBox="0 0 24 24" width="23" height="23" fill="currentColor"><path d="M6.62 10.79a15.05 15.05 0 0 0 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1C10.61 21 3 13.39 3 4c0-.55.45-1 1-1h3.49c.55 0 1 .45 1 1 0 1.24.2 2.45.57 3.57.11.35.03.74-.25 1.02z"></path></svg>} />
           <Button variant="icon" onClick={() => onStartCall('video')} disabled={!activeConversation?.id || isReadOnlyHistory} title="Görüntülü Ara" aria-label="Görüntülü arama yap" style={{ color: iconColor }} icon={<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M17 10.5V6c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v12c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-4.5l4 4v-11z"></path></svg>} />
-          <Button variant="icon" onClick={() => setIsPendingModalOpen(!isPendingModalOpen)} disabled={isReadOnlyHistory} title="Bekleyen Mesajlar" aria-label="Bekleyen zamanlanmış mesajlar" style={{ color: iconColor, position: 'relative' }} icon={<><svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M12 2C6.486 2 2 6.486 2 12s4.486 10 10 10 10-4.486 10-10S17.514 2 12 2zm0 18c-4.411 0-8-3.589-8-8s3.589-8 8-8 8 3.589 8 8-3.589 8-8 8zm.5-13H11v6l5.2 3.2.8-1.3-4.5-2.7V7z"></path></svg>{pendingMessages.length > 0 && (<span style={{ position: 'absolute', top: '-2px', right: '-2px', background: '#e53935', color: 'white', fontSize: '10px', fontWeight: 'bold', width: '16px', height: '16px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', border: `2px solid ${panelBg}` }}>{pendingMessages.length}</span>)}</>} />
           <Button variant="icon" onClick={() => { setIsSearchOpen(!isSearchOpen); setMessageSearchTerm(''); }} title="Mesajlarda Ara" aria-label="Mesajlarda ara" style={{ color: iconColor }} icon={<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M15.009 13.805h-.636l-.22-.219a5.184 5.184 0 0 0 1.256-3.386 5.207 5.207 0 1 0-5.207 5.208 5.183 5.183 0 0 0 3.385-1.255l.221.22v.635l4.004 3.999 1.194-1.195-3.997-4.007zm-4.8 0a3.6 3.6 0 1 1 0-7.2 3.6 3.6 0 0 1 0 7.2z"></path></svg>} />
           <div style={{ position: 'relative' }}>
             <Button variant="icon" onClick={() => setIsChatMenuOpen((previous) => !previous)} disabled={isReadOnlyHistory} title="Sohbet seçenekleri" aria-label="Sohbet seçeneklerini aç" style={{ color: iconColor }} icon={<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M12 8a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm0 2a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm0 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"></path></svg>} />

@@ -9,7 +9,6 @@
 
 import { Socket } from 'socket.io';
 import { logger } from '../../config/logger';
-import prisma from '../../db';
 import { requireActiveParticipant } from '../../services/conversationAccess';
 import { checkDistributedSocketRateLimit } from '../realtimeState';
 

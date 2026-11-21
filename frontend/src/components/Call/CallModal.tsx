@@ -1,31 +1,13 @@
-/**
- * ============================================================================
- * LIVEKIT WEBRTC SESLİ VE GÖRÜNTÜLÜ ARAMA MODALI (CallModal Component)
- * ============================================================================
- * 
- * Bu bileşen, LiveKit WebRTC altyapısını kullanarak kullanıcılar arasında birebir
- * veya grup halinde gerçek zamanlı sesli ve görüntülü görüşme yapmayı sağlar.
- * 
- * TEKNİK YAPILANDIRMA:
- * 1. LiveKitRoom          -> WebRTC soket bağlantısını ve medya akışlarını (Audio/Video Tracks) başlatır.
- * 2. RoomAudioRenderer    -> Karşı tarafın ses akışını (Remote Audio Track) otomatik hoparlöre yönlendirir.
- * 3. VideoConference      -> Katılımcıların kamera görüntülerini ızgara (grid) şeklinde ekrana yerleştirir.
- * 4. useParticipants      -> Odadaki katılımcıları ve bağlantı durumunu anlık takip eder.
- */
-
-import {
-  LiveKitRoom,
-  RoomAudioRenderer,
-  VideoConference,
-  useParticipants
-} from '@livekit/components-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { ConnectionError, ConnectionErrorReason, DisconnectReason, ExternalE2EEKeyProvider, isE2EESupported, Room } from 'livekit-client';
+import { LiveKitRoom } from '@livekit/components-react';
 import '@livekit/components-styles';
 import type { Conversation } from '../../types/chat';
+import { base64ToBytes } from '../../crypto/vault';
+import CallSessionContent from './CallSessionContent';
 import './CallModal.css';
 
 export type CallType = 'audio' | 'video';
-
-/** Aktif Arama Detay Arayüzü */
 export interface ActiveCall {
   conversationId: string;
   callId: string;
@@ -33,124 +15,168 @@ export interface ActiveCall {
   serverUrl: string;
   token: string;
   roomName: string;
+  e2eeKeyBase64: string;
+  mlsEpoch: number;
   conversation?: Pick<Conversation, 'id' | 'isGroup' | 'name'>;
 }
-
 interface CallModalProps {
   call: ActiveCall;
   title: string;
+  avatarUrl?: string | null;
+  localAvatarUrl?: string | null;
   onClose: () => void;
 }
 
-interface CallSessionContentProps {
-  title: string;
-  isVideoCall: boolean;
-  onClose: () => void;
-}
+export default function CallModal({ call, title, avatarUrl, localAvatarUrl, onClose }: CallModalProps) {
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const onCloseRef = useRef(onClose);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
 
-/**
- * ARAMA İÇERİK VE KONTROL EKRANI (Call Session Content)
- * Katılımcı durumuna göre bekliyor veya görüşme devam ediyor arayüzü sunar.
- */
-function CallSessionContent({ title, isVideoCall, onClose }: CallSessionContentProps) {
-  const participants = useParticipants();
-  // Kendimiz dışındaki uzak katılımcı var mı kontrolü
-  const hasRemoteParticipant = participants.some((participant) => !participant.isLocal);
-  const avatarLetter = title?.[0]?.toUpperCase() || '?';
-  const isWaitingVideoCall = isVideoCall && !hasRemoteParticipant;
+  useEffect(() => {
+    const previousFocus = document.activeElement as HTMLElement | null;
+    dialogRef.current?.focus();
+    const keepFocusInside = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab') return;
+      const buttons = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), [tabindex="0"]') || []).filter((item) => item.getClientRects().length > 0 && getComputedStyle(item).visibility !== 'hidden');
+      const first = buttons[0];
+      const last = buttons[buttons.length - 1];
+      if (!first) { event.preventDefault(); return; }
+      if (event.shiftKey && (document.activeElement === first || document.activeElement === dialogRef.current)) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener('keydown', keepFocusInside);
+    return () => { document.removeEventListener('keydown', keepFocusInside); previousFocus?.focus(); };
+  }, []);
 
-  const statusLabel = hasRemoteParticipant
-    ? (isVideoCall ? 'görüntülü görüşme devam ediyor' : 'sesli görüşme devam ediyor')
-    : (isVideoCall ? 'giden görüntülü arama' : 'giden sesli arama');
+  // Stable callbacks prevent parent updates from retriggering LiveKit's connection effect.
+  const handleError = useCallback((error: Error) => {
+    const rawMsg = (error?.message || '').toLowerCase();
+    // React StrictMode çift-mount sırasında iptal edilen ilk bağlantıyı hata olarak gösterme
+    if (rawMsg.includes('client initiated disconnect') || error.name === 'AbortError' ||
+        (error instanceof ConnectionError && error.reason === ConnectionErrorReason.Cancelled)) {
+      return;
+    }
+    const message = error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError'
+      ? 'Mikrofon veya kamera izni verilmedi. Tarayıcı izinlerini kontrol edip tekrar deneyin.'
+      : error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError'
+      ? 'Mikrofon veya kamera bulunamadı. Cihazınızı bağlayıp tekrar deneyin.'
+      : error.name === 'NotReadableError'
+      ? 'Mikrofon veya kamera kullanılamıyor. Başka bir uygulamanın cihazı kullanıp kullanmadığını kontrol edin.'
+      : error instanceof ConnectionError && error.reason === ConnectionErrorReason.NotAllowed
+      ? 'Görüşme erişimi reddedildi. Aramayı kapatıp yeniden başlatın.'
+      : 'Görüşme sunucusuna bağlanılamadı. Bağlantınızı kontrol edip tekrar deneyin.';
+    setConnectionError(message);
+    console.error('LiveKit bağlantı hatası:', { name: error.name });
+  }, []);
+  const handleDisconnected = useCallback((reason?: DisconnectReason) => {
+    if (reason === DisconnectReason.CLIENT_INITIATED) { onCloseRef.current(); return; }
+    setConnectionError(reason === DisconnectReason.DUPLICATE_IDENTITY
+      ? 'Bu görüşme aynı hesapla başka bir sekmede veya tarayıcıda açıldı.'
+      : 'Görüşme bağlantısı kesildi. Tekrar bağlanmayı deneyebilirsiniz.');
+  }, []);
+  const handleConnected = useCallback(() => setConnectionError(null), []);
+  const handleEncryptionError = useCallback(() => {
+    setConnectionError('Görüşme medyasının şifresi çözülemedi. Aramayı kapatıp yeniden başlatın.');
+  }, []);
+
+  const [preparedRoom, setPreparedRoom] = useState<{ attempt: number; room: Room } | null>(null);
+
+  // React StrictMode uyumlu E2EE Worker yaşam döngüsü:
+  // Worker'ı useMemo yerine useEffect içinde oluşturup aynı cleanup'ta sonlandırıyoruz.
+  useEffect(() => {
+    if (!call.e2eeKeyBase64 || typeof Worker === 'undefined' || !isE2EESupported()) {
+      setConnectionError('Bu tarayıcıda uçtan uca şifreli görüşme başlatılamıyor.');
+      return;
+    }
+
+    let cancelled = false;
+    let failed = false;
+    let worker: Worker | null = null;
+
+    let room: Room | null = null;
+    let mounted = false;
+    const initE2ee = async () => {
+      try {
+        const keyProvider = new ExternalE2EEKeyProvider();
+        const keyBytes = base64ToBytes(call.e2eeKeyBase64);
+        try { await keyProvider.setKey(keyBytes.buffer as ArrayBuffer); }
+        finally { keyBytes.fill(0); }
+
+        if (cancelled) return;
+
+        worker = new Worker(new URL('livekit-client/e2ee-worker', import.meta.url), {
+          type: 'module',
+          name: `livekit-e2ee-${attempt}`
+        });
+
+        worker.addEventListener('error', () => {
+          if (cancelled) return;
+          failed = true;
+          setPreparedRoom(null);
+          setConnectionError('Görüşme şifrelemesi başlatılamadı. Tekrar deneyin.');
+        });
+        room = new Room({ encryption: { keyProvider, worker } });
+        await room.setE2EEEnabled(true);
+        if (!cancelled && !failed) {
+          mounted = true;
+          setPreparedRoom({ attempt, room });
+        }
+      } catch {
+        if (!cancelled) {
+          setConnectionError('Görüşme şifrelemesi başlatılamadı. Tekrar deneyin.');
+        }
+      }
+    };
+
+    void initE2ee();
+
+    return () => {
+      cancelled = true;
+      if (!mounted) void room?.disconnect();
+      worker?.terminate();
+    };
+  }, [call.e2eeKeyBase64, attempt]);
+
+  const room = preparedRoom?.attempt === attempt ? preparedRoom.room : undefined;
+  const retry = () => { setConnectionError(null); setAttempt((value) => value + 1); };
 
   return (
-    <div className={`call-session-shell ${isWaitingVideoCall ? 'waiting-video' : ''}`}>
-      {/* Sesli aramada veya henüz görüntülü arama açılmadığında ses işleyicisi */}
-      {(!isVideoCall || !hasRemoteParticipant) && <RoomAudioRenderer />}
-
-      {/* Görüntülü Arama Bağlandıysa Video Grid Göster */}
-      {isVideoCall && hasRemoteParticipant ? (
-        <div className="call-video-shell">
-          <div className="call-video-stage">
-            <VideoConference />
+    <div ref={dialogRef} className="call-overlay" role="dialog" aria-modal="true" aria-label={title + ' ile arama'} tabIndex={-1}>
+      {room ? (
+        <LiveKitRoom
+          key={call.callId + ':' + attempt}
+          serverUrl={call.serverUrl}
+          token={call.token}
+          room={room}
+          connect audio video={call.callType === 'video'}
+          onConnected={handleConnected}
+          onDisconnected={handleDisconnected}
+          onError={handleError}
+          onEncryptionError={handleEncryptionError}
+          className="call-room"
+        >
+          <CallSessionContent
+            title={title}
+            isVideoCall={call.callType === 'video'}
+            avatarUrl={avatarUrl}
+            localAvatarUrl={localAvatarUrl}
+            e2eeLabel={`MLS E2EE • Epoch #${call.mlsEpoch}`}
+            onClose={onClose}
+            connectionError={connectionError}
+            onDeviceError={handleError}
+            onRetry={retry}
+          />
+        </LiveKitRoom>
+      ) : <div className="call-session">
+        {connectionError ? (
+          <div className="call-connection-error" role="alert">
+            <p>{connectionError}</p>
+            <div><button onClick={retry}>Tekrar bağlan</button><button onClick={onClose}>Aramayı kapat</button></div>
           </div>
-
-          <div className="call-video-overlay">
-            <div className="call-video-header">
-              <div className="call-video-partner">
-                <div className="call-avatar tiny">{avatarLetter}</div>
-                <div className="call-video-copy">
-                  <h2>{title}</h2>
-                  <p>{statusLabel}</p>
-                </div>
-              </div>
-            </div>
-
-            <div className="call-actions single">
-              <div className="call-action">
-                <button className="call-action-button decline" onClick={onClose} title="Aramayı kapat">
-                  <svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor" aria-hidden="true">
-                    <path d="M6.62 10.79a15.05 15.05 0 0 0 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1C10.61 21 3 13.39 3 4c0-.55.45-1 1-1h3.49c.55 0 1 .45 1 1 0 1.24.2 2.45.57 3.57.11.35.03.74-.25 1.02z" />
-                  </svg>
-                </button>
-                <span>Aramayı Kapat</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      ) : (
-        /* Sesli Arama veya Karşı Taraf Bekleniyor Ekranı */
-        <div className="call-prompt-card">
-          <div className="call-top-icons">
-            <span>{isVideoCall ? '◖' : '◐'}</span>
-            <span>{isVideoCall ? '◗' : '◑'}</span>
-          </div>
-
-          <div className="call-avatar">{avatarLetter}</div>
-
-          <div className="call-copy">
-            <h2>{title}</h2>
-            <p>{statusLabel}</p>
-          </div>
-
-          <div className="call-actions single">
-            <div className="call-action">
-              <button className="call-action-button decline" onClick={onClose} title="Aramayı kapat">
-                <svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor" aria-hidden="true">
-                  <path d="M6.62 10.79a15.05 15.05 0 0 0 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1C10.61 21 3 13.39 3 4c0-.55.45-1 1-1h3.49c.55 0 1 .45 1 1 0 1.24.2 2.45.57 3.57.11.35.03.74-.25 1.02z" />
-                </svg>
-              </button>
-              <span>Aramayı Kapat</span>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/**
- * LIVEKIT ROOM SARMALAYICI BİLEŞENİ (Main Call Modal Entry)
- */
-export default function CallModal({ call, title, onClose }: CallModalProps) {
-  const isVideoCall = call.callType === 'video';
-
-  return (
-    <div className="call-overlay">
-      <LiveKitRoom
-        serverUrl={call.serverUrl}
-        token={call.token}
-        connect
-        audio
-        video={isVideoCall}
-        onDisconnected={onClose}
-        onError={(error) => {
-          console.error('LiveKit bağlantı hatası:', error);
-        }}
-        className={`call-room ${isVideoCall ? 'video-mode' : 'audio-mode'}`}
-      >
-        <CallSessionContent title={title} isVideoCall={isVideoCall} onClose={onClose} />
-      </LiveKitRoom>
+        ) : <p role="status">Şifreli görüşme hazırlanıyor…</p>}
+      </div>}
     </div>
   );
 }

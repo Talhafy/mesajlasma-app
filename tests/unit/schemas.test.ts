@@ -24,11 +24,14 @@ describe('request schemas', () => {
     }).success).toBe(false);
   });
 
-  it('requires either text or an uploaded file for a message', () => {
-    // Mesaj metni veya ek dosya anahtarı olmalıdır; tamamen boş mesajlar reddedilmelidir
-    expect(chatSchemas.message.safeParse({ conversationId, clientId, content: 'Merhaba' }).success).toBe(true);
-    expect(chatSchemas.message.safeParse({ conversationId, clientId, content: '', fileKey: 'asset.pdf', fileType: 'document' }).success).toBe(true);
-    expect(chatSchemas.message.safeParse({ conversationId, clientId, content: '   ' }).success).toBe(false);
+  it('requires the current encrypted envelope for new and edited messages', () => {
+    const envelope = { protocolVersion: 2, epoch: 1, senderDeviceId: clientId, ciphertext: 'encrypted' };
+    expect(chatSchemas.message.safeParse({ conversationId, clientId, ...envelope }).success).toBe(true);
+    expect(chatSchemas.message.safeParse({ conversationId, clientId, ...envelope, fileKey: 'asset.pdf', fileType: 'document' }).success).toBe(true);
+    expect(chatSchemas.message.safeParse({ conversationId, clientId, content: 'Merhaba' }).success).toBe(false);
+    expect(chatSchemas.message.safeParse({ conversationId, clientId, ...envelope, protocolVersion: 1 }).success).toBe(false);
+    expect(chatSchemas.editMessage.safeParse(envelope).success).toBe(true);
+    expect(chatSchemas.editMessage.safeParse({ content: 'Merhaba' }).success).toBe(false);
   });
 
   it('only accepts supported disappearing-message durations', () => {
@@ -37,21 +40,10 @@ describe('request schemas', () => {
     expect(chatSchemas.disappearingMode.safeParse({ durationSeconds: 120 }).success).toBe(false);
   });
 
-  it('validates scheduled-message creation and partial edits', () => {
-    // Zamanlanmış mesaj oluşturma ve güncelleme (partial edit) kuralları doğrulanmalıdır
-    expect(chatSchemas.scheduledMessage.safeParse({
-      conversationId,
-      clientId,
-      content: 'Daha sonra gönder',
-      sendAt: '2026-08-04T10:00:00.000Z'
-    }).success).toBe(true);
-    expect(chatSchemas.scheduledMessage.safeParse({
-      conversationId,
-      clientId,
-      content: '',
-      sendAt: '2026-08-04T10:00:00.000Z'
-    }).success).toBe(false);
-    expect(chatSchemas.editScheduledMessage.safeParse({ content: 'Güncellendi' }).success).toBe(true);
-    expect(chatSchemas.editScheduledMessage.safeParse({}).success).toBe(false);
+  it('validates optional user directory search terms', () => {
+    expect(chatSchemas.userListQuery.safeParse({ q: 'deniz', limit: '20' }).success).toBe(true);
+    expect(chatSchemas.userListQuery.safeParse({ q: 'd' }).success).toBe(false);
+    expect(chatSchemas.userListQuery.safeParse({}).success).toBe(true);
   });
+
 });

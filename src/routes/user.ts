@@ -155,16 +155,6 @@ router.delete('/account', authenticateToken, async (req: CustomRequest, res: any
         },
         select: { fileKey: true }
       });
-      const scheduledFiles = await tx.scheduledMessage.findMany({
-        where: {
-          fileKey: { not: null },
-          OR: [
-            { senderId: userId },
-            { conversationId: { in: deletedConversationIds } }
-          ]
-        },
-        select: { fileKey: true }
-      });
       const ownedAssetFiles = await tx.uploadedAsset.findMany({
         where: { ownerId: userId },
         select: { fileKey: true }
@@ -197,7 +187,7 @@ router.delete('/account', authenticateToken, async (req: CustomRequest, res: any
         deletedConversationIds,
         deletedGroupIds,
         updatedGroups,
-        deletedFileKeys: [...messageFiles, ...scheduledFiles, ...ownedAssetFiles, { fileKey: account?.avatarFileKey || null }]
+        deletedFileKeys: [...messageFiles, ...ownedAssetFiles, { fileKey: account?.avatarFileKey || null }]
           .map((entry) => entry.fileKey)
           .filter((key): key is string => Boolean(key))
       };

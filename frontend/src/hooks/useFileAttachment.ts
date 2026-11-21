@@ -14,7 +14,7 @@ export const useFileAttachment = () => {
   const [fileAccept, setFileAccept] = useState('*/*');
   /** Seçilen aktif dosya nesnesi */
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  /** Görsel ise önizleme Blob URL'si, diğer dosyalarda dosya adı metni */
+  /** Görsel veya video ise önizleme Blob URL'si */
   const [filePreview, setFilePreview] = useState<string | null>(null);
 
   /**
@@ -48,8 +48,8 @@ export const useFileAttachment = () => {
 
     setSelectedFile(file);
     clearPreview();
-    // Resim dosyası ise geçici blob URL'si oluştur, değilsa dosya adını önizleme olarak ayarla
-    setFilePreview(file.type.startsWith('image/') ? URL.createObjectURL(file) : file.name);
+    const hasVisualPreview = file.type.startsWith('image/') || file.type.startsWith('video/');
+    setFilePreview(hasVisualPreview ? URL.createObjectURL(file) : null);
     return true;
   }, [clearPreview]);
 

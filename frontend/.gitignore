@@ -20,21 +20,21 @@ lerna-debug.log*
 # ----------------------------------------------------------------------------
 # 2. BAĞIMLILIKLAR VE ÜRETİLEN DERLEME ÇIKTILARI (Build Outputs & Node Modules)
 # ----------------------------------------------------------------------------
-node_modules   # İndirilen npm kütüphaneleri (Çok büyük olduğu için depoya eklenmez)
-dist           # Production derleme çıktısı (Vite build sonucu)
-coverage       # Vitest test kapsama raporları klasörü
-dist-ssr       # Server-Side Rendering geçici derleme çıktısı
-*.local        # Yerel ortam değişkenleri (.env.local vb. hassas şifreler içerebilir)
+node_modules
+dist
+coverage
+dist-ssr
+*.local
 
 # ----------------------------------------------------------------------------
 # 3. İŞLETİM SİSTEMİ VE EDİTÖR ÖZEL DOSYALARI (Editor & OS Files)
 # ----------------------------------------------------------------------------
 .vscode/*
 !.vscode/extensions.json
-.idea          # JetBrains WebStorm / IntelliJ yapılandırmaları
-.DS_Store      # macOS Finder önizleme gizli dosyası
-*.suo          # Visual Studio yerel kullanıcı ayarları
+.idea
+.DS_Store
+*.suo
 *.ntvs*
 *.njsproj
 *.sln
-*.sw?          # Vim / Neovim geçici takas (swap) dosyaları
+*.sw?

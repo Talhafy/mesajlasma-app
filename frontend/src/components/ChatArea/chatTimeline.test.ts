@@ -16,9 +16,11 @@ import { describe, expect, it } from 'vitest';
 import type { Message } from '../../types/chat';
 import {
   buildTimelineWithDateSeparators,
+  formatSystemMessage,
   formatDetailedDate,
   getMessagePreview,
   getUnixEpoch,
+  isDeletedForEveryoneMessage,
   mergeMessage
 } from './chatTimeline';
 
@@ -47,8 +49,38 @@ describe('chat timeline helpers', () => {
   it('formats message previews by content and attachment type', () => {
     expect(getMessagePreview(message('text', '2026-08-01T10:00:00.000Z', 'Merhaba'))).toBe('Merhaba');
     expect(getMessagePreview({ ...message('image', '2026-08-01T10:00:00.000Z', ''), fileType: 'image' })).toContain('Görsel');
+    expect(getMessagePreview({ ...message('video', '2026-08-01T10:00:00.000Z', ''), fileType: 'video' })).toContain('Video');
+    expect(getMessagePreview({ ...message('legacy-video', '2026-08-01T10:00:00.000Z', ''), fileType: 'audio', fileName: 'eski-video.mp4' })).toContain('Video');
     expect(getMessagePreview({ ...message('file', '2026-08-01T10:00:00.000Z', ''), fileKey: 'x', fileName: 'rapor.pdf' })).toContain('rapor.pdf');
     expect(getMessagePreview(null)).toBe('');
+  });
+
+  it('recognizes and normalizes messages deleted for everyone', () => {
+    const deletedMessage = message('deleted', '2026-08-01T10:00:00.000Z', '🚫 Bu mesaj silindi');
+
+    expect(isDeletedForEveryoneMessage(deletedMessage)).toBe(true);
+    expect(getMessagePreview(deletedMessage)).toBe('Bu mesaj silindi');
+    expect(isDeletedForEveryoneMessage(message('regular', '2026-08-01T10:00:00.000Z', 'Normal mesaj'))).toBe(false);
+  });
+
+  it('renders persisted admin transfers as system timeline items', () => {
+    const result = buildTimelineWithDateSeparators(
+      [message('admin-transfer', '2026-08-01T10:00:00.000Z', '[SYSTEM_ADMIN_TRANSFER]:Talhafy:Talha')],
+      [],
+      'Talha'
+    );
+
+    expect(result.find((item) => item.type === 'system')).toMatchObject({
+      type: 'system',
+      entry: { text: 'Talhafy sizi grup yöneticisi yaptı.' }
+    });
+    expect(result.some((item) => item.type === 'message')).toBe(false);
+  });
+
+  it('formats group system events from the current user perspective', () => {
+    expect(formatSystemMessage('[SYSTEM_ADD]:Talha:Ayşe', 'Talha')).toBe('Ayşe kullanıcısını gruba eklediniz.');
+    expect(formatSystemMessage('[SYSTEM_KICK]:Ayşe:Talha', 'Talha')).toBe('Ayşe sizi gruptan çıkardı.');
+    expect(formatSystemMessage('Normal mesaj', 'Talha')).toBeNull();
   });
 
   it('provides stable detail and epoch representations', () => {

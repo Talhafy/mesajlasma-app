@@ -28,10 +28,17 @@ const visibleMessageWhere = () => ({
   ]
 });
 
-/** Yanıt önizlemesinin metin yanında medya türünü de koruması için ortak seçim. */
+/** Yanıt önizlemesinin metin yanında medya türünü ve E2EE zarfını da koruması için ortak seçim. */
 const replyToSelect = {
   id: true,
   content: true,
+  protocolVersion: true,
+  epoch: true,
+  senderDeviceId: true,
+  ciphertext: true,
+  encryptedFileMetadata: true,
+  messageType: true,
+  isDeletedForEveryone: true,
   fileKey: true,
   fileType: true,
   fileName: true,
@@ -198,7 +205,12 @@ export const sendMessage = async (
   payload: {
     conversationId: string;
     clientId: string;
-    content: string;
+    content?: string;
+    protocolVersion?: number;
+    epoch?: number | null;
+    senderDeviceId?: string | null;
+    ciphertext?: string | null;
+    encryptedFileMetadata?: string | null;
     replyToId?: string | null;
     isForwarded?: boolean;
     fileKey?: string | null;
@@ -207,7 +219,19 @@ export const sendMessage = async (
   },
   io: any
 ) => {
-  const { conversationId, clientId, content, replyToId, isForwarded, fileKey, fileType, fileName } = payload;
+  const {
+    conversationId,
+    clientId,
+    protocolVersion = 0,
+    epoch = null,
+    senderDeviceId = null,
+    ciphertext = null,
+    replyToId,
+    isForwarded,
+    fileKey,
+    fileType,
+    fileName
+  } = payload;
 
   const membership = await requireActiveParticipant(
     conversationId,
@@ -225,6 +249,25 @@ export const sendMessage = async (
   }
   if (!conversation.participants.some((participant: any) => participant.userId === senderId && participant.isActive)) {
     throw AppError.forbidden('CONVERSATION_FORBIDDEN', 'Bu sohbete mesaj gönderme yetkiniz yok.');
+  }
+
+  // Yeni MLS zarfları şifreli içeriğe sohbet ve mesaj kimliğini bağlar.
+  const activeEpoch = (conversation as any).mlsCurrentEpoch ?? 0;
+  if (protocolVersion !== 2 || !ciphertext) {
+    throw AppError.badRequest(
+      'MLS_ENCRYPTION_REQUIRED',
+      'Mesaj göndermek için güncel bir MLS zarfı gereklidir.'
+    );
+  }
+  if (activeEpoch < 1 || epoch !== activeEpoch) {
+    throw AppError.conflict('MLS_EPOCH_MISMATCH', 'Mesaj göndermeden önce MLS dönemini eşitleyin.');
+  }
+  if (!senderDeviceId) {
+    throw AppError.badRequest('MLS_DEVICE_NOT_FOUND', 'MLS mesajlarında senderDeviceId zorunludur.');
+  }
+  const senderDevice = await prisma.userDevice.findUnique({ where: { id: senderDeviceId } });
+  if (!senderDevice || senderDevice.userId !== senderId || senderDevice.revokedAt || !senderDevice.approvedAt) {
+    throw AppError.forbidden('MLS_DEVICE_NOT_FOUND', 'Gönderici cihaz doğrulanamadı veya iptal edilmiş.');
   }
 
   // Birebir sohbetlerde engelleme durumları kontrol edilir
@@ -267,14 +310,19 @@ export const sendMessage = async (
     const createdMessage = await prisma.message.create({
       data: {
         clientId,
-        content: content.trim(),
+        content: '',
+        protocolVersion,
+        epoch,
+        senderDeviceId,
+        ciphertext,
+        encryptedFileMetadata: null,
         senderId,
         conversationId,
         replyToId: replyToId || null,
         isForwarded: isForwarded || false,
         fileKey: resolvedFileKey,
         fileType: fileType || null,
-        fileName: fileName || null,
+        fileName: resolvedFileKey ? 'encrypted.enc' : null,
         expiresAt: conversation.disappearingDurationSeconds
           ? new Date(Date.now() + conversation.disappearingDurationSeconds * 1000)
           : null
@@ -488,7 +536,12 @@ export const fetchStarredMessages = async (userId: string) => {
 /**
  * MESAJ DÜZENLEME
  */
-export const editMessage = async (messageId: string, userId: string, content: string, io: any) => {
+export const editMessage = async (
+  messageId: string,
+  userId: string,
+  editPayload: { protocolVersion: 2; epoch: number; senderDeviceId: string; ciphertext: string },
+  io: any
+) => {
   const message = await prisma.message.findUnique({ where: { id: messageId } });
   if (!message) throw AppError.notFound('MESSAGE_NOT_FOUND', 'Mesaj bulunamadı.');
   if (message.senderId !== userId) {
@@ -500,9 +553,28 @@ export const editMessage = async (messageId: string, userId: string, content: st
     'Bu sohbetin aktif üyesi değilsiniz.'
   );
 
+  const conversation = await prisma.conversation.findUnique({
+    where: { id: message.conversationId },
+    select: { mlsCurrentEpoch: true }
+  });
+  if (conversation?.mlsCurrentEpoch !== editPayload.epoch) {
+    throw AppError.conflict('MLS_EPOCH_MISMATCH', 'Mesajı düzenlemeden önce MLS dönemini eşitleyin.');
+  }
+  const senderDevice = await prisma.userDevice.findUnique({ where: { id: editPayload.senderDeviceId } });
+  if (!senderDevice || senderDevice.userId !== userId || senderDevice.revokedAt || !senderDevice.approvedAt) {
+    throw AppError.forbidden('MLS_DEVICE_NOT_FOUND', 'Düzenleyen cihaz doğrulanamadı veya iptal edilmiş.');
+  }
+
   const updatedMessageRecord = await prisma.message.update({
     where: { id: messageId },
-    data: { content: content.trim(), editedAt: new Date() }
+    data: {
+      content: '',
+      protocolVersion: editPayload.protocolVersion,
+      epoch: editPayload.epoch,
+      senderDeviceId: editPayload.senderDeviceId,
+      ciphertext: editPayload.ciphertext,
+      editedAt: new Date()
+    }
   });
 
   const updatedMessage = await prisma.message.findUnique({
@@ -676,6 +748,9 @@ export const deleteMessage = async (messageId: string, userId: string, forEveryo
         where: { id: messageId },
         data: {
           content: '🚫 Bu mesaj silindi',
+          isDeletedForEveryone: true,
+          ciphertext: null,
+          encryptedFileMetadata: null,
           fileKey: null,
           fileType: null,
           fileName: null,

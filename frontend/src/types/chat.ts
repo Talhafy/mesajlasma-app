@@ -22,6 +22,14 @@ export interface Message {
   editedAt?: string;
   expiresAt?: string;
   isOffline?: boolean;
+  // MLS (RFC 9420) E2EE alanları
+  protocolVersion?: number;
+  epoch?: number | null;
+  senderDeviceId?: string | null;
+  ciphertext?: string | null;
+  encryptedFileMetadata?: string | null;
+  messageType?: string;
+  isDeletedForEveryone?: boolean;
 }
 
 export interface User {
@@ -56,21 +64,10 @@ export interface Conversation {
   isActive?: boolean;
   leftAt?: string | null;
   disappearingDurationSeconds?: number | null;
+  mlsCurrentEpoch?: number;
+  mlsGroupId?: string | null;
   isDeleted?: boolean;
   otherUser?: User | null;
   lastMessage?: Message | null;
   participants?: Array<{ user: User }>;
-}
-
-export interface ScheduledMessage {
-  id: string;
-  conversationId: string;
-  clientId?: string;
-  content: string;
-  sendAt: string;
-  fileKey?: string | null;
-  fileType?: string | null;
-  fileName?: string | null;
-  fileUrl?: string | null;
-  createdAt?: string;
 }

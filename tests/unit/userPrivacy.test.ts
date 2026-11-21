@@ -55,6 +55,19 @@ describe('public user privacy', () => {
     expect(user).toMatchObject({ id: 'user-2', username: 'deniz' });
   });
 
+  it('searches the full user directory by username', async () => {
+    prismaMock.user.findMany.mockResolvedValue([]);
+
+    await listUsers('user-1', undefined, 20, 'Deniz');
+
+    expect(prismaMock.user.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        NOT: { id: 'user-1' },
+        username: { contains: 'Deniz', mode: 'insensitive' }
+      }
+    }));
+  });
+
   it('does not expose email addresses in another user profile', async () => {
     // Başka bir kullanıcının profili incelenirken e-posta adresi gizlenmelidir
     prismaMock.user.findUnique.mockResolvedValue({

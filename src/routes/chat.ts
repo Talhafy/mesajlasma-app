@@ -9,7 +9,8 @@
  */
 
 import express, { Response } from 'express';
-import { uploadSingleFile } from '../config/fileUpload';
+import path from 'path';
+import { mimeToExtensions, uploadSingleFile } from '../config/fileUpload';
 import { authenticateToken, CustomRequest } from '../middleware/authMiddleware';
 import { validateRequest } from '../middleware/validateRequest';
 import { chatSchemas } from '../validation/schemas';
@@ -29,7 +30,7 @@ import * as userService from '../services/userService';
 import * as conversationService from '../services/conversationService';
 import * as messageService from '../services/messageService';
 
-import { AppError, respondWithError } from '../errors/AppError';
+import { respondWithError } from '../errors/AppError';
 
 const router = express.Router();
 
@@ -44,11 +45,16 @@ router.use(authenticateToken);
  * POST /api/v1/upload/presigned -> Doğrudan Cloudflare R2'ye Yükleme Adresi Üretme
  * İstemciye önceden imzalanmış yükleme adresi (Presigned URL) verir ve varlığı QUARANTINE statüsünde kaydeder.
  */
-router.post('/upload/presigned', async (req: CustomRequest, res: Response): Promise<any> => {
+router.post('/upload/presigned', validateRequest({ body: chatSchemas.presignedUpload }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const { fileName, contentType, sizeBytes } = req.body;
-    if (!fileName || !contentType || !sizeBytes) {
-      return res.status(400).json({ error: 'fileName, contentType ve sizeBytes zorunludur.', code: 'VALIDATION_ERROR' });
+    const allowedExtensions = mimeToExtensions[String(contentType)];
+    const ext = path.extname(String(fileName)).toLowerCase();
+    if (!allowedExtensions || !allowedExtensions.includes(ext)) {
+      return res.status(400).json({
+        error: 'İzin verilmeyen dosya türü veya dosya uzantısı.',
+        code: 'VALIDATION_ERROR'
+      });
     }
 
     const userId = getUserId(req);
@@ -74,12 +80,9 @@ router.post('/upload/presigned', async (req: CustomRequest, res: Response): Prom
  * POST /api/v1/upload/confirm -> Doğrudan Yükleme Karantina Onayı ve Tarama
  * Cloudflare R2'ye yüklenen dosyanın karantinadan çıkarılıp READY statüsüne geçirilmesini sağlar.
  */
-router.post('/upload/confirm', async (req: CustomRequest, res: Response): Promise<any> => {
+router.post('/upload/confirm', validateRequest({ body: chatSchemas.confirmUpload }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const { fileKey } = req.body;
-    if (!fileKey) {
-      return res.status(400).json({ error: 'fileKey zorunludur.', code: 'VALIDATION_ERROR' });
-    }
     const userId = getUserId(req);
 
     // Karantinadaki dosya taramadan geçirilip READY statüsüne getirilir.
@@ -143,7 +146,8 @@ router.post('/upload', uploadSingleFile, async (req: CustomRequest, res: Respons
       fileUrl: signedFile.fileUrl,
       fileName: originalNameDecoded,
       fileType: req.file.mimetype.startsWith('image/') ? 'image' :
-        req.file.mimetype.startsWith('audio/') || req.file.mimetype.startsWith('video/') ? 'audio' : 'document'
+        req.file.mimetype.startsWith('video/') ? 'video' :
+          req.file.mimetype.startsWith('audio/') ? 'audio' : 'document'
     });
   } catch (error) {
     if (error instanceof MalwareDetectedError) {
@@ -162,12 +166,13 @@ router.post('/upload', uploadSingleFile, async (req: CustomRequest, res: Respons
 // ============================================================================
 
 /** GET /api/v1/users -> Rehberdeki Kullanıcıları Listeleme */
-router.get('/users', validateRequest({ query: chatSchemas.paginationQuery }), async (req: CustomRequest, res: Response): Promise<any> => {
+router.get('/users', validateRequest({ query: chatSchemas.userListQuery }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const currentUserId = getUserId(req);
     const cursor = req.query.cursor ? String(req.query.cursor) : undefined;
     const limit = req.query.limit ? Number(req.query.limit) : undefined;
-    const users = await userService.listUsers(currentUserId, cursor, limit);
+    const searchTerm = req.query.q ? String(req.query.q) : undefined;
+    const users = await userService.listUsers(currentUserId, cursor, limit, searchTerm);
     return res.status(200).json(users);
   } catch (error) {
     logger.error({ event: 'chat.list_users_failed', err: error, userId: req.user?.userId, ip: req.ip }, 'List users failed');
@@ -569,9 +574,8 @@ router.put('/messages/:id', validateRequest({
   try {
     const id = getParam(req, 'id');
     const userId = getUserId(req);
-    const { content } = req.body;
     const io = req.app.get('io');
-    const updated = await messageService.editMessage(id, userId, content, io);
+    const updated = await messageService.editMessage(id, userId, req.body, io);
     return res.status(200).json(updated);
   } catch (error: any) {
     logger.error({ event: 'chat.message_edit_failed', err: error, userId: req.user?.userId, messageId: req.params.id, ip: req.ip }, 'Message edit failed');

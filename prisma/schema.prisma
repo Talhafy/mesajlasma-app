@@ -17,7 +17,6 @@ model User {
   avatarFileKey             String?
   failedLoginAttempts       Int                @default(0)
   messages                  Message[]
-  scheduledMessages         ScheduledMessage[]
   participants              Participant[]
   refreshSessions           RefreshSession[]
   administeredConversations Conversation[]     @relation("ConversationAdmin")
@@ -28,6 +27,8 @@ model User {
   messageDeletions          MessageDeletion[]
   uploadedAssets            UploadedAsset[]
   conversationReadStates    ConversationReadState[]
+  devices                   UserDevice[]
+  historyBackup             EncryptedHistoryBackup?
 }
 
 enum UploadedAssetStatus {
@@ -89,11 +90,14 @@ model Conversation {
   createdAt         DateTime           @default(now())
   disappearingDurationSeconds Int?
   isDeleted         Boolean            @default(false)
+  mlsCurrentEpoch   Int                @default(0)
+  mlsGroupId        String?            @unique
   admin             User?              @relation("ConversationAdmin", fields: [adminId], references: [id], onDelete: SetNull)
   messages          Message[]
-  scheduledMessages ScheduledMessage[]
   participants      Participant[]
   readStates        ConversationReadState[]
+  mlsCommits        MlsCommit[]
+  mlsWelcomes       MlsWelcome[]
 
   @@index([adminId])
 }
@@ -129,6 +133,13 @@ model Message {
   deletions      MessageDeletion[]
   isPinned       Boolean      @default(false)
   isForwarded    Boolean      @default(false)
+  protocolVersion Int         @default(0)
+  epoch          Int?
+  senderDeviceId String?
+  ciphertext     String?
+  encryptedFileMetadata String?
+  messageType    String       @default("text")
+  isDeletedForEveryone Boolean @default(false)
   fileKey        String?
   fileType       String?
   fileName       String?
@@ -172,25 +183,6 @@ model ConversationReadState {
   @@index([conversationId, lastReadAt])
 }
 
-model ScheduledMessage {
-  id             String       @id @default(uuid())
-  content        String
-  senderId       String
-  conversationId String
-  clientId       String?
-  sendAt         DateTime
-  createdAt      DateTime     @default(now())
-  fileKey        String?
-  fileType       String?
-  fileName       String?
-  sender         User         @relation(fields: [senderId], references: [id], onDelete: Cascade)
-  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-
-  @@unique([senderId, clientId])
-  @@index([sendAt])
-  @@index([conversationId, senderId])
-}
-
 model MessageStar {
   messageId String
   userId    String
@@ -211,4 +203,84 @@ model MessageDeletion {
 
   @@id([messageId, userId])
   @@index([userId, messageId])
+}
+
+model UserDevice {
+  id                 String          @id @default(uuid())
+  userId             String
+  deviceName         String          @default("Web Browser")
+  signaturePublicKey String
+  credential         String
+  lastActiveAt       DateTime        @default(now())
+  revokedAt          DateTime?
+  approvedAt         DateTime?
+  approvedByDeviceId String?
+  approvalSignature  String?
+  createdAt          DateTime        @default(now())
+  user               User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  keyPackages        MlsKeyPackage[]
+  welcomes           MlsWelcome[]
+
+  @@unique([userId, signaturePublicKey])
+  @@index([userId, revokedAt])
+}
+
+model MlsKeyPackage {
+  id            String     @id @default(uuid())
+  userId        String
+  deviceId      String
+  keyPackage    String
+  keyPackageRef String     @unique
+  consumedAt    DateTime?
+  createdAt     DateTime   @default(now())
+  device        UserDevice @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@index([userId, consumedAt])
+  @@index([deviceId, consumedAt])
+}
+
+model MlsCommit {
+  id             String       @id @default(uuid())
+  conversationId String
+  epoch          Int
+  senderDeviceId String
+  commitData     String
+  ratchetTree    String?
+  createdAt      DateTime     @default(now())
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, epoch])
+  @@index([conversationId, epoch])
+}
+
+model MlsWelcome {
+  id                String       @id @default(uuid())
+  conversationId    String
+  epoch             Int
+  recipientDeviceId String
+  welcomeData       String
+  ratchetTree       String?
+  deliveredAt       DateTime?
+  createdAt         DateTime     @default(now())
+  recipientDevice   UserDevice   @relation(fields: [recipientDeviceId], references: [id], onDelete: Cascade)
+  conversation      Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([recipientDeviceId, deliveredAt])
+  @@index([conversationId, epoch])
+}
+
+model EncryptedHistoryBackup {
+  id            String   @id @default(uuid())
+  userId        String   @unique
+  fileKey       String
+  kdfSalt       String
+  kdfAlgorithm  String   @default("PBKDF2-SHA256")
+  kdfParams     String
+  cipherNonce   String
+  checksum      String
+  backupVersion Int      @default(1)
+  sizeBytes     Int
+  updatedAt     DateTime @updatedAt
+  createdAt     DateTime @default(now())
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }

@@ -23,13 +23,22 @@ const uuid = z.string().uuid('Geçerli bir UUID gönderilmelidir.');
 const clientId = uuid;
 
 /** Mesaj metni doğrulayıcı (En fazla 10.000 karakter, boş metin kabul edilir) */
-const messageContent = z.string().max(10_000).optional().default('');
 
 /** Dosya ekleri doğrulama alanları */
 const fileFields = {
   fileKey: z.string().min(1).max(300).optional().nullable(),
-  fileType: z.enum(['image', 'audio', 'document']).optional().nullable(),
+  fileType: z.enum(['image', 'video', 'audio', 'document']).optional().nullable(),
   fileName: z.string().max(255).optional().nullable()
+};
+
+/** MLS (RFC 9420) uçtan uca şifreli mesaj zarfı alanları */
+const mlsEnvelopeFields = {
+  content: z.literal('').optional().default(''),
+  protocolVersion: z.literal(2),
+  epoch: z.number().int().min(1).max(1_000_000),
+  senderDeviceId: uuid,
+  ciphertext: z.string().min(1).max(60_000),
+  encryptedFileMetadata: z.null().optional()
 };
 
 /** Güçlü Şifre Politikası (Strong Password Rule) */
@@ -70,28 +79,11 @@ export const userSchemas = {
 const messageBody = z.object({
   conversationId: uuid,
   clientId,
-  content: messageContent,
   replyToId: uuid.optional().nullable(),
   isForwarded: z.boolean().optional(),
-  ...fileFields
-}).strict().refine(
-  // Metin veya dosya yoksa mesaj anlamsızdır; backend boş mesaj kaydı oluşturmaz.
-  (data) => Boolean(data.content.trim() || data.fileKey),
-  { message: 'Mesaj içeriği veya dosya gereklidir.' }
-);
-
-/** Zamanlanmış Mesaj İsteği Gövdesi */
-const scheduledMessageBody = z.object({
-  conversationId: uuid,
-  clientId,
-  content: messageContent,
-  sendAt: z.string().datetime(),
-  ...fileFields
-}).strict().refine(
-  // Zamanlanmış mesaj da normal mesaj gibi en az metin veya dosya taşımalıdır.
-  (data) => Boolean(data.content.trim() || data.fileKey),
-  { message: 'Mesaj içeriği veya dosya gereklidir.' }
-);
+  ...fileFields,
+  ...mlsEnvelopeFields
+}).strict();
 
 /** Sohbet ve Grup İşlemleri Şemaları */
 export const chatSchemas = {
@@ -104,6 +96,11 @@ export const chatSchemas = {
   paginationQuery: z.object({
     cursor: uuid.optional(),
     limit: z.coerce.number().int().min(1).max(100).optional()
+  }),
+  userListQuery: z.object({
+    cursor: uuid.optional(),
+    limit: z.coerce.number().int().min(1).max(100).optional(),
+    q: z.string().trim().min(2).max(100).optional()
   }),
   conversationParams: z.object({ conversationId: uuid }),
   group: z.object({
@@ -136,13 +133,74 @@ export const chatSchemas = {
     callType: z.enum(['audio', 'video'])
   }).strict(),
   searchQuery: z.object({ q: z.string().trim().min(2).max(100) }),
-  scheduledMessage: scheduledMessageBody,
-  scheduledConversationParams: z.object({ conversationId: uuid }),
   idParams: z.object({ id: uuid }),
-  editScheduledMessage: z.object({
-    content: z.string().trim().max(10_000).optional(),
-    ...fileFields
-  }).strict().refine((data) => Object.keys(data).length > 0, { message: 'En az bir alan güncellenmelidir.' }),
-  editMessage: z.object({ content: z.string().trim().min(1).max(10_000) }).strict(),
-  deleteMessageQuery: z.object({ forEveryone: z.enum(['true', 'false']).optional() })
+  editMessage: z.object(mlsEnvelopeFields).strict(),
+  deleteMessageQuery: z.object({ forEveryone: z.enum(['true', 'false']).optional() }),
+  presignedUpload: z.object({
+    fileName: z.string().trim().min(1).max(255),
+    contentType: z.string().trim().min(1).max(150),
+    sizeBytes: z.coerce.number().int().min(1).max(50 * 1024 * 1024)
+  }).strict(),
+  confirmUpload: z.object({
+    fileKey: z.string().trim().min(1).max(300)
+  }).strict()
+};
+
+const keyPackageItemSchema = z.object({
+  keyPackageRef: z.string().trim().min(8).max(256),
+  keyPackage: z.string().trim().min(16).max(16_384)
+}).strict();
+
+/** MLS (RFC 9420) Cihaz, KeyPackage, Commit/Welcome ve Şifreli Yedekleme Şemaları */
+export const mlsSchemas = {
+  registerDevice: z.object({
+    deviceId: uuid.optional(),
+    deviceName: z.string().trim().min(1).max(80).optional().default('Web Browser'),
+    signaturePublicKey: z.string().trim().min(16).max(2048),
+    credential: z.string().trim().min(8).max(4096),
+    initialKeyPackages: z.array(keyPackageItemSchema).max(100).optional(),
+    keyPackages: z.array(keyPackageItemSchema).max(100).optional()
+  }).strict(),
+  deviceParams: z.object({ deviceId: uuid }),
+  approveDevice: z.object({
+    approverId: uuid,
+    signature: z.string().min(80).max(100)
+  }).strict(),
+  uploadKeyPackages: z.object({
+    deviceId: uuid,
+    keyPackages: z.array(keyPackageItemSchema).min(1).max(100)
+  }).strict(),
+  claimKeyPackages: z.object({
+    conversationId: uuid,
+    userIds: z.array(uuid).min(1).max(100),
+    excludeDeviceId: uuid.optional(),
+    excludeDeviceIds: z.array(uuid).max(200).optional()
+  }).strict(),
+  conversationParams: z.object({ id: uuid }),
+  syncConversationQuery: z.object({
+    deviceId: uuid,
+    sinceEpoch: z.coerce.number().int().min(0).optional().default(0)
+  }),
+  submitCommit: z.object({
+    epoch: z.number().int().min(1).max(1_000_000),
+    senderDeviceId: uuid,
+    deliverySignature: z.string().min(80).max(100),
+    commitData: z.string().trim().min(8).max(100_000),
+    ratchetTree: z.string().trim().min(8).max(200_000).optional().nullable(),
+    welcomes: z.array(z.object({
+      recipientDeviceId: uuid,
+      welcomeData: z.string().trim().min(8).max(100_000),
+      ratchetTree: z.string().trim().min(8).max(200_000).optional().nullable()
+    }).strict()).max(200).optional()
+  }).strict(),
+  saveBackup: z.object({
+    fileKey: z.string().trim().min(1).max(300),
+    kdfSalt: z.string().trim().min(16).max(256),
+    kdfAlgorithm: z.enum(['PBKDF2-SHA256', 'ARGON2ID']).optional().default('PBKDF2-SHA256'),
+    kdfParams: z.string().trim().min(2).max(1024),
+    cipherNonce: z.string().trim().min(12).max(256),
+    checksum: z.string().trim().min(32).max(128),
+    sizeBytes: z.number().int().min(1).max(50 * 1024 * 1024),
+    expectedPreviousVersion: z.number().int().min(0).optional()
+  }).strict()
 };

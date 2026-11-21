@@ -10,23 +10,30 @@
  *    - ChatHeader: Üst bar (Arama, arama butonları, sohbet menüsü).
  *    - MessageBubble: Çizelgedeki mesaj balonu render edicisi (Medya, ses oynatıcı, tikler).
  *    - ChatInput: Alt mesaj yazma, ses kaydı alma, emoji/dosya seçici.
- *    - ConversationInfoSidebar: Sağ detay paneli (Medya galerisi, yıldızlılar, zamanlanmışlar).
+ *    - ConversationInfoSidebar: Sağ detay paneli (Medya galerisi, bağlantılar ve yıldızlılar).
  *    - EmptyChatState: Sohbet seçilmediğinde karşılama ekranı.
  * 2. Akıllı Sayfalama (Infinite Scroll & Cursor Pagination):
  *    - Yukarı kaydırıldığında geçmiş mesajların yüklenmesi ve scroll pozisyonunun korunması.
  * 3. Gerçek Zamanlı Socket Olayları & Durumlar:
- *    - Yazıyor... / Ses kaydediyor... sinyalleri, okundu bilgisi ve zamanlanmış mesajlar.
+ *    - Yazıyor... / Ses kaydediyor... sinyalleri, ve okundu bilgisi.
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { Dispatch, RefObject, SetStateAction } from 'react';
 import { api } from '../../api/httpClient';
-import type { User, Conversation, Message, ScheduledMessage } from '../../types/chat';
+import type { User, Conversation, Message } from '../../types/chat';
 import './ChatArea.css';
 import { useFileAttachment } from '../../hooks/useFileAttachment';
 import { useVoiceRecorder } from '../../hooks/useVoiceRecorder';
 import { useMessageInput } from '../../hooks/useMessageInput';
-import Button from '../UI/Button';
+import {
+  decryptIncomingMessage,
+  decryptMessageList,
+  deliverMlsMessage,
+  encryptOutgoingMessage
+} from '../../crypto/mlsClient';
+import { encryptAttachmentFile } from '../../crypto/fileCrypto';
+import { getLocalConversationMedia, type EncryptedFileMetadata } from '../../crypto/vault';
 import { useConfirm } from '../../context/useConfirm';
 import {
   buildTimelineWithDateSeparators,
@@ -75,7 +82,7 @@ interface ChatAreaProps {
   onStartCallWithUser?: (targetUser: User, callType: 'audio' | 'video') => void;
 }
 
-type ConversationInfoTab = 'media' | 'links' | 'scheduled' | 'starred';
+type ConversationInfoTab = 'media' | 'links' | 'starred';
 
 const formatSeconds = (totalSeconds: number) => {
   const mins = Math.floor(totalSeconds / 60);
@@ -118,12 +125,7 @@ export default function ChatArea({
   const [editingMessage, setEditingMessage] = useState<Message | null>(null);
 
   // ZAMANLAMA VE BEKLEYEN MESAJ DURUMLARI
-  const [isPendingModalOpen, setIsPendingModalOpen] = useState(false);
-  const [pendingMessages, setPendingMessages] = useState<ScheduledMessage[]>([]);
 
-  // Zamanlanmış mesaj düzenleme
-  const [editingScheduled, setEditingScheduled] = useState<ScheduledMessage | null>(null);
-  const [editScheduledText, setEditScheduledText] = useState('');
   const [isBlockedLocally, setIsBlockedLocally] = useState(false);
 
   // UX ENHANCEMENTS: CHAT LOADING SKELETON & IMAGE LIGHTBOX
@@ -149,11 +151,7 @@ export default function ChatArea({
     setNewMessage,
     clearMessageInput,
     replyingTo,
-    setReplyingTo,
-    isScheduling,
-    setIsScheduling,
-    scheduleTime,
-    setScheduleTime
+    setReplyingTo
   } = useMessageInput({
     onTyping,
     conversationId: activeConversation?.id,
@@ -168,8 +166,6 @@ export default function ChatArea({
     fileAccept, fileInputRef, filePreview, selectedFile,
     cancelFile, handleFileUpload, handlePaste, openFilePicker, selectFile
   } = useFileAttachment();
-  const scheduledFileInputRef = useRef<HTMLInputElement>(null);
-  const [scheduledFileTarget, setScheduledFileTarget] = useState<string | null>(null);
 
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const dragCounterRef = useRef(0);
@@ -221,7 +217,7 @@ export default function ChatArea({
     setIsLoadingChat(false);
   }, [messages]);
 
-  // Çevrimdışı gönderilen mesajları otomatik yeniden deneme (Auto-retry on reconnect)
+  // Çevrimdışı gönderilen mesajları otomatik yeniden deneme (Auto-retry on reconnect - N5: E2EE + sonsuz döngü koruması)
   useEffect(() => {
     if (socketConnectionStatus === 'connected' && offlineQueue.length > 0) {
       const retryQueue = async () => {
@@ -230,21 +226,27 @@ export default function ChatArea({
         
         for (const msg of toSend) {
           try {
-            await api.post('/messages', {
-              conversationId: msg.conversationId,
-              clientId: msg.id.replace('offline-', ''), // temp uuid
-              content: msg.content,
-              replyToId: msg.replyToId
-            });
-          } catch {
-            // Hata durumunda kuyruğa geri ekle
-            setOfflineQueue(prev => [...prev, msg]);
+            const mlsEnvelope = await encryptOutgoingMessage(
+              currentUser.id,
+              msg.conversationId,
+              getActiveParticipantIds(),
+              msg.content, undefined, { clientId: msg.id.replace('offline-', ''), delivery: { replyToId: msg.replyToId } }
+            );
+            if (!mlsEnvelope) {
+              continue;
+            }
+            await deliverMlsMessage(currentUser.id, msg.conversationId, mlsEnvelope.clientId);
+          } catch (err: any) {
+            // Yalnızca ağ bağlantısı kopuksa (HTTP yanıtı yoksa) kuyruğa geri ekle; 4xx hatalarında sonsuz döngüye girme!
+            if (!err?.response) {
+              setOfflineQueue((prev) => [...prev, msg]);
+            }
           }
         }
       };
       void retryQueue();
     }
-  }, [socketConnectionStatus, offlineQueue]);
+  }, [socketConnectionStatus, offlineQueue, currentUser.id]);
 
   useEffect(() => {
     const partner = selectedUser || activeConversation?.otherUser;
@@ -273,33 +275,59 @@ export default function ChatArea({
     }
   };
 
-  const fetchPendingMessages = useCallback(async () => {
-    if (!activeConversation?.id) return;
-    try {
-      const response = await api.get(`/messages/scheduled/${activeConversation.id}`);
-      setPendingMessages(response.data);
-    } catch {
-      console.error('Bekleyen mesajlar alınamadı.');
+  const getActiveParticipantIds = useCallback((): string[] => {
+    if (activeConversation?.isGroup) {
+      const ids = groupMembers.filter((m) => m.isActive !== false).map((m) => m.id);
+      return ids.length > 0 ? ids : [currentUser.id];
     }
-  }, [activeConversation?.id]);
+    const partnerId = selectedUser?.id || activeConversation?.otherUser?.id;
+    return [currentUser.id, partnerId].filter((id): id is string => Boolean(id));
+  }, [activeConversation?.isGroup, activeConversation?.otherUser?.id, currentUser.id, groupMembers, selectedUser?.id]);
+
 
   // F5 GEREKTİRMEDEN ANLIK VERİ YENİLEME FONKSİYONU
   const fetchSidebarData = useCallback(() => {
     if (!activeConversation?.id || !isConversationInfoOpen) return;
+    const convId = activeConversation.id;
 
-    api.get(`/conversations/${activeConversation.id}/media`)
-      .then((response) => setMediaPanelData(response.data))
+    Promise.all([
+      api.get(`/conversations/${convId}/media`).catch(() => ({ data: { mediaMessages: [], linkItems: [] } })),
+      getLocalConversationMedia(currentUser.id, convId).catch(() => ({ mediaMessages: [], linkItems: [] }))
+    ])
+      .then(async ([serverRes, localData]) => {
+        const serverMedia = await decryptMessageList(
+          currentUser.id,
+          (serverRes.data?.mediaMessages || []) as Message[]
+        );
+        const serverLinks: Array<{ messageId: string; url: string; createdAt?: string }> =
+          serverRes.data?.linkItems || [];
+
+        const seenLinkKeys = new Set(serverLinks.map((l) => `${l.messageId}:${l.url}`));
+        const mergedLinks = [...serverLinks];
+        for (const item of localData.linkItems) {
+          const key = `${item.messageId}:${item.url}`;
+          if (!seenLinkKeys.has(key)) {
+            seenLinkKeys.add(key);
+            mergedLinks.push(item);
+          }
+        }
+
+        setMediaPanelData({
+          mediaMessages: serverMedia,
+          linkItems: mergedLinks
+        });
+      })
       .catch(() => setMediaPanelData({ mediaMessages: [], linkItems: [] }));
 
-    fetchPendingMessages();
 
     api.get('/messages/starred')
-      .then((response) => {
-        const starredInConversation = (response.data as Message[]).filter((message) => message.conversationId === activeConversation?.id);
-        setConversationStarredMessages(starredInConversation);
+      .then(async (response) => {
+        const starredInConversation = (response.data as Message[]).filter((message) => message.conversationId === convId);
+        const decryptedStarred = await decryptMessageList(currentUser.id, starredInConversation);
+        setConversationStarredMessages(decryptedStarred);
       })
       .catch(() => setConversationStarredMessages([]));
-  }, [activeConversation?.id, isConversationInfoOpen, fetchPendingMessages]);
+  }, [activeConversation?.id, isConversationInfoOpen, currentUser.id]);
 
 
   useEffect(() => {
@@ -322,7 +350,6 @@ export default function ChatArea({
     setIsBulkDeleteMenuOpen(false);
     setEditingMessage(null);
     setReplyingTo(null);
-    setIsPendingModalOpen(false);
     setIsChatMenuOpen(false);
     setIsDisappearingSettingsOpen(false);
     setIsConversationInfoOpen(false);
@@ -333,11 +360,6 @@ export default function ChatArea({
     setReplyingTo
   ]);
 
-  useEffect(() => {
-    if (activeConversation?.id && isPendingModalOpen) {
-      fetchPendingMessages();
-    }
-  }, [isPendingModalOpen, activeConversation?.id, fetchPendingMessages]);
 
   // Mesajlar her değiştiğinde (yeni mesaj geldiğinde) yan paneli otomatik güncelle
   useEffect(() => {
@@ -389,37 +411,6 @@ export default function ChatArea({
     }
   };
 
-  const cancelScheduledMessage = async (id: string) => {
-    try {
-      await api.delete(`/messages/schedule/${id}`);
-      setPendingMessages(prev => prev.filter(m => m.id !== id));
-      fetchSidebarData();
-    } catch { alert("İptal işlemi başarısız."); }
-  };
-
-  const sendNowScheduledMessage = async (id: string) => {
-    try {
-      await api.post(`/messages/schedule/send-now/${id}`);
-      setPendingMessages(prev => prev.filter(m => m.id !== id));
-      fetchSidebarData();
-    } catch { alert("Mesaj anında gönderilemedi."); }
-  };
-
-  const openEditScheduledModal = (pm: ScheduledMessage) => {
-    setEditingScheduled(pm);
-    setEditScheduledText(pm.content || '');
-  };
-
-  const handleSaveScheduledEdit = async () => {
-    if (!editingScheduled) return;
-    try {
-      await api.put(`/messages/schedule/${editingScheduled.id}`, { content: editScheduledText });
-      setPendingMessages(prev => prev.map(m => m.id === editingScheduled.id ? { ...m, content: editScheduledText } : m));
-      setEditingScheduled(null);
-      fetchSidebarData();
-    } catch { alert("Mesaj güncellenemedi."); }
-  };
-
   const performSend = async () => {
     if (!newMessage.trim() && !selectedFile) return;
     onTyping(false);
@@ -446,62 +437,40 @@ export default function ChatArea({
       return;
     }
 
-    if (isScheduling) {
-      if (!scheduleTime || scheduleTime.getTime() <= Date.now()) return alert("Geçerli bir gelecek zaman seçin!");
-
-      try {
-        let uploadedFileKey = null;
-        let uploadedFileType = null;
-        let uploadedFileName = null;
-
-        if (selectedFile) {
-          setIsUploading(true);
-          const formData = new FormData();
-          formData.append('file', selectedFile);
-
-          const uploadRes = await api.post('/upload', formData, uploadConfig);
-
-          uploadedFileKey = uploadRes.data.fileKey;
-          uploadedFileType = uploadRes.data.fileType;
-          uploadedFileName = uploadRes.data.fileName;
-        }
-
-        await api.post('/messages/schedule', {
-          conversationId: activeConversation?.id,
-          clientId: crypto.randomUUID(),
-          content: newMessage,
-          sendAt: scheduleTime.toISOString(),
-          fileKey: uploadedFileKey,
-          fileType: uploadedFileType,
-          fileName: uploadedFileName
-        });
-
-        clearMessageInput();
-        cancelFile();
-        fetchSidebarData();
-      } catch {
-        alert("Mesaj zamanlanırken hata oluştu.");
-      } finally {
-        setIsUploading(false);
-        setUploadProgress(0);
-      }
-    } else {
-      if (selectedFile) {
+    if (selectedFile) {
         setIsUploading(true);
-        const formData = new FormData();
-        formData.append('file', selectedFile);
 
         try {
-          const uploadRes = await api.post('/upload', formData, uploadConfig);
-          const { fileKey, fileType, fileName } = uploadRes.data;
+          const { encryptedFile, metadata } = await encryptAttachmentFile(selectedFile);
+          const formData = new FormData();
+          formData.append('file', encryptedFile);
 
-          await api.post('/messages', {
-            conversationId: activeConversation?.id,
-            clientId: crypto.randomUUID(),
-            content: newMessage,
-            fileKey, fileType, fileName,
-            replyToId: replyingTo?.id
-          });
+          const uploadRes = await api.post('/upload', formData, uploadConfig);
+          const { fileKey } = uploadRes.data;
+          const fileType = selectedFile.type.startsWith('image/')
+            ? 'image'
+            : selectedFile.type.startsWith('video/')
+              ? 'video'
+              : selectedFile.type.startsWith('audio/')
+                ? 'audio'
+                : uploadRes.data.fileType;
+
+          const mlsEnvelope = activeConversation?.id
+            ? await encryptOutgoingMessage(
+                currentUser.id,
+                activeConversation.id,
+                getActiveParticipantIds(),
+                newMessage,
+                metadata, { delivery: { fileKey, fileType, replyToId: replyingTo?.id } }
+              )
+            : null;
+
+          if (!mlsEnvelope) {
+            alert("Uçtan uca şifreleme (MLS) anahtarı doğrulanamadı; güvenliğiniz için dosya ve mesaj şifresiz gönderilmedi.");
+            return;
+          }
+
+          await deliverMlsMessage(currentUser.id, activeConversation!.id, mlsEnvelope.clientId);
 
           clearMessageInput();
           cancelFile();
@@ -514,9 +483,7 @@ export default function ChatArea({
       }
       else {
         await mesajGonder(replyingTo?.id);
-        clearMessageInput();
       }
-    }
   };
 
   const handleSend = async () => {
@@ -541,18 +508,31 @@ export default function ChatArea({
     if (forwardMessages.length === 0) return;
     try {
       const convRes = await api.post('/conversations/direct', { targetUserId: targetUser.id });
+      const targetConvId = convRes.data.id;
       for (const msg of forwardMessages) {
-        await api.post('/messages', {
-          conversationId: convRes.data.id,
-          clientId: crypto.randomUUID(),
-          content: msg.content || '',
-          isForwarded: true,
-          fileKey: msg.fileKey,
-          fileType: msg.fileType,
-          fileName: msg.fileName
-        });
+        let parsedFileMeta: EncryptedFileMetadata | null = null;
+        if (msg.encryptedFileMetadata) {
+          try {
+            parsedFileMeta = JSON.parse(msg.encryptedFileMetadata) as EncryptedFileMetadata;
+          } catch {
+            parsedFileMeta = null;
+          }
+        }
+
+        const mlsEnvelope = await encryptOutgoingMessage(
+          currentUser.id,
+          targetConvId,
+          [currentUser.id, targetUser.id],
+          msg.content || '',
+          parsedFileMeta, { delivery: { fileKey: msg.fileKey, fileType: msg.fileType, isForwarded: true } }
+        );
+        if (!mlsEnvelope) {
+          throw new Error('MLS encryption failed for forwarded message');
+        }
+
+        await deliverMlsMessage(currentUser.id, targetConvId, mlsEnvelope.clientId);
       }
-      alert(`Mesaj(lar) ${targetUser.username} kişisine iletildi!`);
+      alert(`Mesaj(lar) ${targetUser.username} kişisine uçtan uca şifreli olarak iletildi!`);
       setForwardMessages([]);
       setSelectedMessageIds(new Set());
       setIsSelectMode(false);
@@ -703,22 +683,28 @@ export default function ChatArea({
     if (!activeConversation?.id || audioBlob.size === 0) return;
     setIsUploading(true);
     try {
-      const file = new File([audioBlob], `voice-${Date.now()}.webm`, { type: audioBlob.type || 'audio/webm' });
+      const rawFile = new File([audioBlob], `voice-${Date.now()}.webm`, { type: audioBlob.type || 'audio/webm' });
+      const { encryptedFile, metadata } = await encryptAttachmentFile(rawFile);
       const formData = new FormData();
-      formData.append('file', file);
+      formData.append('file', encryptedFile);
       const uploadRes = await api.post('/upload', formData, uploadConfig);
 
       const formattedDuration = formatSeconds(durationSeconds);
       const contentText = `Sesli mesaj (${formattedDuration})`;
 
-      await api.post('/messages', {
-        conversationId: activeConversation.id,
-        clientId: crypto.randomUUID(),
-        content: contentText,
-        fileKey: uploadRes.data.fileKey,
-        fileType: uploadRes.data.fileType,
-        fileName: uploadRes.data.fileName
-      });
+      const mlsEnvelope = await encryptOutgoingMessage(
+        currentUser.id,
+        activeConversation.id,
+        getActiveParticipantIds(),
+        contentText,
+        metadata, { delivery: { fileKey: uploadRes.data.fileKey, fileType: 'audio' } }
+      );
+      if (!mlsEnvelope) {
+        alert('Uçtan uca şifreleme (MLS) anahtarı doğrulanamadı; sesli mesaj gönderilmedi.');
+        return;
+      }
+
+      await deliverMlsMessage(currentUser.id, activeConversation.id, mlsEnvelope.clientId);
     } catch {
       alert('Sesli mesaj gönderilemedi.');
     } finally {
@@ -759,61 +745,24 @@ export default function ChatArea({
       return;
     }
     try {
-      const response = await api.put(`/messages/${editingMessage.id}`, { content });
+      if (!activeConversation?.id) return;
+      const fileMetadata = editingMessage.encryptedFileMetadata ? JSON.parse(editingMessage.encryptedFileMetadata) : null;
+      const mlsEnvelope = await encryptOutgoingMessage(
+        currentUser.id, activeConversation.id, getActiveParticipantIds(),
+        content, fileMetadata, { editId: editingMessage.id }
+      );
+      if (!mlsEnvelope) {
+        alert('Uçtan uca şifreleme anahtarı doğrulanamadı. Mesaj düzenlenemedi.');
+        return;
+      }
+      const response = await deliverMlsMessage(currentUser.id, activeConversation.id, mlsEnvelope.clientId);
+      const hydrated = await decryptIncomingMessage(currentUser.id, response.data);
       setMessages((previous) => previous.map((message) => (
-        message.id === editingMessage.id ? { ...message, ...response.data } : message
+        message.id === editingMessage.id ? { ...message, ...hydrated } : message
       )));
       setEditingMessage(null);
       setNewMessage('');
     } catch { alert('Mesaj düzenlenemedi.'); }
-  };
-
-  const replaceScheduledFile = (id: string) => {
-    setScheduledFileTarget(id);
-    setTimeout(() => scheduledFileInputRef.current?.click(), 0);
-  };
-
-  const handleScheduledFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    const target = pendingMessages.find((message) => message.id === scheduledFileTarget);
-    if (!file || !target) return;
-    if (file.size > 50 * 1024 * 1024) return alert('Maksimum 50 MB!');
-
-    setIsUploading(true);
-    try {
-      const formData = new FormData();
-      formData.append('file', file);
-      const upload = await api.post('/upload', formData, uploadConfig);
-      const response = await api.put(`/messages/schedule/${target.id}`, {
-        content: target.content,
-        fileKey: upload.data.fileKey,
-        fileType: upload.data.fileType,
-        fileName: upload.data.fileName
-      });
-      setPendingMessages((previous) => previous.map((message) => message.id === target.id ? response.data.updatedMessage : message));
-      setEditingScheduled((previous) => previous?.id === target.id ? response.data.updatedMessage : previous);
-      fetchSidebarData();
-    } catch { alert('Zamanlanmış dosya değiştirilemedi.'); }
-    finally {
-      setIsUploading(false);
-      setUploadProgress(0);
-      setScheduledFileTarget(null);
-      event.target.value = '';
-    }
-  };
-
-  const removeScheduledFile = async (message: ScheduledMessage) => {
-    if (!message.content?.trim()) return alert('Dosyayı kaldırmadan önce mesaj metni ekleyin.');
-    try {
-      const response = await api.put(`/messages/schedule/${message.id}`, {
-        content: message.content,
-        fileKey: null,
-        fileType: null,
-        fileName: null
-      });
-      setPendingMessages((previous) => previous.map((item) => item.id === message.id ? response.data.updatedMessage : item));
-      fetchSidebarData();
-    } catch { alert('Dosya kaldırılamadı.'); }
   };
 
   const handleDeleteForMe = async (msgId: string) => {
@@ -883,7 +832,11 @@ export default function ChatArea({
   const conversationSystemEntries = activeConversation?.id
     ? systemTimelineEntries.filter((entry) => entry.conversationId === activeConversation.id)
     : [];
-  const timelineItemsWithDateSeparators = buildTimelineWithDateSeparators(combinedMessages, conversationSystemEntries);
+  const timelineItemsWithDateSeparators = buildTimelineWithDateSeparators(
+    combinedMessages,
+    conversationSystemEntries,
+    currentUser.username
+  );
 
   const chatPartner = (selectedUser || activeConversation?.otherUser) || undefined;
   const adminMember = groupMembers.find(m => m.id === activeConversation?.adminId);
@@ -965,9 +918,6 @@ export default function ChatArea({
           handleBulkDeleteForMe={handleBulkDeleteForMe}
           handleBulkDeleteForEveryone={handleBulkDeleteForEveryone}
           onStartCall={onStartCall}
-          isPendingModalOpen={isPendingModalOpen}
-          setIsPendingModalOpen={setIsPendingModalOpen}
-          pendingMessages={pendingMessages}
           isSearchOpen={isSearchOpen}
           setIsSearchOpen={setIsSearchOpen}
           setMessageSearchTerm={setMessageSearchTerm}
@@ -1012,85 +962,6 @@ export default function ChatArea({
                     </button>
                   );
                 })}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* BEKLEYEN MESAJLAR LİSTESİ MODALI */}
-        {isPendingModalOpen && (
-          <div style={{ position: 'absolute', top: '75px', right: '20px', width: '380px', background: inputBg, borderRadius: '16px', boxShadow: '0 12px 40px rgba(0,0,0,0.22)', zIndex: 110, padding: '18px', border: `1px solid ${borderColor}`, backdropFilter: 'blur(12px)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', borderBottom: `1px solid ${borderColor}`, paddingBottom: '8px' }}>
-              <div>
-                <h3 style={{ fontSize: '16px', color: '#f97316', margin: 0, fontWeight: 700 }}>⏳ Zamanlanmış Mesajlar</h3>
-                <span style={{ fontSize: '11px', color: iconColor }}>İletilmeyi bekleyen mesajlarınız</span>
-              </div>
-              <button onClick={() => setIsPendingModalOpen(false)} style={{ background: 'rgba(0,0,0,0.05)', border: 'none', fontSize: '14px', cursor: 'pointer', color: iconColor, width: '28px', height: '28px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>✕</button>
-            </div>
-            {pendingMessages.length === 0 ? (
-              <p style={{ fontSize: '13px', color: iconColor, textAlign: 'center', padding: '10px 0' }}>Bekleyen mesaj yok.</p>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '350px', overflowY: 'auto', paddingRight: '4px' }}>
-                {pendingMessages.map((pm) => (
-                  <div key={pm.id} style={{ background: panelBg, borderLeft: '4px solid #f97316', padding: '12px', borderRadius: '8px', fontSize: '13px', border: `1px solid ${borderColor}`, borderLeftWidth: '4px', boxShadow: '0 2px 8px rgba(0,0,0,0.03)' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                      <span style={{ fontWeight: 600, color: '#f97316', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                        ⏳ {new Date(pm.sendAt).toLocaleString('tr-TR', { dateStyle: 'short', timeStyle: 'short' })}
-                      </span>
-                    </div>
-                    <div style={{ color: textColor, wordBreak: 'break-word', marginBottom: '10px', fontSize: '13px', lineHeight: '1.4' }}>
-                      {pm.fileUrl && (
-                        <div style={{ marginBottom: '6px', color: '#f97316', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px' }}>
-                          {pm.fileType === 'image' || pm.fileType?.startsWith('image') ? '📷 Görsel Eklentisi' : `📄 ${pm.fileName || 'Dosya Eklentisi'}`}
-                        </div>
-                      )}
-                      {pm.content}
-                    </div>
-                    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', borderTop: `1px solid ${borderColor}`, paddingTop: '8px', marginTop: '4px' }}>
-                      <button onClick={() => sendNowScheduledMessage(pm.id)} style={{ padding: '4px 8px', borderRadius: '6px', border: 'none', background: 'rgba(249, 115, 22, 0.1)', color: '#f97316', cursor: 'pointer', fontWeight: 600, fontSize: '11px', transition: 'all 0.2s' }}>⚡ Şimdi Gönder</button>
-                      <button onClick={() => openEditScheduledModal(pm)} style={{ padding: '4px 8px', borderRadius: '6px', border: 'none', background: 'rgba(0, 123, 255, 0.1)', color: '#007bff', cursor: 'pointer', fontWeight: 600, fontSize: '11px', transition: 'all 0.2s' }}>✏️ Düzenle</button>
-                      <button onClick={() => replaceScheduledFile(pm.id)} style={{ padding: '4px 8px', borderRadius: '6px', border: 'none', background: 'rgba(124, 77, 255, 0.1)', color: '#7c4dff', cursor: 'pointer', fontWeight: 600, fontSize: '11px', transition: 'all 0.2s' }}>{pm.fileKey ? '🔄 Dosyayı Değiştir' : '📎 Dosya Ekle'}</button>
-                      {pm.fileKey && <button onClick={() => removeScheduledFile(pm)} style={{ padding: '4px 8px', borderRadius: '6px', border: 'none', background: 'rgba(239, 108, 0, 0.1)', color: '#ef6c00', cursor: 'pointer', fontWeight: 600, fontSize: '11px', transition: 'all 0.2s' }}>🗑️ Kaldır</button>}
-                      <button onClick={() => cancelScheduledMessage(pm.id)} style={{ padding: '4px 8px', borderRadius: '6px', border: 'none', background: 'rgba(229, 57, 53, 0.1)', color: '#e53935', cursor: 'pointer', fontWeight: 600, fontSize: '11px', transition: 'all 0.2s', marginLeft: 'auto' }}>❌ İptal</button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* ZAMANLANMIŞ MESAJ DÜZENLEME MODALI */}
-        {editingScheduled && (
-          <div className="settings-overlay" onClick={() => setEditingScheduled(null)} style={{ position: 'fixed', inset: 0, zIndex: 10000, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px', backdropFilter: 'blur(4px)' }}>
-            <div style={{ width: '400px', maxWidth: '100%', background: panelBg, borderRadius: '20px', padding: '20px', boxShadow: '0 24px 64px rgba(0,0,0,0.3)', color: textColor, border: `1px solid ${borderColor}` }} onClick={(e) => e.stopPropagation()}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
-                <div>
-                  <div style={{ fontSize: '12px', color: '#f97316', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Zamanlanmış Mesaj Düzenleme</div>
-                  <h3 style={{ margin: '2px 0 0', fontSize: '18px', fontWeight: 700 }}>
-                    📅 {new Date(editingScheduled.sendAt).toLocaleString('tr-TR', { dateStyle: 'long', timeStyle: 'short' })}
-                  </h3>
-                </div>
-                <button onClick={() => setEditingScheduled(null)} style={{ border: 'none', background: inputBg, color: iconColor, borderRadius: '50%', width: '32px', height: '32px', cursor: 'pointer' }}>✕</button>
-              </div>
-
-              {editingScheduled.fileKey && (
-                <div style={{ marginBottom: '14px', padding: '10px 14px', borderRadius: '12px', background: inputBg, border: `1px solid ${borderColor}`, fontSize: '13px', color: iconColor, display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span>{editingScheduled.fileType === 'image' || editingScheduled.fileType?.startsWith('image') ? '📷 Görsel Eklentisi' : `📄 ${editingScheduled.fileName || 'Dosya Eklentisi'}`}</span>
-                </div>
-              )}
-
-              <textarea
-                value={editScheduledText}
-                onChange={(e) => setEditScheduledText(e.target.value)}
-                autoFocus
-                style={{ width: '100%', minHeight: '120px', padding: '14px', borderRadius: '14px', border: `1px solid ${borderColor}`, background: inputBg, color: textColor, resize: 'vertical', outline: 'none', boxSizing: 'border-box', fontSize: '14px', lineHeight: '1.5' }}
-                placeholder="Mesaj metni..."
-              />
-
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '16px' }}>
-                <Button variant="outline" text="Vazgeç" onClick={() => setEditingScheduled(null)} style={{ background: 'transparent', color: iconColor, border: `1px solid ${borderColor}` }} />
-                <Button text="Kaydet" onClick={handleSaveScheduledEdit} />
               </div>
             </div>
           </div>
@@ -1229,7 +1100,7 @@ export default function ChatArea({
               </h3>
 
               <div style={{ background: inputBg, padding: '15px', borderRadius: '8px', marginBottom: '20px', border: `1px solid ${borderColor}`, fontSize: '14px', wordBreak: 'break-word', opacity: 0.9 }}>
-                "{messageInfo.content}"
+                "{getMessagePreview(messageInfo)}"
               </div>
 
               <div style={{ marginBottom: '15px', display: 'flex', flexDirection: 'column', gap: '5px' }}>
@@ -1303,10 +1174,6 @@ export default function ChatArea({
           uploadProgress={uploadProgress}
           replyingTo={replyingTo}
           setReplyingTo={setReplyingTo}
-          isScheduling={isScheduling}
-          setIsScheduling={setIsScheduling}
-          scheduleTime={scheduleTime}
-          setScheduleTime={setScheduleTime}
           selectedFile={selectedFile}
           filePreview={filePreview}
           cancelFile={cancelFile}
@@ -1324,8 +1191,6 @@ export default function ChatArea({
           fileInputRef={fileInputRef}
           fileAccept={fileAccept}
           handleFileUpload={handleFileUpload}
-          scheduledFileInputRef={scheduledFileInputRef}
-          handleScheduledFileChange={handleScheduledFileChange}
           newMessage={newMessage}
           setNewMessage={setNewMessage}
           handleSend={handleSend}
@@ -1372,7 +1237,6 @@ export default function ChatArea({
         isBlockedLocally={isBlockedLocally}
         mediaMessages={mediaMessages}
         linkItems={linkItems}
-        pendingMessages={pendingMessages}
         conversationStarredMessages={conversationStarredMessages}
         conversationInfoTab={conversationInfoTab}
         setConversationInfoTab={setConversationInfoTab}

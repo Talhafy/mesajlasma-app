@@ -156,6 +156,8 @@ export const listConversations = async (userId: string, cursor?: string, limit: 
         isActive: membership.isActive,
         leftAt: membership.leftAt ? membership.leftAt.toISOString() : null,
         disappearingDurationSeconds: conversation.disappearingDurationSeconds,
+        mlsCurrentEpoch: conversation.mlsCurrentEpoch ?? 0,
+        mlsGroupId: conversation.mlsGroupId ?? null,
         isDeleted: conversation.isDeleted,
         otherUser,
         lastMessage
@@ -542,13 +544,11 @@ export const removeGroupParticipant = async (groupId: string, participantId: str
     where: { userId_conversationId: { userId: participantId, conversationId: groupId } },
     data: { isActive: false, leftAt: new Date() }
   });
-  await prisma.scheduledMessage.deleteMany({
-    where: { conversationId: groupId, senderId: participantId }
-  });
   
   const systemMessage = await prisma.message.create({
     data: {
       content: systemContent,
+      messageType: 'system',
       senderId: adminId,
       conversationId: groupId,
     },
@@ -610,6 +610,7 @@ export const removeGroupParticipant = async (groupId: string, participantId: str
       const changeMsg = await prisma.message.create({
         data: {
           content: systemAdminChangeContent,
+          messageType: 'system',
           senderId: newAdminId!,
           conversationId: groupId,
         },
@@ -715,6 +716,7 @@ export const addGroupParticipants = async (groupId: string, participantIds: stri
     const msg = await prisma.message.create({
       data: {
         content: systemContent,
+        messageType: 'system',
         senderId: adminId,
         conversationId: groupId,
       },
@@ -784,6 +786,7 @@ export const transferGroupAdmin = async (groupId: string, newAdminId: string, ad
     const changeMsg = await prisma.message.create({
       data: {
         content: systemContent,
+        messageType: 'system',
         senderId: adminId,
         conversationId: groupId,
       },
@@ -820,7 +823,6 @@ export const deleteGroup = async (groupId: string, adminId: string, io: any) => 
     const group = await tx.conversation.findUnique({ where: { id: groupId } });
     if (!group?.isGroup || group.adminId !== adminId) return null;
 
-    await tx.scheduledMessage.deleteMany({ where: { conversationId: groupId } });
 
     await tx.conversation.update({
       where: { id: groupId },

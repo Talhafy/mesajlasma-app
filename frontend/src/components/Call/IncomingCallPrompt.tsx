@@ -1,90 +1,41 @@
-/**
- * ============================================================================
- * GELEN ARAMA UYARI VE KABUL/REDDET BİLEŞENİ (IncomingCallPrompt Component)
- * ============================================================================
- * 
- * Bu bileşen, başka bir kullanıcı arama başlattığında ekranda beliren gelen arama
- * bildirim kartını (Pop-up Overlay) render eder.
- * 
- * ÖZELLİKLER:
- * 1. Arayan kullanıcının adı ve profil baş harfi (Avatar)
- * 2. Aramanın türüne göre (Sesli veya Görüntülü) özel ikonlar
- * 3. Kabul Et (Accept) ve Reddet (Decline) buton işleyicileri
- */
-
 import type { CallType } from './CallModal';
+import CallAvatar from './CallAvatar';
+import CallIcon from './CallIcon';
+import './CallModal.css';
 import './IncomingCallPrompt.css';
 
-/** Gelen Arama Bilgi Arayüzü */
 export interface IncomingCall {
   conversationId: string;
   callId: string;
   callType: CallType;
+  mlsEpoch: number;
   isGroup?: boolean;
   conversationName?: string | null;
-  caller: {
-    id: string;
-    username: string;
-  };
+  caller: { id: string; username: string };
 }
-
 interface IncomingCallPromptProps {
   call: IncomingCall;
+  avatarUrl?: string | null;
   onAccept: () => void;
   onDecline: () => void;
 }
 
-export default function IncomingCallPrompt({ call, onAccept, onDecline }: IncomingCallPromptProps) {
-  // Grup araması ise grup adı, birebir arama ise arayanın adı gösterilir
-  const title = call.isGroup && call.conversationName
-    ? call.conversationName
-    : call.caller.username;
+export default function IncomingCallPrompt({ call, avatarUrl, onAccept, onDecline }: IncomingCallPromptProps) {
+  const title = call.isGroup && call.conversationName ? call.conversationName : call.caller.username;
   const isVideo = call.callType === 'video';
-
   return (
-    <div className="incoming-call-overlay">
-      <div className="incoming-call-card">
-        {/* Arama Türü Üst İkonları */}
-        <div className="incoming-call-top-icons">
-          <span>{isVideo ? '▦' : '◖'}</span>
-          <span>{isVideo ? '◼' : '◗'}</span>
-        </div>
-
-        {/* Profil Avatar Harfi */}
-        <div className="incoming-call-avatar">{title[0]?.toUpperCase()}</div>
-
-        {/* Arama Başlığı ve Metni */}
-        <div className="incoming-call-copy">
-          <h2>{title}</h2>
-          <p>{isVideo ? 'gelen görüntülü arama' : 'gelen sesli arama'}</p>
-        </div>
-
-        {/* Aksiyon Butonları (Reddet / Kabul Et) */}
-        <div className="incoming-call-actions">
-          <div className="incoming-call-action">
-            <button className="incoming-call-button decline" onClick={onDecline} title="Reddet">
-              <svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor" aria-hidden="true">
-                <path d="M6.62 10.79a15.05 15.05 0 0 0 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1C10.61 21 3 13.39 3 4c0-.55.45-1 1-1h3.49c.55 0 1 .45 1 1 0 1.24.2 2.45.57 3.57.11.35.03.74-.25 1.02z" />
-              </svg>
-            </button>
-            <span>Reddet</span>
-          </div>
-
-          <div className="incoming-call-action">
-            <button className="incoming-call-button accept" onClick={onAccept} title="Kabul et">
-              {isVideo ? (
-                <svg viewBox="0 0 24 24" width="30" height="30" fill="currentColor" aria-hidden="true">
-                  <path d="M17 10.5V6c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v12c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-4.5l4 4v-11z" />
-                </svg>
-              ) : (
-                <svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor" aria-hidden="true">
-                  <path d="M6.62 10.79a15.05 15.05 0 0 0 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1C10.61 21 3 13.39 3 4c0-.55.45-1 1-1h3.49c.55 0 1 .45 1 1 0 1.24.2 2.45.57 3.57.11.35.03.74-.25 1.02z" />
-                </svg>
-              )}
-            </button>
-            <span>Kabul Et</span>
-          </div>
-        </div>
+    <div className="incoming-call-overlay" role="dialog" aria-modal="true" aria-label={title + ' arıyor'}>
+      <header className="call-header">
+        <div className="call-header-kind"><CallIcon name={isVideo ? 'camera' : 'phone'} width="18" height="18" /><span>Gelen {isVideo ? 'görüntülü' : 'sesli'} arama</span></div>
+      </header>
+      <div className="call-person is-ringing">
+        <div className="call-person-avatar"><CallAvatar name={title} src={avatarUrl} /></div>
+        <h2>{title}</h2>
+        <p className="call-person-status">{call.isGroup ? call.caller.username + ' sizi grup görüşmesine davet ediyor' : 'Sizi arıyor…'}</p>
+      </div>
+      <div className="incoming-call-actions">
+        <div className="incoming-call-action"><button className="incoming-call-button decline" onClick={onDecline} aria-label="Reddet"><CallIcon name="hangup" width="30" height="30" /></button><span>Reddet</span></div>
+        <div className="incoming-call-action"><button className="incoming-call-button accept" onClick={onAccept} aria-label="Kabul et" autoFocus><CallIcon name={isVideo ? 'camera' : 'phone'} width="28" height="28" /></button><span>Kabul et</span></div>
       </div>
     </div>
   );

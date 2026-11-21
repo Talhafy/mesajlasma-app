@@ -3,12 +3,14 @@ import type { User } from '../../types/chat';
 import './Modals.css';
 import ImageCropperModal from './ImageCropperModal';
 import AvatarViewerModal from './AvatarViewerModal';
+import SecurityVaultModal from './SecurityVaultModal';
 import { api } from '../../api/httpClient';
 
 /**
  * SettingsModal bileşenine iletilen prop'ların tip tanımlamaları.
  */
 interface SettingsModalProps {
+  vaultSetup: 'migration' | 'unavailable' | null;
   /** Ayarlar modalının görünürlük durumunu güncelleyen setter fonksiyonu */
   setIsSettingsOpen: (isOpen: boolean) => void;
   /** İşlem sonucu gösterilecek mesaj nesnesi ({ type: 'success'|'error', text: string }) */
@@ -55,8 +57,10 @@ interface SettingsModalProps {
  */
 export default function SettingsModal(props: SettingsModalProps) {
   // --- LOCAL STATE (YEREL DURUMLAR) ---
-  /** Aktif sekme: 'profile' (Profil), 'account' (Hesap) veya 'blocked' (Engellenenler) */
-  const [activeTab, setActiveTab] = useState<'profile' | 'account' | 'blocked'>('profile');
+  /** Aktif sekme: 'profile' (Profil), 'account' (Hesap), 'security' (MLS E2EE & Kasa) veya 'blocked' (Engellenenler) */
+  const [activeTab, setActiveTab] = useState<'profile' | 'account' | 'security' | 'blocked'>(
+    props.vaultSetup ? 'security' : 'profile'
+  );
   /** Avatar yükleme işleminin devam edip etmediği durumu */
   const [isAvatarUploading, setIsAvatarUploading] = useState(false);
   /** Kırpma modala aktarılmak üzere seçilen ham resim dosyası */
@@ -130,6 +134,14 @@ export default function SettingsModal(props: SettingsModalProps) {
               className={`settings-tab-btn ${activeTab === 'account' ? 'active' : ''}`}
             >
               <span>⚙️</span> Hesap
+            </button>
+
+            {/* MLS E2EE & Şifreli Kasa Sekme Butonu */}
+            <button
+              onClick={() => { setActiveTab('security'); props.setSettingsMessage({ type: '', text: '' }); }}
+              className={`settings-tab-btn ${activeTab === 'security' ? 'active' : ''}`}
+            >
+              <span>🔒</span> E2EE & Kasa
             </button>
 
             {/* Engellenenler Sekme Butonu */}
@@ -291,6 +303,11 @@ export default function SettingsModal(props: SettingsModalProps) {
                 </button>
               </div>
             </div>
+          )}
+
+          {/* ================= MLS E2EE & ŞİFRELİ KASA SEKMESİ ================= */}
+          {activeTab === 'security' && props.currentUser && (
+            <SecurityVaultModal userId={props.currentUser.id} vaultSetup={props.vaultSetup} />
           )}
 
           {/* ================= ENGELLENENLER SEKMESİ İÇERİĞİ ================= */}

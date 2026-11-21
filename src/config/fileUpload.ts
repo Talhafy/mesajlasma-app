@@ -34,8 +34,11 @@ const mimeToExtensions: Record<string, string[]> = {
   'application/vnd.ms-excel': ['.xls'],
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
   'application/vnd.ms-powerpoint': ['.ppt'],
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation': ['.pptx']
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': ['.pptx'],
+  'application/octet-stream': ['.enc', '.bin']
 };
+
+export { mimeToExtensions };
 
 /** İzin verilen tüm MIME tiplerinin kümesi (Set) */
 const allowedMimeTypes = new Set(Object.keys(mimeToExtensions));

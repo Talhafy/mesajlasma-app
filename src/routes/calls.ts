@@ -14,6 +14,7 @@ import { logger } from '../config/logger';
 import { chatSchemas } from '../validation/schemas';
 import { getAuthenticatedUserId as getUserId } from '../utils/request';
 import { requireActiveParticipant } from '../services/conversationAccess';
+import prisma from '../db';
 import {
   createConversationCallToken,
   isLivekitConfigured,
@@ -56,6 +57,10 @@ router.post('/calls/token', validateRequest({ body: chatSchemas.callToken }), as
       return res.status(403).json({ error: 'Bu görüşmeye katılma yetkiniz yok.' });
     }
 
+    const participants = await prisma.participant.findMany({
+      where: { conversationId, isActive: true },
+      select: { userId: true }
+    });
     // LiveKit token yalnızca bu konuşma/callId için üretilen oda adına geçerlidir.
     const livekit = await createConversationCallToken({
       conversationId,
@@ -77,6 +82,7 @@ router.post('/calls/token', validateRequest({ body: chatSchemas.callToken }), as
       callId,
       callType,
       conversationId,
+      participantIds: participants.map(({ userId }) => userId),
       conversation: {
         id: membership.conversation.id,
         isGroup: membership.conversation.isGroup,

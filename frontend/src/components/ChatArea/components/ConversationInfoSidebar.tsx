@@ -4,19 +4,19 @@
  * ============================================================================
  * 
  * Bu bileşen, aktif sohbetin veya grubun detaylarını, medya galericisini,
- * paylaşılan bağlantıları, yıldızlı mesajları ve bekleyen zamanlanmış mesajları gösteren
+ * paylaşılan bağlantıları ve yıldızlı mesajları gösteren
  * sağ yan paneldir.
  * 
  * TAB SEKMELERİ:
  * 1. 'media'     -> Paylaşılan fotoğraflar, videolar ve belgeler galerisi.
  * 2. 'links'     -> Sohbet içinde paylaşılan tüm web bağlantıları (URL'ler).
- * 3. 'scheduled' -> İleriki bir tarihte iletilmek üzere bekleyen mesajlar.
  * 4. 'starred'   -> Kullanıcının favorilere eklediği (yıldızladığı) mesajlar.
  */
 
 import { useState } from 'react';
-import type { User, Conversation, Message, ScheduledMessage } from '../../../types/chat';
+import type { User, Conversation, Message } from '../../../types/chat';
 import AvatarViewerModal from '../../Modals/AvatarViewerModal';
+import { getMessagePreview, isVideoMessage } from '../chatTimeline';
 
 interface ConversationInfoSidebarProps {
   isConversationInfoOpen: boolean;
@@ -29,10 +29,9 @@ interface ConversationInfoSidebarProps {
   isBlockedLocally: boolean;
   mediaMessages: Message[];
   linkItems: Array<{ messageId: string; url: string }>;
-  pendingMessages: ScheduledMessage[];
   conversationStarredMessages: Message[];
-  conversationInfoTab: 'media' | 'links' | 'scheduled' | 'starred';
-  setConversationInfoTab: (tab: 'media' | 'links' | 'scheduled' | 'starred') => void;
+  conversationInfoTab: 'media' | 'links' | 'starred';
+  setConversationInfoTab: (tab: 'media' | 'links' | 'starred') => void;
   scrollToMessage: (messageId?: string) => void;
   panelBg: string;
   inputBg: string;
@@ -50,7 +49,7 @@ interface ConversationInfoSidebarProps {
 
 export default function ConversationInfoSidebar({
   isConversationInfoOpen, setIsConversationInfoOpen, activeConversation, chatPartner, partnerStatus,
-  openGroupSettings, handleBlockToggle: _handleBlockToggle, isBlockedLocally: _isBlockedLocally, mediaMessages, linkItems, pendingMessages,
+  openGroupSettings, handleBlockToggle: _handleBlockToggle, isBlockedLocally: _isBlockedLocally, mediaMessages, linkItems,
   conversationStarredMessages, conversationInfoTab, setConversationInfoTab, scrollToMessage,
   panelBg, inputBg, borderColor, textColor, iconColor, isDarkMode: _isDarkMode, lightboxImageUrl, setLightboxImageUrl,
   avatarProfileUser: _avatarProfileUser, setAvatarProfileUser: _setAvatarProfileUser, onStartDirectChat: _onStartDirectChat, onStartCallWithUser: _onStartCallWithUser
@@ -140,9 +139,9 @@ export default function ConversationInfoSidebar({
             )}
           </div>
 
-          {/* TAB SEKMELERİ (Medya, Bağlantılar, Zamanlanmış, Yıldızlı) */}
+          {/* TAB SEKMELERİ (Medya, Bağlantılar, Yıldızlı) */}
           <div style={{ display: 'flex', borderBottom: `1px solid ${borderColor}`, background: inputBg }}>
-            {(['media', 'links', 'scheduled', 'starred'] as const).map((tab) => (
+            {(['media', 'links', 'starred'] as const).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setConversationInfoTab(tab)}
@@ -160,7 +159,6 @@ export default function ConversationInfoSidebar({
               >
                 {tab === 'media' && '🖼️ Medya'}
                 {tab === 'links' && '🔗 Bağlantı'}
-                {tab === 'scheduled' && `⏳ (${pendingMessages.length})`}
                 {tab === 'starred' && `⭐ (${conversationStarredMessages.length})`}
               </button>
             ))}
@@ -190,15 +188,22 @@ export default function ConversationInfoSidebar({
                             window.open(message.fileUrl, '_blank', 'noopener,noreferrer');
                           }
                         }}
-                        style={{ width: '50px', height: '50px', padding: 0, borderRadius: '8px', border: 'none', background: '#f97316', color: '#ffffff', cursor: message.fileUrl ? 'pointer' : 'default', overflow: 'hidden', flexShrink: 0 }}
+                        style={{ position: 'relative', width: '50px', height: '50px', padding: 0, borderRadius: '8px', border: 'none', background: '#f97316', color: '#ffffff', cursor: message.fileUrl ? 'pointer' : 'default', overflow: 'hidden', flexShrink: 0 }}
                       >
                         {(message.fileType === 'image' || message.fileType?.startsWith('image')) && message.fileUrl
                           ? <img src={message.fileUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
-                          : <span aria-hidden="true" style={{ fontSize: '20px' }}>📎</span>}
+                          : isVideoMessage(message) && message.fileUrl
+                            ? <>
+                              <video src={message.fileUrl} muted playsInline preload="metadata" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                              <span aria-hidden="true" style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(17,24,39,0.24)' }}>
+                                <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
+                              </span>
+                            </>
+                            : <svg aria-hidden="true" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /></svg>}
                       </button>
                       <div style={{ minWidth: 0, flex: 1 }}>
                         <div style={{ color: textColor, fontSize: '14px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                          {message.fileName || (message.fileType === 'image' ? 'Görsel' : 'Dosya')}
+                          {message.fileName || (message.fileType === 'image' ? 'Görsel' : isVideoMessage(message) ? 'Video' : 'Dosya')}
                         </div>
                         <button
                           type="button"
@@ -229,22 +234,6 @@ export default function ConversationInfoSidebar({
               </div>
             )}
 
-            {/* 3. BEKLEYEN ZAMANLANMIŞ MESAJLAR TABI */}
-            {conversationInfoTab === 'scheduled' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                {pendingMessages.length === 0 ? (
-                  <p style={{ textAlign: 'center', color: iconColor, fontSize: '13px' }}>Bekleyen zamanlanmış mesaj yok.</p>
-                ) : (
-                  pendingMessages.map((msg) => (
-                    <div key={msg.id} style={{ padding: '10px 12px', background: inputBg, borderRadius: '8px', borderLeft: '3px solid #f97316' }}>
-                      <div style={{ fontSize: '13px', color: textColor }}>{msg.content}</div>
-                      <div style={{ fontSize: '11px', color: iconColor, marginTop: '4px' }}>⏰ {new Date(msg.sendAt).toLocaleString('tr-TR')}</div>
-                    </div>
-                  ))
-                )}
-              </div>
-            )}
-
             {/* 4. YILDIZLI MESAJLAR TABI */}
             {conversationInfoTab === 'starred' && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -254,7 +243,7 @@ export default function ConversationInfoSidebar({
                   conversationStarredMessages.map((msg) => (
                     <div key={msg.id} onClick={() => scrollToMessage(msg.id)} style={{ padding: '10px 12px', background: inputBg, borderRadius: '8px', cursor: 'pointer', borderLeft: '3px solid #eab308' }}>
                       <div style={{ fontSize: '11px', color: '#eab308', fontWeight: 'bold', marginBottom: '2px' }}>{msg.sender?.username || 'Kullanıcı'}</div>
-                      <div style={{ fontSize: '13px', color: textColor }}>{msg.content}</div>
+                      <div style={{ fontSize: '13px', color: textColor }}>{getMessagePreview(msg)}</div>
                     </div>
                   ))
                 )}

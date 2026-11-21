@@ -41,6 +41,16 @@ export type AppErrorCode =
   | 'FILE_NOT_FOUND'              // Depolamadaki dosya bulunamadı
   | 'MALWARE_DETECTED'            // Virüs / Zararlı yazılım tespit edildi
   | 'MALWARE_SCANNER_UNAVAILABLE' // Virüs tarayıcı sunucuya ulaşılamıyor
+  // MLS (RFC 9420) ve Şifreli Yedekleme Kodları
+  | 'MLS_EPOCH_MISMATCH'          // Sohbetin MLS epoch değeri ilerlemiş (Commit çakışması)
+  | 'MLS_DEVICE_APPROVAL_INVALID'
+  | 'MLS_INVALID_COMMIT'
+  | 'MLS_DEVICE_NOT_FOUND'        // İstemci MLS cihaz kaydı bulunamadı veya iptal edilmiş
+  | 'MLS_KEY_PACKAGE_EXHAUSTED'   // Hedef kullanıcının kullanılabilir KeyPackage paketi kalmadı
+  | 'MLS_ENCRYPTION_REQUIRED'     // Aktif MLS sohbetinde şifresiz (protocolVersion=0) mesaj reddedildi
+  | 'MLS_INVALID_KEY_PACKAGE'     // KeyPackage imzası veya kullanıcı/cihaz kimlik bağlaması geçersiz
+  | 'MLS_RECIPIENT_FORBIDDEN'     // Welcome/Commit alıcı cihazı bu sohbetin aktif katılımcısına ait değil
+  | 'BACKUP_VERSION_CONFLICT'     // Şifreli geçmiş yedeği sürümü daha yeni bir sürümle çakıştı
   // Genel HTTP Kodları
   | 'FORBIDDEN'                   // Yetkisiz erişim (403)
   | 'NOT_FOUND'                   // Bulunamadı (404)

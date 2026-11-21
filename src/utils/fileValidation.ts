@@ -12,7 +12,6 @@
  *   binary imzası 'MZ' (4D 5A) veya '<?php' olur. Bu kontrol sahtekarlığı tespit eder.
  */
 
-import { logger } from '../config/logger';
 
 /**
  * Dosya tamponunun (Buffer) ikili imzasını beyan edilen MIME tipi ile karşılaştırır.
@@ -83,6 +82,10 @@ export const verifyFileSignature = (buffer: Buffer, mimeType: string): boolean =
         }
       }
       return true;
+
+    case 'application/octet-stream':
+      // İstemci tarafında uçtan uca şifrelenmiş (E2EE) dosya ve yedek zarfları "MSE1" (4D 53 45 31) başlığı taşır
+      return hex === '4D534531';
 
     default:
       return true;

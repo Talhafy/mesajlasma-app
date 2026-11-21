@@ -15,7 +15,7 @@ export const openapiSpec = {
   info: {
     title: 'Mesajlaşma Uygulaması REST API',
     version: '1.0.0',
-    description: 'Birebir sohbetler, grup mesajlaşması, zamanlanmış mesajlar ve dosya paylaşımı için güvenli REST API dokümantasyonu.'
+    description: 'Birebir sohbetler, grup mesajlaşması ve dosya paylaşımı için güvenli REST API dokümantasyonu.'
   },
   /** API Sunucu Adresleri */
   servers: [
@@ -302,11 +302,15 @@ export const openapiSpec = {
                 properties: {
                   conversationId: { type: 'string', format: 'uuid' },
                   clientId: { type: 'string', format: 'uuid' },
-                  content: { type: 'string' },
+                  content: { type: 'string', enum: [''] },
+                  protocolVersion: { type: 'integer', enum: [2] },
+                  epoch: { type: 'integer', minimum: 1 },
+                  senderDeviceId: { type: 'string', format: 'uuid' },
+                  ciphertext: { type: 'string' },
                   fileKey: { type: 'string', nullable: true },
                   replyToId: { type: 'string', format: 'uuid', nullable: true }
                 },
-                required: ['conversationId', 'clientId']
+                required: ['conversationId', 'clientId', 'protocolVersion', 'epoch', 'senderDeviceId', 'ciphertext']
               }
             }
           }

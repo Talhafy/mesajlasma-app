@@ -20,6 +20,7 @@ interface CallSignalPayload {
   conversationId?: unknown;
   callId?: unknown;
   callType?: unknown;
+  mlsEpoch?: unknown;
 }
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -120,7 +121,8 @@ export const registerCallSocketHandlers = (
   ) => {
     resetInactivityTimer();
     const call = parseCallPayload(payload);
-    if (!call) {
+    const mlsEpoch = (payload as CallSignalPayload | null)?.mlsEpoch;
+    if (!call || typeof mlsEpoch !== 'number' || !Number.isSafeInteger(mlsEpoch) || mlsEpoch < 1) {
       acknowledge?.({ ok: false, error: 'Geçersiz çağrı bilgisi.' });
       return;
     }
@@ -144,6 +146,7 @@ export const registerCallSocketHandlers = (
           id: true,
           isGroup: true,
           name: true,
+          mlsCurrentEpoch: true,
           participants: {
             where: { isActive: true },
             select: { userId: true }
@@ -152,6 +155,10 @@ export const registerCallSocketHandlers = (
       });
       if (!conversation) {
         acknowledge?.({ ok: false, error: 'Bu sohbet için çağrı yetkiniz yok.' });
+        return;
+      }
+      if (conversation.mlsCurrentEpoch !== mlsEpoch) {
+        acknowledge?.({ ok: false, error: 'Görüşme anahtarı güncellendi. Aramayı yeniden başlatın.' });
         return;
       }
 
@@ -163,6 +170,7 @@ export const registerCallSocketHandlers = (
         conversationId: call.conversationId,
         callId: call.callId,
         callType: call.callType,
+        mlsEpoch,
         isGroup: conversation.isGroup,
         conversationName: conversation.name,
         caller: {

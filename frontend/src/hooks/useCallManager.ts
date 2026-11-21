@@ -9,11 +9,13 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
+import { isAxiosError } from 'axios';
 import type { ActiveCall, CallType } from '../components/Call/CallModal';
 import type { IncomingCall } from '../components/Call/IncomingCallPrompt';
 import type { Conversation, User } from '../types/chat';
 import type { TypedSocket } from '../types/socket';
 import { api } from '../api/httpClient';
+import { getActiveConversationCallMediaKey } from '../crypto/mlsClient';
 
 export interface CallHistoryItem {
   callId: string;
@@ -27,6 +29,7 @@ export interface CallHistoryItem {
 
 interface UseCallManagerOptions {
   socket: TypedSocket | null;
+  currentUserId: string | null;
   activeConversation: Conversation | null;
   conversationList: Conversation[];
   groupsList: Conversation[];
@@ -35,6 +38,7 @@ interface UseCallManagerOptions {
 
 export function useCallManager({
   socket,
+  currentUserId,
   activeConversation,
   conversationList,
   groupsList,
@@ -42,13 +46,7 @@ export function useCallManager({
 }: UseCallManagerOptions) {
   const [activeCall, setActiveCall] = useState<ActiveCall | null>(null);
   const [incomingCall, setIncomingCall] = useState<IncomingCall | null>(null);
-  const [callHistory, setCallHistory] = useState<CallHistoryItem[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem('callHistory') || '[]');
-    } catch {
-      return [];
-    }
-  });
+  const [callHistory, setCallHistory] = useState<CallHistoryItem[]>([]);
 
   const activeCallRef = useRef<ActiveCall | null>(null);
   const incomingCallRef = useRef<IncomingCall | null>(null);
@@ -64,6 +62,28 @@ export function useCallManager({
   useEffect(() => { groupsListRef.current = groupsList; }, [groupsList]);
   useEffect(() => { selectedUserRef.current = selectedUser; }, [selectedUser]);
 
+  const callHistoryStorageKey = currentUserId ? `callHistory:${currentUserId}` : null;
+
+  const resetCallSession = () => {
+    activeCallRef.current = null;
+    incomingCallRef.current = null;
+    setActiveCall(null);
+    setIncomingCall(null);
+    setCallHistory([]);
+  };
+
+  useEffect(() => {
+    localStorage.removeItem('callHistory');
+    resetCallSession();
+    if (!callHistoryStorageKey) return;
+    try {
+      const storedHistory = JSON.parse(localStorage.getItem(callHistoryStorageKey) || '[]');
+      setCallHistory(Array.isArray(storedHistory) ? storedHistory : []);
+    } catch {
+      setCallHistory([]);
+    }
+  }, [callHistoryStorageKey]);
+
   const getCallTitle = (conversationId: string, fallback?: string | null) => {
     const conversation = activeConversationRef.current?.id === conversationId
       ? activeConversationRef.current
@@ -74,27 +94,60 @@ export function useCallManager({
   };
 
   const rememberCall = (entry: CallHistoryItem) => {
+    if (!callHistoryStorageKey) return;
     setCallHistory((previous) => {
       const next = [entry, ...previous.filter((item) => item.callId !== entry.callId)].slice(0, 50);
-      localStorage.setItem('callHistory', JSON.stringify(next));
+      localStorage.setItem(callHistoryStorageKey, JSON.stringify(next));
       return next;
     });
   };
 
   const updateCallStatus = (callId: string, status: CallHistoryItem['status']) => {
+    if (!callHistoryStorageKey) return;
     setCallHistory((previous) => {
       const next = previous.map((item) => item.callId === callId ? { ...item, status } : item);
-      localStorage.setItem('callHistory', JSON.stringify(next));
+      localStorage.setItem(callHistoryStorageKey, JSON.stringify(next));
       return next;
     });
   };
 
-  const createCallConnection = async (conversationId: string, callId: string, callType: CallType): Promise<ActiveCall> => {
-    const response = await api.post('/calls/token', { conversationId, callId, callType });
-    return response.data;
+  const createCallConnection = async (
+    conversationId: string, callId: string, callType: CallType, expectedEpoch?: number
+  ): Promise<ActiveCall> => {
+    if (!currentUserId || !socket?.connected) throw new Error('Arama için bağlantının yeniden kurulmasını bekleyin.');
+    const { data } = await api.post<Omit<ActiveCall, 'mlsEpoch' | 'e2eeKeyBase64'> & { participantIds: string[] }>(
+      '/calls/token', { conversationId, callId, callType }
+    );
+    const { participantIds, ...room } = data;
+    const serverUrl = new URL(room.serverUrl);
+    const isLoopback = ['localhost', '127.0.0.1', '[::1]'].includes(serverUrl.hostname);
+    if (isLoopback && !['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname)) {
+      throw new Error('Görüşme sunucusunun adresi bu cihazdan erişilemiyor.');
+    }
+
+    const mediaKey = await getActiveConversationCallMediaKey(
+      currentUserId, conversationId, callId, participantIds, expectedEpoch
+    ).catch(() => null);
+    if (!mediaKey) throw new Error(expectedEpoch === undefined
+      ? 'Görüşme anahtarı hazırlanamadı. Sohbeti açıp cihaz eşitlemesini kontrol edin.'
+      : 'Görüşme anahtarı eşleşmedi. Aramanın yeniden başlatılması gerekiyor.');
+    return { ...room, e2eeKeyBase64: mediaKey.e2eeKeyBase64, mlsEpoch: mediaKey.epoch };
   };
 
-  const emitCallSignal = (eventName: 'call:invite' | 'call:accepted' | 'call:declined' | 'call:ended', call: {
+  const inviteToCall = async ({ conversationId, callId, callType, mlsEpoch }: ActiveCall) => {
+    const result = await socket?.timeout(5000).emitWithAck('call:invite', { conversationId, callId, callType, mlsEpoch })
+      .catch(() => null);
+    if (!result?.ok) throw new Error(result?.error || 'Arama daveti iletilemedi. Bağlantınızı kontrol edin.');
+  };
+
+  const showCallError = (error: unknown) => {
+    let message = 'Görüşme bağlantısı hazırlanamadı.';
+    if (isAxiosError(error)) message = error.response?.data?.error || message;
+    else if (error instanceof Error) message = error.message;
+    alert(message);
+  };
+
+  const emitCallSignal = (eventName: 'call:accepted' | 'call:declined' | 'call:ended', call: {
     conversationId: string;
     callId: string;
     callType: CallType;
@@ -175,6 +228,7 @@ export function useCallManager({
 
     try {
       const nextCall = await createCallConnection(activeConversation.id, callId, callType);
+      await inviteToCall(nextCall);
       rememberCall({
         callId,
         conversationId: activeConversation.id,
@@ -185,9 +239,8 @@ export function useCallManager({
         createdAt: new Date().toISOString()
       });
       setActiveCall(nextCall);
-      emitCallSignal('call:invite', nextCall);
-    } catch {
-      alert('Görüşme başlatılamadı. LiveKit ayarlarını kontrol edin.');
+    } catch (error) {
+      showCallError(error);
     }
   };
 
@@ -197,6 +250,7 @@ export function useCallManager({
       const conversation = res.data;
       const callId = crypto.randomUUID();
       const nextCall = await createCallConnection(conversation.id, callId, callType);
+      await inviteToCall(nextCall);
       rememberCall({
         callId,
         conversationId: conversation.id,
@@ -207,22 +261,24 @@ export function useCallManager({
         createdAt: new Date().toISOString()
       });
       setActiveCall(nextCall);
-      emitCallSignal('call:invite', nextCall);
-    } catch {
-      alert('Arama başlatılamadı. LiveKit ayarlarını kontrol edin.');
+    } catch (error) {
+      showCallError(error);
     }
   };
 
   const acceptIncomingCall = async () => {
     if (!incomingCall) return;
     try {
-      const nextCall = await createCallConnection(incomingCall.conversationId, incomingCall.callId, incomingCall.callType);
+      const nextCall = await createCallConnection(
+        incomingCall.conversationId, incomingCall.callId, incomingCall.callType, incomingCall.mlsEpoch
+      );
+      if (incomingCallRef.current?.callId !== incomingCall.callId) return;
       emitCallSignal('call:accepted', incomingCall);
       updateCallStatus(incomingCall.callId, 'accepted');
       setIncomingCall(null);
       setActiveCall(nextCall);
-    } catch {
-      alert('Görüşmeye bağlanılamadı.');
+    } catch (error) {
+      showCallError(error);
     }
   };
 
@@ -242,6 +298,7 @@ export function useCallManager({
     activeCall,
     incomingCall,
     callHistory,
+    resetCallSession,
     setActiveCall,
     startConversationCall,
     startCallWithUser,

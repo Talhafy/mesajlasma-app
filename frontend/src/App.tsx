@@ -39,7 +39,16 @@ import { useConfirm } from './context/useConfirm';
 import { useSocketSession } from './hooks/useSocketSession';
 import { useCallManager, type CallHistoryItem } from './hooks/useCallManager';
 import { useChatManager } from './hooks/useChatManager';
+import { lockVault, openDeviceVault } from './crypto/vault';
 import { mergeMessage } from './components/ChatArea/chatTimeline';
+import {
+  decryptIncomingMessage,
+  decryptMessageList,
+  encryptOutgoingMessage,
+  deliverMlsMessage,
+  retryQueuedMlsMessages,
+  rotateConversationEpoch
+} from './crypto/mlsClient';
 
 // İhtiyaç anında yüklenen bileşenler (Lazy Loading)
 const CallModal = lazy(() => import('./components/Call/CallModal'));
@@ -56,6 +65,7 @@ export default function App() {
 
   // MODAL VE AYAR DURUMLARI
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [vaultSetup, setVaultSetup] = useState<'migration' | 'unavailable' | null>(null);
   const [isAvatarViewerOpen, setIsAvatarViewerOpen] = useState(false);
   const [newUsernameSettings, setNewUsernameSettings] = useState('');
   const [newEmailSettings, setNewEmailSettings] = useState('');
@@ -78,14 +88,37 @@ export default function App() {
   const lastSentTypingRef = useRef<{ conversationId: string; isTyping: boolean } | null>(null);
   const lastSentRecordingRef = useRef<{ conversationId: string; isRecording: boolean } | null>(null);
   const prevMessagesLengthRef = useRef(0);
+  const resetChatSessionRef = useRef<() => void>(() => undefined);
+  const resetCallSessionRef = useRef<() => void>(() => undefined);
+  const sessionAttemptRef = useRef(0);
+  const sessionUserIdRef = useRef<string | null>(null);
 
   /** Oturum sonlandırıldığında hafızayı temizleyen fonksiyon */
   const resetClientSession = () => {
+    sessionAttemptRef.current++;
+    if (sessionUserIdRef.current) lockVault(sessionUserIdRef.current);
+    sessionUserIdRef.current = null;
+    resetChatSessionRef.current();
+    resetCallSessionRef.current();
     setAccessToken(null);
     setCurrentUser(null);
     setIsSettingsOpen(false);
+    setVaultSetup(null);
+    setIsAvatarViewerOpen(false);
     setIsGroupModalOpen(false);
     setIsGroupSettingsOpen(false);
+    setNewUsernameSettings('');
+    setNewEmailSettings('');
+    setOldPasswordSettings('');
+    setNewPasswordSettings('');
+    setSettingsMessage({ type: '', text: '' });
+    setNewGroupName('');
+    setSelectedMembers([]);
+    setEditGroupName('');
+    setGroupMembers([]);
+    lastSentTypingRef.current = null;
+    lastSentRecordingRef.current = null;
+    prevMessagesLengthRef.current = 0;
     setCurrentView('login');
   };
 
@@ -93,11 +126,21 @@ export default function App() {
   const {
     socket,
     socketConnectionStatus,
+    onlineUserIds,
     onlineUserIdsRef
   } = useSocketSession({
     currentView,
     onAuthExpired: resetClientSession
   });
+
+  useEffect(() => {
+    if (!currentUser?.id || socketConnectionStatus !== 'connected') return;
+    const retry = () => void retryQueuedMlsMessages(currentUser.id).catch(() => undefined);
+    retry();
+    window.addEventListener('message-vault-unlocked', retry);
+    return () => window.removeEventListener('message-vault-unlocked', retry);
+  }, [currentUser?.id, socketConnectionStatus]);
+
 
   // 2. SOHBET VE MESAJLAŞMA HOOK'U
   const {
@@ -126,11 +169,13 @@ export default function App() {
     fetchGroups,
     fetchConversations,
     fetchUnreadCounts,
+    resetChatSession,
     startChat,
     startGroupChat
   } = useChatManager({
     socket,
     currentUser,
+    onlineUserIds,
     onlineUserIdsRef
   });
 
@@ -139,6 +184,7 @@ export default function App() {
     activeCall,
     incomingCall,
     callHistory,
+    resetCallSession,
     startConversationCall,
     startCallWithUser,
     acceptIncomingCall,
@@ -146,11 +192,15 @@ export default function App() {
     closeActiveCall
   } = useCallManager({
     socket,
+    currentUserId: currentUser?.id || null,
     activeConversation,
     conversationList,
     groupsList,
     selectedUser
   });
+
+  resetChatSessionRef.current = resetChatSession;
+  resetCallSessionRef.current = resetCallSession;
 
   useEffect(() => {
     if (autoScrollRef.current && messages.length !== prevMessagesLengthRef.current) {
@@ -169,22 +219,35 @@ export default function App() {
     }
   }, [isDarkMode]);
 
+  const enterChat = async (user: User, attempt: number, loginPassword?: string) => {
+    if (sessionAttemptRef.current !== attempt) return;
+    sessionUserIdRef.current = user.id;
+    const setup = await openDeviceVault(user.id, loginPassword)
+      .then((ready) => ready ? null : 'migration' as const)
+      .catch(() => 'unavailable' as const);
+    if (sessionAttemptRef.current !== attempt) return;
+    setVaultSetup(setup);
+    setIsSettingsOpen(setup === 'unavailable');
+    setCurrentUser(user);
+    setCurrentView('chat');
+    fetchUsers();
+    fetchGroups();
+    fetchConversations(user.id);
+    fetchUnreadCounts();
+  };
+
   // İlk Yüklemede Oturum Kontrolü
   useEffect(() => {
+    const attempt = ++sessionAttemptRef.current;
     const checkAuth = async () => {
       localStorage.removeItem('jwt_token');
       sessionStorage.removeItem('jwt_token');
       try {
         await refreshAccessSession();
         const res = await api.get('/user/me');
-        setCurrentUser(res.data);
-        setCurrentView('chat');
-        fetchUsers();
-        fetchGroups();
-        fetchConversations();
-        fetchUnreadCounts();
+        await enterChat(res.data, attempt);
       } catch {
-        resetClientSession();
+        if (sessionAttemptRef.current === attempt) resetClientSession();
       }
     };
     checkAuth();
@@ -192,18 +255,21 @@ export default function App() {
 
   useEffect(() => {
     const handleExpiredSession = () => resetClientSession();
+    const handleVaultReady = () => setVaultSetup(null);
     window.addEventListener('auth:expired', handleExpiredSession);
-    return () => window.removeEventListener('auth:expired', handleExpiredSession);
+    window.addEventListener('message-vault-unlocked', handleVaultReady);
+    return () => {
+      window.removeEventListener('auth:expired', handleExpiredSession);
+      window.removeEventListener('message-vault-unlocked', handleVaultReady);
+    };
   }, []);
 
-  const onLoginSuccess = (token: string, user: User) => {
+  const onLoginSuccess = async (token: string, user: User, password: string) => {
+    const attempt = ++sessionAttemptRef.current;
+    resetChatSessionRef.current();
+    resetCallSessionRef.current();
     setAccessToken(token);
-    setCurrentUser(user);
-    setCurrentView('chat');
-    fetchUsers();
-    fetchGroups();
-    fetchConversations();
-    fetchUnreadCounts();
+    await enterChat(user, attempt, password);
     if ('Notification' in window && Notification.permission === 'default') {
       void Notification.requestPermission();
     }
@@ -233,8 +299,8 @@ export default function App() {
     }
   };
 
-  const cikisYap = () => {
-    void closeRefreshSession().catch(() => undefined);
+  const cikisYap = async () => {
+    await closeRefreshSession().catch(() => undefined);
     resetClientSession();
   };
 
@@ -289,7 +355,7 @@ export default function App() {
     setSettingsMessage({ type: 'success', text: 'Profil fotoğrafı güncellendi.' });
   };
 
-  const mesajGonder = async (replyToId?: string, payloadOverride?: { fileKey?: string; fileType?: 'image' | 'audio' | 'document'; fileName?: string }) => {
+  const mesajGonder = async (replyToId?: string, payloadOverride?: { fileKey?: string; fileType?: 'image' | 'video' | 'audio' | 'document'; fileName?: string }) => {
     const contentToSend = newMessage.trim();
     if (!contentToSend && !payloadOverride?.fileKey) return;
     if (!activeConversation) return;
@@ -298,17 +364,33 @@ export default function App() {
     const clientId = crypto.randomUUID();
 
     try {
-      const res = await api.post('/messages', {
-        conversationId: currentConvId,
-        clientId,
-        content: contentToSend,
-        fileKey: payloadOverride?.fileKey,
-        fileType: payloadOverride?.fileType,
-        fileName: payloadOverride?.fileName,
-        replyToId
-      });
+      const participantIds = activeConversation.isGroup
+        ? groupMembers.filter((m) => m.isActive !== false).map((m) => m.id)
+        : [currentUser?.id, selectedUser?.id || activeConversation.otherUser?.id].filter(
+            (id): id is string => Boolean(id)
+          );
+
+      const mlsEnvelope =
+        currentUser?.id
+          ? await encryptOutgoingMessage(
+              currentUser.id,
+              currentConvId,
+              participantIds,
+              contentToSend, undefined, { clientId, delivery: { fileKey: payloadOverride?.fileKey, fileType: payloadOverride?.fileType, replyToId } }
+            )
+          : null;
+
+      if (!mlsEnvelope) {
+        alert('Uçtan uca şifreleme (MLS) anahtarı doğrulanamadı; güvenliğiniz için mesaj düz metin olarak gönderilmedi.');
+        return;
+      }
+
+      const res = await deliverMlsMessage(currentUser!.id, currentConvId, clientId);
+      const hydrated = currentUser?.id
+        ? await decryptIncomingMessage(currentUser.id, res.data)
+        : res.data;
       autoScrollRef.current = true;
-      setMessages((prev) => mergeMessage(prev, res.data));
+      setMessages((prev) => mergeMessage(prev, hydrated));
       setNewMessage('');
       fetchConversations();
     } catch {
@@ -322,7 +404,10 @@ export default function App() {
     const oldestMessageId = messages[0].id;
     try {
       const res = await api.get(`/conversations/${activeConversation.id}/messages?cursor=${oldestMessageId}`);
-      const olderMessages = unwrapItems<Message>(res.data);
+      const olderMessages = await decryptMessageList(
+        currentUser?.id || '',
+        unwrapItems<Message>(res.data)
+      );
       if (olderMessages.length === 0) {
         setHasMore(false);
       } else {
@@ -343,11 +428,17 @@ export default function App() {
         name: newGroupName.trim(),
         participantIds: selectedMembers
       });
-      setGroupsList((prev) => [...prev, res.data]);
+      setGroupsList((prev) => (
+        prev.some((group) => group.id === res.data.id) ? prev : [res.data, ...prev]
+      ));
+      setConversationList((prev) => (
+        prev.some((conversation) => conversation.id === res.data.id) ? prev : [res.data, ...prev]
+      ));
       setIsGroupModalOpen(false);
       setNewGroupName('');
       setSelectedMembers([]);
       startGroupChat(res.data);
+      void fetchConversations();
     } catch {
       alert('Grup oluşturulamadı.');
     }
@@ -358,7 +449,12 @@ export default function App() {
     try {
       await api.post(`/conversations/group/${activeConversation.id}/participants`, { userIdsToAdd });
       const res = await api.get(`/conversations/group/${activeConversation.id}/participants`);
-      setGroupMembers(res.data);
+      const updatedMembers: User[] = res.data;
+      setGroupMembers(updatedMembers);
+      if (currentUser?.id) {
+        const activeIds = updatedMembers.filter((m) => m.isActive !== false).map((m) => m.id);
+        void rotateConversationEpoch(currentUser.id, activeConversation.id, activeIds);
+      }
     } catch {
       alert('Üye eklenemedi.');
     }
@@ -460,6 +556,11 @@ export default function App() {
         await fetchConversations();
         await fetchGroups();
         setActiveConversation((prev) => (prev?.id === activeConversation.id ? { ...prev, isActive: false } : prev));
+      } else if (currentUser?.id) {
+        const remainingActiveIds = groupMembers
+          .filter((m) => m.id !== userId && m.isActive !== false)
+          .map((m) => m.id);
+        void rotateConversationEpoch(currentUser.id, activeConversation.id, remainingActiveIds);
       }
     } catch {
       alert('Kişi çıkarılamadı.');
@@ -552,6 +653,13 @@ export default function App() {
 
     if (conversation?.isGroup) return conversation.name || fallback || 'Grup görüşmesi';
     return conversation?.otherUser?.username || selectedUser?.username || fallback || 'Görüşme';
+  };
+
+  const getCallAvatar = (conversationId: string, callerId?: string) => {
+    const conversation = activeConversation?.id === conversationId ? activeConversation
+      : conversationList.find((item) => item.id === conversationId) || groupsList.find((item) => item.id === conversationId);
+    if (conversation?.isGroup) return conversation.avatarUrl;
+    return conversation?.otherUser?.avatarUrl || usersList.find((user) => user.id === callerId)?.avatarUrl;
   };
 
   if (currentView === 'login' || currentView === 'register') return <Auth onLoginSuccess={onLoginSuccess} />;
@@ -650,7 +758,7 @@ export default function App() {
       )}
 
       {isSettingsOpen && (
-        <SettingsModal setIsSettingsOpen={setIsSettingsOpen} settingsMessage={settingsMessage} setSettingsMessage={setSettingsMessage} newUsernameSettings={newUsernameSettings} setNewUsernameSettings={setNewUsernameSettings} handleUpdateUsername={handleUpdateUsername} newEmailSettings={newEmailSettings} setNewEmailSettings={setNewEmailSettings} handleUpdateEmail={handleUpdateEmail} currentUser={currentUser} handleToggleReadReceipts={handleToggleReadReceipts} oldPasswordSettings={oldPasswordSettings} setOldPasswordSettings={setOldPasswordSettings} newPasswordSettings={newPasswordSettings} setNewPasswordSettings={setNewPasswordSettings} handleUpdatePassword={handleUpdatePassword} handleUpdateAvatar={handleUpdateAvatar} handleDeleteAccount={handleDeleteAccount} cikisYap={cikisYap} />
+        <SettingsModal vaultSetup={vaultSetup} setIsSettingsOpen={setIsSettingsOpen} settingsMessage={settingsMessage} setSettingsMessage={setSettingsMessage} newUsernameSettings={newUsernameSettings} setNewUsernameSettings={setNewUsernameSettings} handleUpdateUsername={handleUpdateUsername} newEmailSettings={newEmailSettings} setNewEmailSettings={setNewEmailSettings} handleUpdateEmail={handleUpdateEmail} currentUser={currentUser} handleToggleReadReceipts={handleToggleReadReceipts} oldPasswordSettings={oldPasswordSettings} setOldPasswordSettings={setOldPasswordSettings} newPasswordSettings={newPasswordSettings} setNewPasswordSettings={setNewPasswordSettings} handleUpdatePassword={handleUpdatePassword} handleUpdateAvatar={handleUpdateAvatar} handleDeleteAccount={handleDeleteAccount} cikisYap={cikisYap} />
       )}
 
       {isAvatarViewerOpen && currentUser && (
@@ -664,6 +772,7 @@ export default function App() {
       {incomingCall && (
         <IncomingCallPrompt
           call={incomingCall}
+          avatarUrl={getCallAvatar(incomingCall.conversationId, incomingCall.caller.id)}
           onAccept={acceptIncomingCall}
           onDecline={declineIncomingCall}
         />
@@ -672,8 +781,11 @@ export default function App() {
       {activeCall && (
         <Suspense fallback={<div className="app-loading">Arama hazırlanıyor…</div>}>
           <CallModal
+            key={activeCall.callId}
             call={activeCall}
             title={getCallTitle(activeCall.conversationId, activeCall.conversation?.name)}
+            avatarUrl={getCallAvatar(activeCall.conversationId)}
+            localAvatarUrl={currentUser?.avatarUrl}
             onClose={closeActiveCall}
           />
         </Suspense>

@@ -16,7 +16,8 @@
 import { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
 import type { User, Conversation, Message } from '../../../types/chat';
-import { getMessagePreview } from '../chatTimeline';
+import { getMessagePreview, isDeletedForEveryoneMessage, isVideoMessage } from '../chatTimeline';
+import { decryptAttachmentToBlobUrl } from '../../../crypto/fileCrypto';
 
 interface TimelineRenderItem {
   type: 'message' | 'system' | 'date';
@@ -66,7 +67,21 @@ interface MessageBubbleProps {
  * ÖZEL SES DOSYASI OYNATICI BİLEŞENİ (CustomAudioPlayer)
  * Gelen sesli mesajları (Voice Messages) oynatma, duraklatma ve ilerleme çubuğu ile sunar.
  */
-function CustomAudioPlayer({ src, isDarkMode }: { src: string; isDarkMode: boolean }) {
+const VOICE_WAVEFORM_BARS = [8, 13, 18, 11, 22, 28, 17, 12, 25, 31, 20, 14, 19, 27, 34, 23, 16, 11, 21, 29, 24, 15, 18, 32, 26, 13, 9, 17, 23, 30, 19, 12, 25, 20, 14, 28, 22, 10, 16, 24, 18, 12];
+
+function CustomAudioPlayer({
+  src,
+  isMe,
+  showAvatar,
+  avatarUrl,
+  avatarLabel
+}: {
+  src: string;
+  isMe: boolean;
+  showAvatar: boolean;
+  avatarUrl?: string;
+  avatarLabel: string;
+}) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -135,75 +150,106 @@ function CustomAudioPlayer({ src, isDarkMode }: { src: string; isDarkMode: boole
   const progressPercent = duration > 0 ? (currentTime / duration) * 100 : 0;
 
   return (
-    <div style={{
-      display: 'flex',
-      alignItems: 'center',
-      gap: '12px',
-      padding: '8px 12px',
-      borderRadius: '20px',
-      background: isDarkMode ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.05)',
-      minWidth: '220px',
-      maxWidth: '300px',
-      userSelect: 'none'
-    }}>
+    <div className={`voice-note-player ${isMe ? 'voice-note-outgoing' : 'voice-note-incoming'} ${showAvatar ? 'voice-note-with-avatar' : 'voice-note-without-avatar'}`}>
       <audio ref={audioRef} src={src} preload="metadata" />
-      
-      {/* OYNAT / DURAKLAT BUTONU */}
+
+      {showAvatar && (
+        <div className="voice-note-avatar" aria-hidden="true">
+          {avatarUrl
+            ? <img src={avatarUrl} alt="" />
+            : <span>{avatarLabel.slice(0, 1).toUpperCase()}</span>}
+          <span className="voice-note-mic">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Zm5.3-3a5.3 5.3 0 0 1-10.6 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-1.7Z" /></svg>
+          </span>
+        </div>
+      )}
+
       <button
+        type="button"
+        className="voice-note-play"
         onClick={togglePlay}
-        style={{
-          width: '36px',
-          height: '36px',
-          borderRadius: '50%',
-          border: 'none',
-          background: '#f97316',
-          color: '#ffffff',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          cursor: 'pointer',
-          flexShrink: 0,
-          boxShadow: '0 2px 6px rgba(249, 115, 22, 0.4)'
-        }}
+        aria-label={isPlaying ? 'Sesli mesajı duraklat' : 'Sesli mesajı oynat'}
       >
         {isPlaying ? (
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+          <svg viewBox="0 0 24 24" width="19" height="19" fill="currentColor">
             <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
           </svg>
         ) : (
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" style={{ marginLeft: '2px' }}>
+          <svg viewBox="0 0 24 24" width="19" height="19" fill="currentColor" style={{ marginLeft: '2px' }}>
             <path d="M8 5v14l11-7z" />
           </svg>
         )}
       </button>
 
-      {/* İLERLEME ÇUBUĞU VE GEÇEN SÜRE */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '4px' }}>
-        <div style={{ position: 'relative', width: '100%', display: 'flex', alignItems: 'center' }}>
+      <div className="voice-note-body">
+        <div className="voice-note-waveform">
+          {VOICE_WAVEFORM_BARS.map((height, index) => (
+            <span
+              key={`${height}-${index}`}
+              className={(index + 1) / VOICE_WAVEFORM_BARS.length * 100 <= progressPercent ? 'is-played' : ''}
+              style={{ height: `${height}px` }}
+            />
+          ))}
           <input
+            className="voice-note-range"
             type="range"
             min="0"
             max={duration || 100}
             step="0.1"
             value={currentTime}
             onChange={handleSliderChange}
-            style={{
-              width: '100%',
-              height: '4px',
-              appearance: 'none',
-              background: `linear-gradient(to right, #f97316 ${progressPercent}%, ${isDarkMode ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.15)'} ${progressPercent}%)`,
-              borderRadius: '2px',
-              outline: 'none',
-              cursor: 'pointer'
-            }}
+            aria-label="Sesli mesaj oynatma konumu"
           />
         </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: isDarkMode ? '#a1a1aa' : '#71717a', fontFamily: 'monospace' }}>
-          <span>{formatTime(currentTime)}</span>
-          <span>{formatTime(duration)}</span>
-        </div>
+        <span className="voice-note-duration">{formatTime(currentTime > 0 ? currentTime : duration)}</span>
       </div>
     </div>
+  );
+}
+
+function DocumentMessageCard({
+  href,
+  fileName,
+  isMe
+}: {
+  href: string;
+  fileName?: string;
+  isMe: boolean;
+}) {
+  const displayName = fileName || 'Belge';
+  const extension = displayName.includes('.')
+    ? displayName.split('.').pop()?.toUpperCase() || 'DOSYA'
+    : 'DOSYA';
+  const isPdf = extension === 'PDF';
+
+  return (
+    <a
+      className={`document-message-card ${isMe ? 'document-message-outgoing' : 'document-message-incoming'}`}
+      href={href}
+      download={displayName}
+      aria-label={`${displayName} belgesini indir`}
+    >
+      <span className={`document-file-icon ${isPdf ? 'is-pdf' : ''}`} aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M6 2.75h8l4 4v14.5H6z" />
+          <path d="M14 2.75v4h4" />
+        </svg>
+        <small>{isPdf ? 'PDF' : extension.slice(0, 4)}</small>
+      </span>
+
+      <span className="document-file-copy">
+        <strong>{displayName}</strong>
+        <small>{isPdf ? 'PDF belgesi' : `${extension} belgesi`}</small>
+      </span>
+
+      <span className="document-download-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M12 3v12" />
+          <path d="m7.5 10.5 4.5 4.5 4.5-4.5" />
+          <path d="M5 20h14" />
+        </svg>
+      </span>
+    </a>
   );
 }
 
@@ -213,7 +259,7 @@ function CustomAudioPlayer({ src, isDarkMode }: { src: string; isDarkMode: boole
 export default function MessageBubble({
   item, currentUser, activeConversation, groupMembers, usersList,
   isSelectMode, selectedMessageIds, toggleSelectMessage, handleSelectMessage, highlightedMessageId,
-  setAvatarProfileUser, setLightboxImageUrl, isDarkMode, textColor, iconColor,
+  setAvatarProfileUser, setLightboxImageUrl, isDarkMode: _isDarkMode, textColor, iconColor,
   borderColor, inputBg, panelBg, handleReply, handleForward, handleStar, handlePin,
   handleDeleteForMe, handleDeleteForEveryone, handleEditMessage, setMessageInfo, selectedUser: _selectedUser
 }: MessageBubbleProps) {
@@ -227,7 +273,27 @@ export default function MessageBubble({
   } | null>(null);
   const [isDropdownPositioned, setIsDropdownPositioned] = useState(false);
   const [activeDropdownMsgId, setActiveDropdownMsgId] = useState<string | null>(null);
+  const [decryptedMediaUrl, setDecryptedMediaUrl] = useState<string | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const targetMsg = item.message;
+    if (!targetMsg?.fileUrl || !targetMsg?.encryptedFileMetadata) {
+      setDecryptedMediaUrl(null);
+      return;
+    }
+    let cancelled = false;
+    void decryptAttachmentToBlobUrl(targetMsg.fileUrl, targetMsg.encryptedFileMetadata)
+      .then((blobUrl) => {
+        if (!cancelled) setDecryptedMediaUrl(blobUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setDecryptedMediaUrl(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [item.message?.fileUrl, item.message?.encryptedFileMetadata]);
 
   const closeDropdown = () => {
     setActiveDropdownMsgId(null);
@@ -312,8 +378,8 @@ export default function MessageBubble({
   // 2. SİSTEM BİLDİRİMİ (System Log Item)
   if (item.type === 'system' && item.entry) {
     return (
-      <div className="system-message" style={{ textAlign: 'center', margin: '10px 0', fontSize: '12px', color: iconColor }}>
-        {item.entry.text}
+      <div className="system-message">
+        <span className="system-message-label">{item.entry.text}</span>
       </div>
     );
   }
@@ -325,6 +391,19 @@ export default function MessageBubble({
   const isMe = msg.senderId === currentUser.id;
   const isSelected = selectedMessageIds.has(msg.id);
   const isHighlighted = highlightedMessageId === msg.id;
+  const voiceSender = isMe
+    ? currentUser
+    : groupMembers.find(member => member.id === msg.senderId)
+      || usersList.find(user => user.id === msg.senderId)
+      || activeConversation?.otherUser
+      || undefined;
+  const isVideoAttachment = isVideoMessage(msg);
+  const isImageAttachment = msg.fileType === 'image' || msg.fileType?.startsWith('image');
+  const isAudioAttachment = msg.fileType === 'audio' && !isVideoAttachment;
+  const isDeletedForEveryone = isDeletedForEveryoneMessage(msg);
+  const isGeneratedVoiceLabel = isAudioAttachment
+    && /^Sesli mesaj(?:\s*\(\d+:\d{2}\))?$/i.test(msg.content.trim());
+  const visibleContent = isGeneratedVoiceLabel || isDeletedForEveryone ? '' : msg.content;
   const isReadOnlyHistory = Boolean(
     activeConversation?.isGroup
     && (activeConversation.isActive === false || activeConversation.isDeleted)
@@ -390,7 +469,7 @@ export default function MessageBubble({
       )}
 
       {/* KARŞI TARAF AVATARI (GRUP İÇİNDE) */}
-      {!isMe && activeConversation?.isGroup && (
+      {!isMe && activeConversation?.isGroup && !isAudioAttachment && (
         <div
           className="avatar-circle small"
           style={{ width: '28px', height: '28px', fontSize: '12px', cursor: 'pointer', flexShrink: 0 }}
@@ -405,15 +484,10 @@ export default function MessageBubble({
 
       {/* MESAJ BALON GÖVDESİ */}
       <div
-        className="message-bubble-container"
+        className={`message-bubble-container ${isMe ? 'message-bubble-outgoing' : 'message-bubble-incoming'} ${isDeletedForEveryone ? 'message-bubble-deleted' : ''}`}
         style={{
-          position: 'relative',
-          maxWidth: '65%',
-          background: isMe ? '#f97316' : inputBg,
-          color: isMe ? '#ffffff' : textColor,
-          borderRadius: isMe ? '18px 18px 4px 18px' : '18px 18px 18px 4px',
-          padding: '10px 14px',
-          boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
+          background: isDeletedForEveryone ? undefined : isMe ? '#f97316' : inputBg,
+          color: isDeletedForEveryone ? undefined : isMe ? '#ffffff' : textColor
         }}
       >
         {/* GRUP İÇİNDE GÖNDEREN ADI */}
@@ -433,59 +507,77 @@ export default function MessageBubble({
 
         {/* MEDYA / DOSYA İÇERİĞİ */}
         {msg.fileUrl && (
-          <div style={{ marginBottom: '6px' }}>
-            {msg.fileType === 'image' ? (
-              <img src={msg.fileUrl} alt="Medya" style={{ maxWidth: '100%', borderRadius: '8px', cursor: 'pointer', display: 'block' }} onClick={() => setLightboxImageUrl(msg.fileUrl || null)} />
-            ) : msg.fileType === 'audio' ? (
-              <CustomAudioPlayer src={msg.fileUrl} isDarkMode={isDarkMode} />
-            ) : (
-              <a href={msg.fileUrl} download={msg.fileName || 'dosya'} style={{ color: isMe ? '#ffffff' : '#3b82f6', textDecoration: 'underline', fontSize: '13px' }}>
-                📁 {msg.fileName || 'Dosyayı İndir'}
-              </a>
-            )}
+          <div className="message-attachment" style={{ marginBottom: isAudioAttachment ? '2px' : '6px' }}>
+            {(() => {
+              const displayFileUrl = msg.encryptedFileMetadata
+                ? decryptedMediaUrl || msg.fileUrl
+                : msg.fileUrl;
+              return isImageAttachment ? (
+                <img
+                  className="message-image-attachment"
+                  src={displayFileUrl}
+                  alt={msg.fileName || 'Paylaşılan görsel'}
+                  onClick={() => setLightboxImageUrl(displayFileUrl || null)}
+                />
+              ) : isVideoAttachment ? (
+                <video
+                  className="message-video-attachment"
+                  src={displayFileUrl}
+                  controls
+                  playsInline
+                  preload="metadata"
+                  aria-label={msg.fileName || 'Paylaşılan video'}
+                >
+                  Tarayıcınız video oynatmayı desteklemiyor.
+                </video>
+              ) : isAudioAttachment ? (
+                <CustomAudioPlayer
+                  src={displayFileUrl}
+                  isMe={isMe}
+                  showAvatar={Boolean(activeConversation?.isGroup)}
+                  avatarUrl={voiceSender?.avatarUrl}
+                  avatarLabel={voiceSender?.username || msg.sender?.username || 'Kullanıcı'}
+                />
+              ) : (
+                <DocumentMessageCard href={displayFileUrl} fileName={msg.fileName} isMe={isMe} />
+              );
+            })()}
           </div>
         )}
 
-        {/* METİN İÇERİĞİ */}
-        <div style={{ fontSize: '14px', wordBreak: 'break-word', lineHeight: '1.4' }}>
-          {msg.content}
-        </div>
-
-        {/* MESAJ ALT BİLGİSİ (SAAT, YILDIZ, OKUNDU BİLGİSİ) */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '4px', marginTop: '4px', fontSize: '10px', opacity: 0.8 }}>
-          {msg.starredByIds?.includes(currentUser.id) && <span>⭐</span>}
-          <span>{msg.createdAt ? new Date(msg.createdAt).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' }) : ''}</span>
-          
-          {/* BENİM GÖNDERDİĞİM MESAJLAR İÇİN OKUNDU TİK İKONLARI */}
-          {isMe && (
-            <span>
-              {msg.readByIds && msg.readByIds.length > 0 ? (
-                <span style={{ color: '#60a5fa', fontWeight: 'bold' }}>✓✓</span>
-              ) : (
-                <span>✓✓</span>
-              )}
+        {/* METİN, SAAT VE OKUNDU BİLGİSİ */}
+        <div className="message-content-flow">
+          {isDeletedForEveryone && (
+            <span className="deleted-message-copy">
+              <svg aria-hidden="true" viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><circle cx="12" cy="12" r="9" /><path d="m5.7 5.7 12.6 12.6" /></svg>
+              <span>{isMe ? 'Bu mesajı sildiniz' : 'Bu mesaj silindi'}</span>
             </span>
           )}
+          {visibleContent && <span className="message-text-content">{visibleContent}</span>}
+          <span className={`message-inline-meta ${msg.fileUrl || (!visibleContent && !isDeletedForEveryone) ? 'message-inline-meta-stacked' : ''}`}>
+            {!isDeletedForEveryone && msg.starredByIds?.includes(currentUser.id) && <span aria-label="Yıldızlı mesaj">★</span>}
+            <span>{msg.createdAt ? new Date(msg.createdAt).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' }) : ''}</span>
+            {isMe && (
+              <span className={`message-read-ticks ${msg.readByIds && msg.readByIds.length > 0 ? 'is-read' : ''}`} aria-label={msg.readByIds && msg.readByIds.length > 0 ? 'Okundu' : 'Gönderildi'}>
+                ✓✓
+              </span>
+            )}
+          </span>
         </div>
 
         {/* MESAJ SEÇENEKLERİ DROPDOWN AÇMA BUTONU */}
         {!isSelectMode && (
           <button
+            className={`message-menu-trigger ${activeDropdownMsgId === msg.id ? 'is-open' : ''}`}
             onClick={(e) => openMenu(e, msg.id)}
             aria-label="Mesaj seçeneklerini aç"
+            aria-expanded={activeDropdownMsgId === msg.id}
             style={{
-              position: 'absolute',
-              top: '4px',
-              right: '4px',
-              background: 'none',
-              border: 'none',
-              color: isMe ? '#ffffff' : iconColor,
-              cursor: 'pointer',
-              opacity: 0.6,
-              fontSize: '12px'
+              background: isDeletedForEveryone ? 'transparent' : isMe ? '#f97316' : inputBg,
+              color: isDeletedForEveryone ? undefined : isMe ? '#ffffff' : iconColor,
             }}
           >
-            ▼
+            <span aria-hidden="true">⌄</span>
           </button>
         )}
       </div>
@@ -518,15 +610,15 @@ export default function MessageBubble({
           }}
         >
           <button className="msg-dropdown-btn" onClick={() => { setMessageInfo(msg); setActiveDropdownMsgId(null); }}>ℹ️ Bilgi</button>
-          {!isReadOnlyHistory && <button className="msg-dropdown-btn" onClick={() => { handleReply(msg); setActiveDropdownMsgId(null); }}>↩️ Yanıtla</button>}
-          {msg.content && <button className="msg-dropdown-btn" onClick={() => { void copyMessageText(msg.content); setActiveDropdownMsgId(null); }}>📋 Kopyala</button>}
-          {!isReadOnlyHistory && <button className="msg-dropdown-btn" onClick={() => { handleSelectMessage(msg.id); setActiveDropdownMsgId(null); }}>☑️ Seç</button>}
-          {!isReadOnlyHistory && isMe && <button className="msg-dropdown-btn" onClick={() => { handleEditMessage(msg); setActiveDropdownMsgId(null); }}>✏️ Düzenle</button>}
-          <button className="msg-dropdown-btn" onClick={() => { handleForward(msg); setActiveDropdownMsgId(null); }}>➡️ İlet</button>
-          {!isReadOnlyHistory && <button className="msg-dropdown-btn" onClick={() => { handleStar(msg.id); setActiveDropdownMsgId(null); }}>{msg.starredByIds?.includes(currentUser.id) ? '⭐ Yıldızı Kaldır' : '⭐ Yıldızla'}</button>}
-          {!isReadOnlyHistory && <button className="msg-dropdown-btn" onClick={() => { handlePin(msg.id); setActiveDropdownMsgId(null); }}>{msg.isPinned ? '📌 Sabitlemeyi Kaldır' : '📌 Sabitle'}</button>}
+          {!isReadOnlyHistory && !isDeletedForEveryone && <button className="msg-dropdown-btn" onClick={() => { handleReply(msg); setActiveDropdownMsgId(null); }}>↩️ Yanıtla</button>}
+          {visibleContent && <button className="msg-dropdown-btn" onClick={() => { void copyMessageText(visibleContent); setActiveDropdownMsgId(null); }}>📋 Kopyala</button>}
+          {!isReadOnlyHistory && !isDeletedForEveryone && <button className="msg-dropdown-btn" onClick={() => { handleSelectMessage(msg.id); setActiveDropdownMsgId(null); }}>☑️ Seç</button>}
+          {!isReadOnlyHistory && !isDeletedForEveryone && isMe && <button className="msg-dropdown-btn" onClick={() => { handleEditMessage(msg); setActiveDropdownMsgId(null); }}>✏️ Düzenle</button>}
+          {!isDeletedForEveryone && <button className="msg-dropdown-btn" onClick={() => { handleForward(msg); setActiveDropdownMsgId(null); }}>➡️ İlet</button>}
+          {!isReadOnlyHistory && !isDeletedForEveryone && <button className="msg-dropdown-btn" onClick={() => { handleStar(msg.id); setActiveDropdownMsgId(null); }}>{msg.starredByIds?.includes(currentUser.id) ? '⭐ Yıldızı Kaldır' : '⭐ Yıldızla'}</button>}
+          {!isReadOnlyHistory && !isDeletedForEveryone && <button className="msg-dropdown-btn" onClick={() => { handlePin(msg.id); setActiveDropdownMsgId(null); }}>{msg.isPinned ? '📌 Sabitlemeyi Kaldır' : '📌 Sabitle'}</button>}
           {!isReadOnlyHistory && <button className="msg-dropdown-btn" onClick={() => { handleDeleteForMe(msg.id); setActiveDropdownMsgId(null); }}>🗑️ Benden Sil</button>}
-          {!isReadOnlyHistory && isMe && <button className="msg-dropdown-btn danger-text" onClick={() => { handleDeleteForEveryone(msg.id); setActiveDropdownMsgId(null); }}>⛔ Herkesten Sil</button>}
+          {!isReadOnlyHistory && !isDeletedForEveryone && isMe && <button className="msg-dropdown-btn danger-text" onClick={() => { handleDeleteForEveryone(msg.id); setActiveDropdownMsgId(null); }}>⛔ Herkesten Sil</button>}
         </div>,
         document.body
       )}
