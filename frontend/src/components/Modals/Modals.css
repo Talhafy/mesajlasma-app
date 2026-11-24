@@ -144,6 +144,172 @@ body.dark-theme input:checked + .slider { background-color: #f97316; }
 .settings-modern-input { flex: 1; padding: 12px 15px; border-radius: 8px; border: 1px solid #d1d7db; background: #f0f2f5; color: #3b4a54; font-size: 15px; outline: none; transition: border-color 0.2s; width: 100%; box-sizing: border-box;}
 .settings-modern-input:focus { border-color: #f97316; }
 
+.settings-profile-fields { display: grid; gap: 12px; }
+.settings-edit-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  min-width: 0;
+}
+.settings-edit-label { margin: 0; font-weight: 600; font-size: 14px; }
+.settings-edit-current { font-size: 12px; opacity: 0.75; overflow-wrap: anywhere; }
+.settings-edit-row { display: flex; align-items: center; gap: 10px; }
+.settings-edit-row input { min-width: 0; }
+.settings-edit-row button { min-height: 42px; white-space: nowrap; }
+.settings-edit-row button:disabled,
+.settings-delete-button:disabled { opacity: 0.55; cursor: default; }
+.settings-delete-card { background: #fff6f6; border-color: #f4d3d6; }
+.settings-delete-card p { margin: 0; color: #75515b; font-size: 13px; line-height: 1.5; }
+.settings-delete-button {
+  justify-self: start;
+  border: 1px solid #c93947;
+  border-radius: 8px;
+  padding: 9px 14px;
+  background: transparent;
+  color: #a82331;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.settings-delete-button:hover:not(:disabled) { background: #fce3e6; }
+body.dark-theme .settings-delete-card { background: #291d23; border-color: #5a303a; }
+body.dark-theme .settings-delete-card p { color: #dfb9bf; }
+body.dark-theme .settings-delete-button { color: #fda4af; border-color: #b65c67; }
+body.dark-theme .settings-delete-button:hover:not(:disabled) { background: #4a2934; }
+
+@media (max-width: 420px) {
+  .settings-edit-row { align-items: stretch; flex-direction: column; }
+  .settings-edit-row input { flex: none; }
+  .settings-edit-row button { align-self: flex-start; }
+}
+
+.security-vault-panel,
+.security-vault-backup {
+  display: grid;
+  gap: 14px;
+}
+
+.settings-modal.account-vault-gate {
+  width: min(460px, 90vw);
+  max-height: 90dvh;
+  overflow: auto;
+  box-sizing: border-box;
+  padding: 24px;
+}
+
+.account-vault-gate > .security-vault-secondary-btn {
+  margin-top: 12px;
+  margin-right: 8px;
+}
+
+body.dark-theme .account-vault-gate {
+  background: #202c33;
+  color: #e9edef;
+}
+
+.security-vault-panel .settings-title,
+.security-vault-panel .settings-msg,
+.security-vault-panel p {
+  margin: 0;
+}
+
+.security-vault-panel p {
+  color: #52636e;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.security-vault-panel .settings-title {
+  margin-bottom: 6px;
+}
+
+.security-vault-section {
+  padding: 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+}
+
+.security-vault-section h3,
+.security-vault-section summary {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.security-vault-section summary {
+  cursor: pointer;
+}
+
+.security-vault-section h3 + *,
+.security-vault-section .settings-msg + *,
+.security-vault-section[open] > .security-vault-backup {
+  margin-top: 10px;
+}
+
+.security-vault-devices {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.security-vault-devices li,
+.security-vault-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.security-vault-devices li {
+  justify-content: space-between;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.security-vault-devices li > div {
+  overflow-wrap: anywhere;
+}
+
+.security-vault-devices .danger-action-btn {
+  width: auto;
+  margin: 0;
+  padding: 6px 8px;
+  font-size: inherit;
+}
+
+.security-vault-key {
+  display: grid;
+  gap: 5px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.security-vault-secondary-btn {
+  padding: 9px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.security-vault-panel button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+body.dark-theme .security-vault-panel p {
+  color: #aebac1;
+}
+
 /* Bilgi Kutusu (Mavi Tik alanı) */
 .settings-info-box { display: flex; align-items: center; justify-content: space-between; padding: 15px; background: #f0f2f5; border-radius: 8px; margin-top: 10px; }
 .settings-info-box-text h4 { margin: 0 0 4px 0; font-size: 15px; color: #111b21; font-weight: bold; }

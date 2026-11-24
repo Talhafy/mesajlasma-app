@@ -31,6 +31,14 @@ const fileFields = {
   fileName: z.string().max(255).optional().nullable()
 };
 
+const historyDelivery = z.object({
+  iv: z.base64().length(16),
+  payload: z.base64().min(24).max(60_000),
+  signature: z.base64().length(88),
+  keys: z.record(uuid, z.base64().length(344)).refine((keys) => Object.keys(keys).length <= 400),
+  deviceKeys: z.record(uuid, z.base64().length(344)).refine((keys) => Object.keys(keys).length <= 800).optional()
+}).strict();
+
 /** MLS (RFC 9420) uçtan uca şifreli mesaj zarfı alanları */
 const mlsEnvelopeFields = {
   content: z.literal('').optional().default(''),
@@ -38,7 +46,8 @@ const mlsEnvelopeFields = {
   epoch: z.number().int().min(1).max(1_000_000),
   senderDeviceId: uuid,
   ciphertext: z.string().min(1).max(60_000),
-  encryptedFileMetadata: z.null().optional()
+  encryptedFileMetadata: z.null().optional(),
+  historyDelivery: historyDelivery.optional()
 };
 
 /** Güçlü Şifre Politikası (Strong Password Rule) */
@@ -49,6 +58,54 @@ const strongPassword = z.string()
     /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&.])[A-Za-z\d@$!%*?&.]{8,}$/,
     'Şifre en az bir küçük harf, bir büyük harf, bir rakam ve bir özel karakter (@$!%*?&.) içermelidir.'
   );
+
+const historyKeyFields = {
+  salt: z.base64().length(24),
+  iv: z.base64().length(16),
+  wrappedKey: z.base64().length(64)
+};
+
+const vaultRecovery = z.object({
+  publicKey: z.base64().length(44),
+  iv: z.base64().length(16),
+  payload: z.base64().min(128).max(256)
+}).strict();
+const vaultAccessFields = {
+  revision: z.number().int().min(1),
+  proof: z.base64().length(88),
+  authorization: z.base64().length(88)
+};
+
+export const accountHistorySchemas = {
+  recipientsQuery: z.object({ messageId: uuid.optional() }).strict(),
+  setupVault: z.object({ ...historyKeyFields, publicKey: z.base64().length(392), inboxIv: z.base64().length(16),
+    inboxKey: z.base64().min(1_500).max(1_800), revision: z.number().int().min(0),
+    authority: z.object({ publicKey: z.base64().length(44), privateKey: z.base64().min(60).max(180),
+      iv: z.base64().length(16), issuerId: uuid, signature: z.base64().length(88) }).strict(),
+    recovery: vaultRecovery.optional(), proof: z.base64().length(88) }).strict(),
+  updateVaultAccess: z.discriminatedUnion('method', [
+    z.object({
+      ...vaultAccessFields, method: z.literal('device'), deviceId: uuid,
+      password: z.object(historyKeyFields).strict().optional(), recovery: vaultRecovery.optional()
+    }).strict(),
+    z.object({
+      ...vaultAccessFields, method: z.literal('recovery'),
+      password: z.object(historyKeyFields).strict(), recovery: vaultRecovery
+    }).strict()
+  ]).refine((input) => input.password || input.recovery, 'Yeni kasa parolası veya kurtarma kodu gerekli.'),
+  approveVaultDevice: z.object({ deviceId: uuid, signature: z.base64().length(88) }).strict(),
+  device: z.object({ deviceId: uuid, publicKey: z.base64().length(392), signature: z.base64().length(88) }).strict(),
+  repairQuery: z.object({ deviceId: uuid, cursor: uuid.optional() }).strict(),
+  repairMessage: z.object({ deviceId: uuid, version: z.string().regex(/^[0-9a-f]{64}$/), delivery: historyDelivery }).strict(),
+  enroll: z.object({ ...historyKeyFields, publicKey: z.base64().length(392), inboxIv: z.base64().length(16),
+    inboxKey: z.base64().min(1_500).max(1_800), password: z.string().min(1).max(128) }).strict(),
+  messages: z.object({ entries: z.array(z.object({
+    messageId: uuid,
+    version: z.string().regex(/^[0-9a-f]{64}$/),
+    iv: z.base64().length(16),
+    payload: z.base64().min(24).max(60_000)
+  }).strict()).min(1).max(24) }).strict()
+};
 
 /** Kimlik Doğrulama (Auth) Şemaları */
 export const authSchemas = {
@@ -69,7 +126,8 @@ export const userSchemas = {
   email: z.object({ newEmail: z.string().trim().email().max(254) }).strict(),
   password: z.object({
     oldPassword: z.string().min(1).max(128),
-    newPassword: strongPassword
+    newPassword: strongPassword,
+    accountHistoryKey: z.object({ ...historyKeyFields, revision: z.number().int().positive() }).strict().optional()
   }).strict(),
   readReceipts: z.object({ isEnabled: z.boolean() }).strict(),
   avatar: z.object({ fileKey: z.string().min(1).max(300).nullable() }).strict()
@@ -91,8 +149,9 @@ export const chatSchemas = {
   message: messageBody,
   conversationMessagesQuery: z.object({
     cursor: uuid.optional(),
+    anchor: uuid.optional(),
     limit: z.coerce.number().int().min(1).max(100).optional()
-  }),
+  }).refine(({ cursor, anchor }) => !(cursor && anchor)),
   paginationQuery: z.object({
     cursor: uuid.optional(),
     limit: z.coerce.number().int().min(1).max(100).optional()
@@ -185,7 +244,7 @@ export const mlsSchemas = {
     epoch: z.number().int().min(1).max(1_000_000),
     senderDeviceId: uuid,
     deliverySignature: z.string().min(80).max(100),
-    commitData: z.string().trim().min(8).max(100_000),
+    commitData: z.string().trim().min(8).max(260_000),
     ratchetTree: z.string().trim().min(8).max(200_000).optional().nullable(),
     welcomes: z.array(z.object({
       recipientDeviceId: uuid,
@@ -193,6 +252,8 @@ export const mlsSchemas = {
       ratchetTree: z.string().trim().min(8).max(200_000).optional().nullable()
     }).strict()).max(200).optional()
   }).strict(),
+  publishGroupInfo: z.object({ epoch: z.number().int().min(1), deviceId: uuid,
+    groupInfo: z.base64().min(16).max(160_000), signature: z.base64().length(88) }).strict(),
   saveBackup: z.object({
     fileKey: z.string().trim().min(1).max(300),
     kdfSalt: z.string().trim().min(16).max(256),

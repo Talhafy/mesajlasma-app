@@ -26,7 +26,8 @@ type ConversationAccessClient = Pick<Prisma.TransactionClient, 'participant'>;
 const findParticipant = (
   conversationId: string,
   userId: string,
-  client: ConversationAccessClient = prisma
+  client: ConversationAccessClient = prisma,
+  includeHistory = false
 ) => (
   client.participant.findUnique({
     where: { userId_conversationId: { userId, conversationId } },
@@ -37,6 +38,8 @@ const findParticipant = (
       isActive: true,
       joinedAt: true,
       leftAt: true,
+      historyClearedAt: true,
+      historyPeriods: includeHistory ? { select: { joinedAt: true, leftAt: true } } : false,
       isPinned: true,
       isArchived: true,
       isMuted: true,
@@ -67,9 +70,10 @@ export const requireActiveParticipant = async (
   conversationId: string,
   userId: string,
   errorMessage = 'Bu sohbet için aktif üyeliğiniz bulunmuyor.',
-  client: ConversationAccessClient = prisma
+  client: ConversationAccessClient = prisma,
+  includeHistory = false
 ) => {
-  const participant = await findParticipant(conversationId, userId, client);
+  const participant = await findParticipant(conversationId, userId, client, includeHistory);
   if (!participant?.isActive || participant.conversation.isDeleted) {
     throw AppError.forbidden('CONVERSATION_FORBIDDEN', errorMessage);
   }
@@ -87,7 +91,7 @@ export const requireHistoryParticipant = async (
   errorMessage = 'Bu sohbetin geçmişini görüntüleme yetkiniz yok.',
   client: ConversationAccessClient = prisma
 ) => {
-  const participant = await findParticipant(conversationId, userId, client);
+  const participant = await findParticipant(conversationId, userId, client, true);
   if (!participant || (!participant.isActive && !participant.leftAt)) {
     throw AppError.forbidden('CONVERSATION_FORBIDDEN', errorMessage);
   }

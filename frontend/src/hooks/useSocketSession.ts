@@ -11,7 +11,7 @@ import { useEffect, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
 import { API_ORIGIN } from '../config/runtime';
 import type { TypedSocket } from '../types/socket';
-import { getAccessToken, subscribeAccessToken } from '../auth/tokenStore';
+import { expireAccessSession, getAccessToken, subscribeAccessToken } from '../auth/tokenStore';
 
 const SOCKET_INACTIVITY_TIMEOUT_MS = 3 * 60 * 60 * 1000;
 const SOCKET_ACTIVITY_PING_INTERVAL_MS = 60 * 1000;
@@ -111,9 +111,15 @@ export function useSocketSession({ currentView, onAuthExpired }: UseSocketSessio
       setSocketConnectionStatus('disconnected');
     });
 
-    newSocket.on('connect_error', () => {
+    newSocket.on('connect_error', (error) => {
+      const details = (error as Error & { data?: { code?: string } }).data;
+      if (details?.code === 'DEVICE_ACCESS_REVOKED') {
+        expireAccessSession('device_revoked');
+        return;
+      }
       if (isSocketActiveRef.current) setSocketConnectionStatus('reconnecting');
     });
+    newSocket.on('auth:session-revoked', ({ reason }) => expireAccessSession(reason));
 
     newSocket.on('auth:expired', () => {
       onAuthExpired();

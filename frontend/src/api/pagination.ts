@@ -1,6 +1,10 @@
 export interface PaginatedResponse<T> {
   items: T[];
   nextCursor?: string | null;
+  historySince?: string;
+  historyId?: string;
+  historyClearedAt?: string;
+  hasNewer?: boolean;
 }
 
 /**

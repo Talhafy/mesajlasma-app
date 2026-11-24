@@ -13,29 +13,34 @@ type SimKeyPackage = {
 
 const simDevices = new Map<
   string,
-  { id: string; userId: string; signaturePublicKey: string; credential: string; deviceName: string; revokedAt: string | null; approvedByDeviceId: string | null; approvalSignature: string | null }
+  { id: string; userId: string; signaturePublicKey: string; credential: string; deviceName: string; revokedAt: string | null; approvedByDeviceId: string | null; approvalSignature: string | null; approvedByVault?: boolean }
 >();
+const simVaultAuthorities: { userId: string; issuerId: string; historyPublicKey: string; publicKey: string; signature: string }[] = [];
 const simKeyPackages: SimKeyPackage[] = [];
 const simCommits: any[] = [];
 const simWelcomes: any[] = [];
 let simCurrentEpoch = 0;
 let simCurrentUser = '';
 let simMembers: string[] = [];
+let pendingRegistrations = false;
 
 vi.mock('../api/httpClient', () => ({
   api: {
     post: async (url: string, body: any) => {
       if (url === '/mls/devices') {
         const existing = simDevices.get(body.deviceId);
-        if (existing?.revokedAt) throw new Error('Device revoked');
+        if (existing?.revokedAt) {
+          throw Object.assign(new Error('Device revoked'), { response: { status: 403, data: { code: 'DEVICE_ACCESS_REVOKED' } } });
+        }
         simDevices.set(body.deviceId, {
           id: body.deviceId,
           userId: simCurrentUser,
           signaturePublicKey: body.signaturePublicKey,
           credential: body.credential,
           revokedAt: null,
-          approvedByDeviceId: null,
-          approvalSignature: null,
+          approvedByDeviceId: existing?.approvedByDeviceId ?? null,
+          approvalSignature: existing?.approvalSignature ?? null,
+          approvedByVault: existing?.approvedByVault,
           deviceName: body.deviceName
         });
         for (const p of body.initialKeyPackages || body.keyPackages || []) {
@@ -46,7 +51,7 @@ vi.mock('../api/httpClient', () => ({
             consumed: false
           });
         }
-        return { data: { device: { id: body.deviceId, approvedAt: new Date().toISOString() }, availableKeyPackageCount: 15 } };
+        return { data: { device: { id: body.deviceId, approvedAt: pendingRegistrations ? null : new Date().toISOString() }, availableKeyPackageCount: 15 } };
       }
       if (url === '/mls/key-packages') {
         for (const p of body.keyPackages || []) {
@@ -115,8 +120,13 @@ vi.mock('../api/httpClient', () => ({
     get: async (url: string, opts: any) => {
       if (url.endsWith('/devices')) return { data: {
         userIds: simMembers, isGroup: false, adminId: null,
+        vaultAuthorities: simVaultAuthorities,
         devices: Array.from(simDevices.values()).filter((device) => simMembers.includes(device.userId))
       } };
+      if (url.endsWith('/group-info')) {
+        const latest = simCommits.at(-1);
+        return { data: { epoch: simCurrentEpoch, groupInfo: latest ? JSON.parse(latest.commitData).groupInfoBase64 : null } };
+      }
       const m = url.match(/\/mls\/conversations\/(.+)\/sync/);
       if (m) {
         const { deviceId, sinceEpoch } = opts.params;
@@ -140,8 +150,10 @@ vi.mock('../api/httpClient', () => ({
 }));
 
 import {
+  cacheGroupAttachment,
   decryptBytesFromMse1,
-  encryptBytesWithMse1
+  encryptBytesWithMse1,
+  openGroupAttachment
 } from './fileCrypto';
 import {
   createEncryptedBackupPayload,
@@ -153,6 +165,7 @@ import {
   deserializeTsMlsClientState,
   encryptOutgoingMessage,
   ensureDeviceRegistered,
+  registerDeviceForAccountVault,
   generateDeviceCryptoIdentity,
   generateSignedKeyPackages,
   getActiveConversationCallMediaKey,
@@ -163,15 +176,20 @@ import {
   type SignedKeyPackagePayload
 } from './mlsClient';
 import {
+  base64ToBytes,
   bytesToBase64,
   cacheDecryptedMessage,
   clearMemoryVaultForTests,
   consumeEphemeralKeyPackageKey,
+  deleteEncryptedRecord,
+  deleteGroupHistory,
   getConversationMlsState,
   getLocalConversationMedia,
+  getStoredDeviceIdentity,
   hasEphemeralKeyPackageKey,
   importVaultHistory,
   saveConversationMlsState,
+  saveDeviceIdentity,
   searchLocalMessages
 } from './vault';
 
@@ -179,11 +197,32 @@ describe('RFC 9420 MLS Crypto Engine (`ts-mls` Single Source of Truth) & Multi-C
   beforeEach(() => {
     clearMemoryVaultForTests();
     simDevices.clear();
+    simVaultAuthorities.length = 0;
     simKeyPackages.length = 0;
     simCommits.length = 0;
     simWelcomes.length = 0;
     simCurrentEpoch = 0;
     simCurrentUser = '';
+    pendingRegistrations = false;
+  });
+
+  it('replaces a revoked identity after vault unlock even if a background registration is in flight', async () => {
+    const user = 'reapproving-account';
+    simCurrentUser = user;
+    const original = (await ensureDeviceRegistered(user))!;
+    simDevices.get(original.deviceId)!.revokedAt = new Date().toISOString();
+    pendingRegistrations = true;
+
+    const background = ensureDeviceRegistered(user);
+    const foreground = registerDeviceForAccountVault(user, new AbortController().signal);
+    await expect(background).resolves.toBeNull();
+    const replacement = await foreground;
+
+    expect(replacement.deviceId).not.toBe(original.deviceId);
+    expect(simDevices.get(original.deviceId)?.revokedAt).toBeTruthy();
+    expect(simDevices.get(replacement.deviceId)).toMatchObject({ revokedAt: null, signaturePublicKey: replacement.signaturePublicKeyBase64 });
+    expect(await getStoredDeviceIdentity(user)).toEqual(replacement);
+    await expect(ensureDeviceRegistered(user)).resolves.toBeNull();
   });
 
   it('generates distinct ephemeral X25519 keys per KeyPackage, requires tlsKeyPackageBase64 + v2 signature, checks lifetime, and deletes consumed private keys', async () => {
@@ -229,6 +268,46 @@ describe('RFC 9420 MLS Crypto Engine (`ts-mls` Single Source of Truth) & Multi-C
     expect(await hasEphemeralKeyPackageKey('user-alice', packages[0].keyPackageRef)).toBe(false);
   });
 
+  it('joins with a vault-approved second device while the original device is offline and exchanges MLS messages', async () => {
+    const user = 'account';
+    const conversationId = 'second-device-test';
+    simCurrentUser = user;
+    simMembers = [user];
+    const primary = (await ensureDeviceRegistered(user))!;
+    expect(await rotateConversationEpoch(user, conversationId, [user])).toMatchObject({ currentEpoch: 1 });
+    const primaryState = (await getConversationMlsState(user, conversationId))!;
+    const second = await generateDeviceCryptoIdentity(user, 'Second device');
+    const cs = await getTsMlsCiphersuite();
+    const authority = await cs.signature.keygen();
+    const authorityPublicKey = bytesToBase64(authority.publicKey);
+    const historyPublicKey = 'history-key';
+    const encode = (fields: string[]) => new TextEncoder().encode(JSON.stringify(fields));
+    const approvalSignature = bytesToBase64(await cs.signature.sign(authority.signKey,
+      encode(['account-vault-device-v1', user, second.deviceId, second.signaturePublicKeyBase64])));
+    simVaultAuthorities.push({ userId: user, issuerId: primary.deviceId, historyPublicKey, publicKey: authorityPublicKey,
+      signature: bytesToBase64(await cs.signature.sign(base64ToBytes(primary.signaturePrivateKeyPkcs8Base64),
+        encode(['account-vault-authority-v1', user, primary.deviceId, historyPublicKey, authorityPublicKey]))) });
+    simDevices.set(second.deviceId, { id: second.deviceId, userId: user, signaturePublicKey: second.signaturePublicKeyBase64,
+      credential: second.credentialJson, deviceName: second.deviceName, revokedAt: null,
+      approvedByDeviceId: primary.deviceId, approvalSignature, approvedByVault: true });
+    await saveDeviceIdentity(second);
+    await deleteEncryptedRecord(`mls:${user}:${conversationId}`);
+    const envelope = await encryptOutgoingMessage(user, conversationId, [user], 'İkinci cihazdan');
+    expect(envelope?.epoch).toBe(2);
+    expect(JSON.parse(simCommits.at(-1).commitData).external).toBe(true);
+    const secondState = (await getConversationMlsState(user, conversationId))!;
+
+    await saveDeviceIdentity(primary);
+    await saveConversationMlsState(user, primaryState);
+    const message = { id: 'second-sent', senderId: user, conversationId, content: '', ...envelope! };
+    expect((await decryptIncomingMessage(user, message)).content).toBe('İkinci cihazdan');
+    const reply = await encryptOutgoingMessage(user, conversationId, [user], 'İlk cihazdan');
+    expect(reply?.epoch).toBe(2);
+    await saveDeviceIdentity(second);
+    await saveConversationMlsState(user, secondState);
+    expect((await decryptIncomingMessage(user, { id: 'first-sent', senderId: user, conversationId, content: '', ...reply! })).content).toBe('İlk cihazdan');
+  });
+
   it('passes full end-to-end 3-client simulation (K1, K2, K3, H2, H6, M2, M5: Epoch 1 -> Epoch 2 Member Add -> Epoch 3 Member Remove + Self-Read + Historical Decrypt + Call Keys)', async () => {
     const CONV = '11111111-1111-4111-8111-111111111111';
     const A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -267,6 +346,11 @@ describe('RFC 9420 MLS Crypto Engine (`ts-mls` Single Source of Truth) & Multi-C
     expect(m1.epoch).toBe(1);
     expect(await read(B, m1)).toBe('merhaba epoch1');
     expect(await read(A, m1)).toBe('merhaba epoch1');
+
+    const packagesBeforeBurst = simKeyPackages.length;
+    const burst = await Promise.all(Array.from({ length: 12 }, (_, index) => send(A, [A, B], 'seri mesaj ' + index)));
+    for (const [index, message] of burst.entries()) expect(await read(B, message)).toBe('seri mesaj ' + index);
+    expect(simKeyPackages).toHaveLength(packagesBeforeBurst);
 
     // Bob'un kalan KeyPackage sayısı kontrolü (Epoch 2 rotasyonunda Bob'un KeyPackage'ı tüketilmemeli - K1 & M2)
     const bobUnconsumedBeforeEp2 = simKeyPackages.filter(
@@ -376,6 +460,38 @@ describe('RFC 9420 MLS Crypto Engine (`ts-mls` Single Source of Truth) & Multi-C
     const corrupted = new Uint8Array(encryptedBytes);
     corrupted[corrupted.length - 1] ^= 0xff;
     await expect(decryptBytesFromMse1(corrupted, metadata)).rejects.toThrow(/SHA-256/);
+  });
+
+  it.each([
+    ['rapor.pdf', 'application/pdf'],
+    ['foto.png', 'image/png'],
+    ['voice-1.webm', 'audio/webm']
+  ])('opens archived %s offline using the original MIME type', async (fileName, mimeType) => {
+    const bytes = new TextEncoder().encode('file contents');
+    const { encryptedBytes, metadata } = await encryptBytesWithMse1(bytes, fileName, mimeType);
+    const message = { id: 'file-message', senderId: 'sender', conversationId: 'group', content: '',
+      fileKey: 'attachment-key', fileUrl: 'https://storage.invalid/signed', encryptedFileMetadata: JSON.stringify(metadata) };
+    const fetchFile = vi.fn().mockResolvedValue({
+      ok: true,
+      arrayBuffer: async () => encryptedBytes.buffer.slice(0),
+      headers: new Headers({ 'content-type': 'application/octet-stream' })
+    });
+    const createObjectURL = vi.fn().mockReturnValue('blob:local-file');
+    const OriginalUrl = URL;
+    vi.stubGlobal('fetch', fetchFile);
+    vi.stubGlobal('URL', class extends OriginalUrl { static createObjectURL = createObjectURL; });
+    try {
+      await cacheGroupAttachment('reader', message, new AbortController().signal);
+      fetchFile.mockClear();
+      await expect(openGroupAttachment('reader', { ...message, fileUrl: undefined })).resolves.toBe('blob:local-file');
+      expect(fetchFile).not.toHaveBeenCalled();
+      expect(createObjectURL).toHaveBeenCalledWith(expect.objectContaining({ type: mimeType, size: bytes.length }));
+      await expect(openGroupAttachment('another-account', message)).resolves.toBeNull();
+      await deleteGroupHistory('reader', message.conversationId);
+      await expect(openGroupAttachment('reader', message)).resolves.toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('indexes decrypted messages in the encrypted local vault and excludes raw epoch secrets from zero-knowledge cloud backups (M4)', async () => {

@@ -7,6 +7,7 @@
  * kullanıcı e-posta adreslerinin kamuya sızdırılmadığını (`email` alanının silindiğini) test eder.
  */
 
+import { Prisma } from '@prisma/client';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { prismaMock, createSignedFileUrlMock } = vi.hoisted(() => ({
@@ -63,6 +64,7 @@ describe('public user privacy', () => {
     expect(prismaMock.user.findMany).toHaveBeenCalledWith(expect.objectContaining({
       where: {
         NOT: { id: 'user-1' },
+        accountHistoryKey: { is: { vaultApproval: { not: Prisma.DbNull } } },
         username: { contains: 'Deniz', mode: 'insensitive' }
       }
     }));
@@ -81,6 +83,9 @@ describe('public user privacy', () => {
 
     const profile = await getUserProfile('user-2', 'user-1');
 
+    expect(prismaMock.user.findUnique).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'user-2', accountHistoryKey: { is: { vaultApproval: { not: Prisma.DbNull } } } }
+    }));
     expect(profile).not.toHaveProperty('email');
     expect(profile).toMatchObject({
       id: 'user-2',

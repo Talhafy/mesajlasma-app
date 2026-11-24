@@ -36,6 +36,7 @@ import {
   setRefreshCookie
 } from '../services/authTokens';
 import { disconnectUserSockets } from '../socket/sessionControl';
+import { browserSessionRoom } from '../services/deviceSessionService';
 
 const router = express.Router();
 
@@ -100,8 +101,6 @@ router.post('/register', requireTrustedOrigin, validateRequest({ body: authSchem
       data: { username, email, password_hash: hashedPassword }
     });
 
-    // Yeni kullanıcı katıldı bildirimini tüm Socket odalarına yayınla
-    req.app.get('io')?.emit('kullanici_eklendi', await publicUser(newUser));
     logger.info(authLogContext(req, {
       event: 'auth.register_success',
       userId: newUser.id
@@ -171,13 +170,13 @@ router.post('/login', requireTrustedOrigin, validateRequest({ body: authSchemas.
     const refreshToken = createRefreshToken();
     const refreshExpiresAt = getRefreshExpiry();
 
-    await prisma.$transaction(async (tx) => {
+    const session = await prisma.$transaction(async (tx) => {
       // Süresi dolmuş eski oturumları temizle
       await tx.refreshSession.deleteMany({
         where: { expiresAt: { lt: new Date() } }
       });
       // Yeni oturumu kaydet
-      await tx.refreshSession.create({
+      const session = await tx.refreshSession.create({
         data: {
           userId: user.id,
           tokenHash: hashRefreshToken(refreshToken),
@@ -189,6 +188,7 @@ router.post('/login', requireTrustedOrigin, validateRequest({ body: authSchemas.
         where: { id: user.id },
         data: { failedLoginAttempts: 0 }
       });
+      return session;
     });
 
     setRefreshCookie(res, refreshToken, refreshExpiresAt);
@@ -199,7 +199,7 @@ router.post('/login', requireTrustedOrigin, validateRequest({ body: authSchemas.
 
     return res.status(200).json({
       message: 'Giriş başarılı!',
-      accessToken: createAccessToken(user),
+      accessToken: createAccessToken(user, session.sessionId),
       user: await publicUser(user)
     });
   } catch (error) {
@@ -227,13 +227,18 @@ router.post('/refresh', requireTrustedOrigin, async (req, res) => {
     const tokenHash = hashRefreshToken(presentedToken);
     const session = await prisma.refreshSession.findUnique({
       where: { tokenHash },
-      include: { user: true }
+      include: { user: true, device: { select: { revokedAt: true } } }
     });
 
     if (!session) {
       logger.warn(authLogContext(req, { event: 'auth.refresh_invalid' }), 'Refresh session invalid');
       clearRefreshCookie(res);
       return res.status(401).json({ error: 'Refresh oturumu geçersiz.', code: 'UNAUTHORIZED' });
+    }
+
+    if (session.device?.revokedAt) {
+      clearRefreshCookie(res);
+      return res.status(401).json({ error: 'Bu cihazın erişimi kaldırıldı.', code: 'DEVICE_ACCESS_REVOKED' });
     }
 
     // TEKRAR KULLANIM TESPİTİ (Reuse Detection): İptal edilmiş token tekrar kullanılırsa tüm oturumlar kapatılır
@@ -267,6 +272,11 @@ router.post('/refresh', requireTrustedOrigin, async (req, res) => {
     // Refresh Rotation: Eski token iptal edilir, yeni token üretilir
     const nextRefreshToken = createRefreshToken();
     const rotated = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "User" WHERE id = ${session.userId} FOR UPDATE`;
+      const current = await tx.refreshSession.findUnique({
+        where: { id: session.id }, include: { device: { select: { revokedAt: true } } }
+      });
+      if (current?.device?.revokedAt) return 'revoked';
       const revoked = await tx.refreshSession.updateMany({
         where: { id: session.id, revokedAt: null, expiresAt: { gt: new Date() } },
         data: { revokedAt: new Date() }
@@ -276,6 +286,8 @@ router.post('/refresh', requireTrustedOrigin, async (req, res) => {
       await tx.refreshSession.create({
         data: {
           userId: session.userId,
+          sessionId: session.sessionId,
+          deviceId: current?.deviceId,
           tokenHash: hashRefreshToken(nextRefreshToken),
           expiresAt: session.expiresAt
         }
@@ -283,6 +295,10 @@ router.post('/refresh', requireTrustedOrigin, async (req, res) => {
       return true;
     });
 
+    if (rotated === 'revoked') {
+      clearRefreshCookie(res);
+      return res.status(401).json({ error: 'Bu cihazın erişimi kaldırıldı.', code: 'DEVICE_ACCESS_REVOKED' });
+    }
     if (!rotated) {
       logger.warn(authLogContext(req, {
         event: 'auth.refresh_conflict',
@@ -298,7 +314,7 @@ router.post('/refresh', requireTrustedOrigin, async (req, res) => {
     }), 'Refresh token rotated');
 
     return res.status(200).json({
-      accessToken: createAccessToken(session.user),
+      accessToken: createAccessToken(session.user, session.sessionId),
       user: await publicUser(session.user)
     });
   } catch (error) {
@@ -319,10 +335,18 @@ router.post('/logout', requireTrustedOrigin, async (req, res) => {
   try {
     const refreshToken = readRefreshToken(req.headers.cookie);
     if (refreshToken) {
-      await prisma.refreshSession.updateMany({
-        where: { tokenHash: hashRefreshToken(refreshToken), revokedAt: null },
-        data: { revokedAt: new Date() }
+      const session = await prisma.refreshSession.findUnique({
+        where: { tokenHash: hashRefreshToken(refreshToken) }, select: { userId: true, sessionId: true }
       });
+      if (session) {
+        await prisma.$transaction(async (tx) => {
+          await tx.$queryRaw`SELECT id FROM "User" WHERE id = ${session.userId} FOR UPDATE`;
+          await tx.refreshSession.updateMany({ where: { ...session, revokedAt: null }, data: { revokedAt: new Date() } });
+        });
+        const room = req.app.get('io')?.in(browserSessionRoom(session.sessionId));
+        room?.emit('auth:session-revoked', { reason: 'logout' });
+        room?.disconnectSockets(true);
+      }
     }
     clearRefreshCookie(res);
     logger.info(authLogContext(req, { event: 'auth.logout_success' }), 'Logout successful');

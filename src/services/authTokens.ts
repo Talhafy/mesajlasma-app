@@ -37,6 +37,7 @@ const jwtOptions = {
 export interface AccessTokenPayload extends JwtPayload {
   userId: string;
   username: string;
+  sessionId: string;
   tokenType: 'access';
   exp: number;
 }
@@ -44,8 +45,8 @@ export interface AccessTokenPayload extends JwtPayload {
 /**
  * Kullanıcı için 15 dakika geçerli JWT Access Token imzalar ve üretir.
  */
-export const createAccessToken = (user: { id: string; username: string }) => jwt.sign(
-  { userId: user.id, username: user.username, tokenType: 'access' },
+export const createAccessToken = (user: { id: string; username: string }, sessionId: string) => jwt.sign(
+  { userId: user.id, username: user.username, sessionId, tokenType: 'access' },
   jwtSecret,
   {
     algorithm: 'HS256',
@@ -68,6 +69,7 @@ export const verifyAccessToken = (token: string): AccessTokenPayload => {
     decoded.tokenType !== 'access' ||
     typeof decoded.userId !== 'string' ||
     typeof decoded.username !== 'string' ||
+    typeof decoded.sessionId !== 'string' ||
     typeof decoded.exp !== 'number'
   ) {
     throw new Error('Geçersiz access token içeriği.');

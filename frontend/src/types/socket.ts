@@ -1,5 +1,6 @@
 import type { Socket } from 'socket.io-client';
 import type { Message, User, Conversation } from './chat';
+import type { SyncedHistoryCopy } from '../crypto/accountHistory';
 
 export interface ClientToServerEvents {
   'auth:refresh': (payload: { token: string }, acknowledge?: (result: { ok: boolean; error?: string }) => void) => void;
@@ -16,6 +17,7 @@ export interface ClientToServerEvents {
 export interface ServerToClientEvents {
   'auth:expired': () => void;
   'auth:session-revoked': (payload: { reason: string }) => void;
+  profile_changed: () => void;
   presence_snapshot: (payload: { onlineUserIds: string[] }) => void;
   presence_changed: (payload: { userId: string; isOnline: boolean; lastSeenAt?: string | null }) => void;
   typing_changed: (payload: { conversationId: string; userId: string; username: string; isTyping: boolean }) => void;
@@ -25,19 +27,23 @@ export interface ServerToClientEvents {
   'call:declined': (payload: { callId: string; user?: { username?: string } }) => void;
   'call:ended': (payload: { callId: string }) => void;
   yeni_mesaj_geldi: (message: Message) => void;
-  mesajlar_okundu: (payload: { conversationId: string; readByUserId: string }) => void;
+  mesajlar_okundu: (payload: { conversationId: string; readByUserId: string; readThroughAt: string }) => void;
   mesaj_guncellendi: (message: Message) => void;
   mesaj_silindi: (payload: { messageId: string; conversationId: string }) => void;
+  sohbet_gecmisi_silindi: (payload: { conversationId: string }) => void;
+  sohbet_gecmisi_temizlendi: (payload: { conversationId: string; clearedAt: string }) => void;
+  account_history_synced: (copies: SyncedHistoryCopy[]) => void;
+  account_history_repaired: (event: { messageId: string; conversationId: string; historyDelivery: NonNullable<Message['historyDelivery']> }) => void;
   sohbet_ayarlari_guncellendi: (payload: { conversationId: string; disappearingDurationSeconds: number | null }) => void;
   user_blocked_you: (payload: { blockerId: string }) => void;
   user_unblocked_you: (payload: { blockerId: string }) => void;
   user_blocked_target: (payload: { targetId: string }) => void;
   user_unblocked_target: (payload: { targetId: string }) => void;
-  kullanici_eklendi: (user: User) => void;
+  user_directory_changed: () => void;
   grup_olusturuldu: (group: Conversation) => void;
   grup_guncellendi: (group: Conversation) => void;
   yeni_grup_bildirimi: () => void;
-  gruptan_atildi: (payload: { groupId: string; removedUserId: string; removedById?: string }) => void;
+  gruptan_atildi: (payload: { groupId: string; removedUserId: string; removedById?: string; leftAt: string }) => void;
   grup_yonetici_degisti: (payload: { groupId: string; newAdminId: string }) => void;
   grup_uyeleri_eklendi: (payload: { groupId: string; newMembers: User[] }) => void;
   grup_silindi: (payload: { groupId: string }) => void;

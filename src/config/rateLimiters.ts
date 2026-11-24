@@ -140,15 +140,15 @@ export const uploadLimiter = rateLimit({
 
 /**
  * GENEL API SINIRLAYICISI (Global API Limiter)
- * - Pencere: 15 Dakika
- * - IP Başına Maksimum İstek: 500
+ * - Pencere: 1 Dakika
+ * - IP Başına Maksimum İstek: 600
  * - Tüm API uç noktaları için genel DDoS ve anormal kaynak tüketim koruması sağlar.
  */
 export const globalApiLimiter = rateLimit({
   ...commonOptions,
   store: createRedisRateLimitStore('global'),
-  windowMs: 15 * 60 * 1000,
-  limit: 500,
+  windowMs: 60 * 1000,
+  limit: 600,
   message: { error: 'Çok fazla API isteği gönderdiniz. Lütfen daha sonra tekrar deneyin.', code: 'RATE_LIMIT_EXCEEDED' },
   handler: (req, res) => sendRateLimitResponse(
     req,

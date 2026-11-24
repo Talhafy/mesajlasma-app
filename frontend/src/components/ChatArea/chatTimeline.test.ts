@@ -20,6 +20,7 @@ import {
   formatDetailedDate,
   getMessagePreview,
   getUnixEpoch,
+  hasReadReceipt,
   isDeletedForEveryoneMessage,
   mergeMessage
 } from './chatTimeline';
@@ -34,6 +35,24 @@ const message = (id: string, createdAt: string, content = id): Message => ({
 });
 
 describe('chat timeline helpers', () => {
+  it('shows a group receipt only after every eligible recipient has read the message', () => {
+    const sent = { ...message('sent', '2026-08-02T10:00:00.000Z'), groupRecipientIds: ['user-2', 'user-3'] };
+    expect(hasReadReceipt({ ...sent, readByIds: ['user-2', 'other-user'] }, true)).toBe(false);
+    expect(hasReadReceipt({ ...sent, readByIds: ['user-2', 'user-3'] }, true)).toBe(true);
+    expect(hasReadReceipt({ ...sent, groupRecipientIds: [], readByIds: ['other-user'] }, true)).toBe(false);
+    expect(hasReadReceipt({ ...sent, readByIds: ['user-2'] }, false)).toBe(true);
+  });
+
+  it('skips pending decryption bubbles and keeps previously decrypted content for the same envelope', () => {
+    const plain = { ...message('m1', '2026-08-02T10:00:00.000Z', 'Görünen mesaj'), protocolVersion: 2, ciphertext: 'envelope' };
+    const pending = { ...plain, content: '', decryptionPending: true };
+    const oldArchive = { ...plain, id: 'm2', content: '🔒 Bu cihazda şifreli geçmiş henüz açılamadı.' };
+    expect(buildTimelineWithDateSeparators([plain, { ...pending, id: 'm3' }, oldArchive], []).map(({ type }) => type)).toEqual(['date', 'message']);
+    expect(getMessagePreview(pending)).toBe('');
+    expect(mergeMessage([plain], pending)[0]).toMatchObject({ content: plain.content, decryptionPending: false });
+    expect(mergeMessage([plain], { ...pending, ciphertext: 'new-envelope' })[0]).toMatchObject({ content: '', decryptionPending: true });
+  });
+
   it('sorts messages and system events while inserting one separator per day', () => {
     const result = buildTimelineWithDateSeparators(
       [message('later', '2026-08-02T10:00:00.000Z'), message('first', '2026-08-01T10:00:00.000Z')],
@@ -51,6 +70,7 @@ describe('chat timeline helpers', () => {
     expect(getMessagePreview({ ...message('image', '2026-08-01T10:00:00.000Z', ''), fileType: 'image' })).toContain('Görsel');
     expect(getMessagePreview({ ...message('video', '2026-08-01T10:00:00.000Z', ''), fileType: 'video' })).toContain('Video');
     expect(getMessagePreview({ ...message('legacy-video', '2026-08-01T10:00:00.000Z', ''), fileType: 'audio', fileName: 'eski-video.mp4' })).toContain('Video');
+    expect(getMessagePreview({ ...message('voice', '2026-08-01T10:00:00.000Z', ''), fileType: 'audio', fileName: 'voice-1.webm' })).toContain('Ses kaydı');
     expect(getMessagePreview({ ...message('file', '2026-08-01T10:00:00.000Z', ''), fileKey: 'x', fileName: 'rapor.pdf' })).toContain('rapor.pdf');
     expect(getMessagePreview(null)).toBe('');
   });

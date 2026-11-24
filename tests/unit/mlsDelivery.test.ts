@@ -338,7 +338,7 @@ describe('MLS Delivery Service, Server-Side Signature & Authorization Hardening'
       })
     ).rejects.toMatchObject({
       statusCode: 403,
-      code: 'MLS_DEVICE_NOT_FOUND'
+      code: 'DEVICE_ACCESS_REVOKED'
     });
   });
 

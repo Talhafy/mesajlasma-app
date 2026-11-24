@@ -57,10 +57,17 @@ app.set('io', io);
 
 // --- GÜVENLİK VE MİDDLEWARE KATMANI ---
 app.use(helmet()); // XSS, Clickjacking gibi saldırılara karşı HTTP güvenlik başlıkları ekler
-app.use(express.json({ limit: '100kb' })); // JSON istek boyutu sınırı (DDoS önleme)
+const parseJson = express.json({ limit: '100kb' });
+const parseMessageJson = express.json({ limit: '610kb' });
+app.use((req, res, next) => {
+  const sendsMessage = (req.method === 'POST' && (req.path === '/api/v1/messages' || /^\/api\/v1\/mls\/conversations\/[^/]+\/commits$/.test(req.path))) ||
+    (req.method === 'PUT' && /^\/api\/v1\/(?:(?:messages|mls\/account-history\/repair)\/[^/]+|mls\/conversations\/[^/]+\/group-info)$/.test(req.path));
+  return (sendsMessage ? parseMessageJson : parseJson)(req, res, next);
+});
 app.use(cors({
   origin: clientOrigin,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+  exposedHeaders: ['Retry-After'],
   credentials: true
 })); // Yalnızca izin verilen frontend kökenine (clientOrigin) ve çerez geçişine izin verir
 app.use(requestLogger);

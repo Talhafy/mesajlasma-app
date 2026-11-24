@@ -21,12 +21,16 @@ const {
   participantFindManyMock,
   messageFindManyMock,
   messageFindUniqueMock,
+  messageDeletionUpsertMock,
+  requireActiveParticipantMock,
   requireHistoryParticipantMock
 } = vi.hoisted(() => ({
   userFindManyMock: vi.fn(),
   participantFindManyMock: vi.fn(),
   messageFindManyMock: vi.fn(),
   messageFindUniqueMock: vi.fn(),
+  messageDeletionUpsertMock: vi.fn(),
+  requireActiveParticipantMock: vi.fn(),
   requireHistoryParticipantMock: vi.fn()
 }));
 
@@ -34,22 +38,42 @@ vi.mock('../../src/db', () => ({
   default: {
     user: { findMany: userFindManyMock },
     participant: { findMany: participantFindManyMock },
-    message: { findMany: messageFindManyMock, findUnique: messageFindUniqueMock },
+    message: { findMany: messageFindManyMock, findUnique: messageFindUniqueMock, count: vi.fn().mockResolvedValue(1) },
+    messageDeletion: { upsert: messageDeletionUpsertMock },
     blockedUser: { findMany: vi.fn().mockResolvedValue([]) },
-    conversationReadState: { findMany: vi.fn().mockResolvedValue([]) }
+    conversationReadState: { findMany: vi.fn().mockResolvedValue([]), findUnique: vi.fn().mockResolvedValue(null) },
+    $executeRaw: vi.fn(),
+    $transaction: (run: (tx: unknown) => unknown) => run({
+      messageDeletion: { upsert: messageDeletionUpsertMock }, accountHistoryMessage: { deleteMany: vi.fn() }, $executeRaw: vi.fn()
+    })
   }
 }));
 
 vi.mock('../../src/services/conversationAccess', () => ({
+  requireActiveParticipant: requireActiveParticipantMock,
   requireHistoryParticipant: requireHistoryParticipantMock
 }));
 
-import { fetchMessages } from '../../src/services/messageService';
+import { deleteMessage, fetchMessages, markAsRead } from '../../src/services/messageService';
 import { listUsers } from '../../src/services/userService';
 
 describe('Deterministic Cursor & Composite Tuple Pagination unit tests', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('broadcasts receipts for groups even if the caller opts out and respects opt-out in direct chats', async () => {
+    const joinedAt = new Date('2026-08-01T00:00:00Z');
+    requireActiveParticipantMock.mockResolvedValueOnce({ joinedAt, conversation: { isGroup: true } })
+      .mockResolvedValueOnce({ joinedAt, conversation: { isGroup: false } });
+    const emit = vi.fn();
+    const io = { to: vi.fn(() => ({ emit })) };
+
+    await markAsRead('group', 'reader', undefined, false, io);
+    await markAsRead('direct', 'reader', undefined, false, io);
+
+    expect(io.to).toHaveBeenCalledExactlyOnceWith('group');
+    expect(emit).toHaveBeenCalledExactlyOnceWith('mesajlar_okundu', expect.objectContaining({ readByUserId: 'reader', readThroughAt: expect.any(String) }));
   });
 
   it('should paginate users with cursor and return nextCursor', async () => {
@@ -108,6 +132,38 @@ describe('Deterministic Cursor & Composite Tuple Pagination unit tests', () => {
     }));
 
     expect(res.items).toHaveLength(1);
+  });
+
+  it('restricts rejoined group history to the previous and current membership periods', async () => {
+    const joinedAt = new Date('2026-08-03T00:00:00Z');
+    const prior = { joinedAt: new Date('2026-08-01T00:00:00Z'), leftAt: new Date('2026-08-01T23:59:59Z') };
+    requireHistoryParticipantMock.mockResolvedValueOnce({ id: 'membership', joinedAt, leftAt: null, historyPeriods: [prior] });
+    messageFindManyMock.mockResolvedValueOnce([]);
+
+    const result = await fetchMessages('conv-1', 'user-1');
+
+    expect(messageFindManyMock).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({
+      AND: expect.arrayContaining([{ OR: [
+        { createdAt: { gte: joinedAt } },
+        { createdAt: { gte: prior.joinedAt, lte: prior.leftAt } }
+      ] }])
+    }) }));
+    expect(result).toMatchObject({ historySince: prior.joinedAt, historyId: 'membership' });
+  });
+
+  it('allows a removed member to delete their own copy only within their membership period', async () => {
+    const membership = { joinedAt: new Date('2026-08-01T00:00:00Z'), leftAt: new Date('2026-08-02T00:00:00Z'), isActive: false };
+    requireHistoryParticipantMock.mockResolvedValue(membership);
+    messageFindUniqueMock.mockResolvedValueOnce({ conversationId: 'conv-1', createdAt: new Date('2026-08-01T12:00:00Z') })
+      .mockResolvedValueOnce({ conversationId: 'conv-1', createdAt: new Date('2026-08-02T12:00:00Z') });
+
+    await expect(deleteMessage('inside', 'user-1', false, null)).resolves.toBeDefined();
+    await expect(deleteMessage('outside', 'user-1', false, null)).rejects.toMatchObject({ code: 'CONVERSATION_FORBIDDEN' });
+    expect(messageDeletionUpsertMock).toHaveBeenCalledExactlyOnceWith({
+      where: { messageId_userId: { messageId: 'inside', userId: 'user-1' } },
+      create: { messageId: 'inside', userId: 'user-1' },
+      update: {}
+    });
   });
 });
 

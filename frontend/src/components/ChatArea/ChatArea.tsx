@@ -22,6 +22,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import type { Dispatch, RefObject, SetStateAction } from 'react';
 import { api } from '../../api/httpClient';
 import type { User, Conversation, Message } from '../../types/chat';
+import { isReadOnlyGroup } from '../../types/chat';
 import './ChatArea.css';
 import { useFileAttachment } from '../../hooks/useFileAttachment';
 import { useVoiceRecorder } from '../../hooks/useVoiceRecorder';
@@ -29,6 +30,7 @@ import { useMessageInput } from '../../hooks/useMessageInput';
 import {
   decryptIncomingMessage,
   decryptMessageList,
+  messageDeliveryError,
   deliverMlsMessage,
   encryptOutgoingMessage
 } from '../../crypto/mlsClient';
@@ -40,6 +42,7 @@ import {
   formatDetailedDate,
   getMessagePreview,
   getUnixEpoch,
+  isPendingMessageDecryption,
   type SystemTimelineEntry
 } from './chatTimeline';
 
@@ -61,6 +64,12 @@ interface ChatAreaProps {
   mesajGonder: (replyToId?: string) => Promise<void>;
   messagesEndRef: RefObject<HTMLDivElement | null>;
   openGroupSettings: () => void;
+  onDeleteConversationHistory: (conversationId: string) => void;
+  onClearPersonalHistory: (conversationId: string) => void;
+  messageFocus: { conversationId: string; messageId: string } | null;
+  onFocusMessage: (messageId?: string) => void;
+  hasNewer: boolean;
+  onDeleteMessageForMe: (message: Message) => Promise<void>;
   closeChat: () => void;
   isDarkMode: boolean;
   usersList: User[];
@@ -93,6 +102,7 @@ const formatSeconds = (totalSeconds: number) => {
 export default function ChatArea({
   currentUser, activeConversation, selectedUser, messages, newMessage: newMessageProp,
   setMessages, setNewMessage: setNewMessageProp, mesajGonder, messagesEndRef, openGroupSettings, closeChat, isDarkMode,
+  onDeleteConversationHistory, onDeleteMessageForMe, onClearPersonalHistory, messageFocus, onFocusMessage, hasNewer,
   usersList, groupMembers, loadMoreMessages, hasMore, isLoadingMore, typingUsername, recordingUsername, onTyping, onVoiceRecording,
   onToggleConversationPin, onToggleConversationArchive, onToggleConversationMute, onSetDisappearingMode,
   onStartCall, socketConnectionStatus, onStartDirectChat, onStartCallWithUser
@@ -121,7 +131,7 @@ export default function ChatArea({
   const [selectedMessageIds, setSelectedMessageIds] = useState<Set<string>>(new Set());
   const [isBulkDeleteMenuOpen, setIsBulkDeleteMenuOpen] = useState(false);
   const [pinnedIndex, setPinnedIndex] = useState(0);
-  const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
+  const [messageHighlight, setMessageHighlight] = useState<{ id: string; sequence: number } | null>(null);
   const [editingMessage, setEditingMessage] = useState<Message | null>(null);
 
   // ZAMANLAMA VE BEKLEYEN MESAJ DURUMLARI
@@ -286,8 +296,9 @@ export default function ChatArea({
 
 
   // F5 GEREKTİRMEDEN ANLIK VERİ YENİLEME FONKSİYONU
+  const isReadOnlyHistory = isReadOnlyGroup(activeConversation);
   const fetchSidebarData = useCallback(() => {
-    if (!activeConversation?.id || !isConversationInfoOpen) return;
+    if (!activeConversation?.id || !isConversationInfoOpen || isReadOnlyHistory) return;
     const convId = activeConversation.id;
 
     Promise.all([
@@ -313,7 +324,7 @@ export default function ChatArea({
         }
 
         setMediaPanelData({
-          mediaMessages: serverMedia,
+          mediaMessages: serverMedia.filter((message) => !isPendingMessageDecryption(message)),
           linkItems: mergedLinks
         });
       })
@@ -324,10 +335,10 @@ export default function ChatArea({
       .then(async (response) => {
         const starredInConversation = (response.data as Message[]).filter((message) => message.conversationId === convId);
         const decryptedStarred = await decryptMessageList(currentUser.id, starredInConversation);
-        setConversationStarredMessages(decryptedStarred);
+        setConversationStarredMessages(decryptedStarred.filter((message) => !isPendingMessageDecryption(message)));
       })
       .catch(() => setConversationStarredMessages([]));
-  }, [activeConversation?.id, isConversationInfoOpen, currentUser.id]);
+  }, [activeConversation?.id, activeConversation?.historyClearedAt, isConversationInfoOpen, isReadOnlyHistory, currentUser.id]);
 
 
   useEffect(() => {
@@ -339,10 +350,6 @@ export default function ChatArea({
   }, [activeConversation?.id, cancelFile, setReplyingTo]);
 
   useEffect(() => {
-    const isReadOnlyHistory = Boolean(
-      activeConversation?.isGroup &&
-      (activeConversation.isActive === false || activeConversation.isDeleted)
-    );
     if (!isReadOnlyHistory) return;
 
     setIsSelectMode(false);
@@ -354,9 +361,7 @@ export default function ChatArea({
     setIsDisappearingSettingsOpen(false);
     setIsConversationInfoOpen(false);
   }, [
-    activeConversation?.isActive,
-    activeConversation?.isDeleted,
-    activeConversation?.isGroup,
+    isReadOnlyHistory,
     setReplyingTo
   ]);
 
@@ -474,8 +479,8 @@ export default function ChatArea({
 
           clearMessageInput();
           cancelFile();
-        } catch {
-          alert("Dosya yüklenirken hata oluştu.");
+        } catch (error) {
+          alert(messageDeliveryError(error, 'Dosya gönderilemedi.'));
         } finally {
           setIsUploading(false);
           setUploadProgress(0);
@@ -536,7 +541,7 @@ export default function ChatArea({
       setForwardMessages([]);
       setSelectedMessageIds(new Set());
       setIsSelectMode(false);
-    } catch { alert("Mesajlar iletilemedi."); }
+    } catch (error) { alert(messageDeliveryError(error, 'Mesajlar iletilemedi.')); }
   };
 
   const toggleSelectMessage = (msgId: string) => {
@@ -705,8 +710,8 @@ export default function ChatArea({
       }
 
       await deliverMlsMessage(currentUser.id, activeConversation.id, mlsEnvelope.clientId);
-    } catch {
-      alert('Sesli mesaj gönderilemedi.');
+    } catch (error) {
+      alert(messageDeliveryError(error, 'Sesli mesaj gönderilemedi.'));
     } finally {
       setIsUploading(false);
       setUploadProgress(0);
@@ -762,10 +767,12 @@ export default function ChatArea({
       )));
       setEditingMessage(null);
       setNewMessage('');
-    } catch { alert('Mesaj düzenlenemedi.'); }
+    } catch (error) { alert(messageDeliveryError(error, 'Mesaj düzenlenemedi.')); }
   };
 
   const handleDeleteForMe = async (msgId: string) => {
+    const message = messages.find((item) => item.id === msgId);
+    if (!message) return;
     const isConfirmed = await confirm({
       title: "Mesajı Kendimden Sil",
       message: "Bu mesajı kendinizden silmek istediğinize emin misiniz? Diğer katılımcılar bu mesajı görmeye devam edecektir.",
@@ -775,8 +782,7 @@ export default function ChatArea({
     });
     if (!isConfirmed) return;
     try {
-      await api.delete(`/messages/${msgId}?forEveryone=false`);
-      setMessages((previous) => previous.filter((message) => message.id !== msgId));
+      await onDeleteMessageForMe(message);
     } catch { alert("İşlem başarısız."); }
   };
 
@@ -806,22 +812,34 @@ export default function ChatArea({
   };
 
   const scrollToMessage = (messageId?: string) => {
-    if (!messageId || !messagesListRef.current) return;
+    if (!messageId) return;
     setIsConversationInfoOpen(false);
-    const target = messagesListRef.current.querySelector(`[data-message-id="${messageId}"]`);
-    if (!target) return;
-    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    setHighlightedMessageId(messageId);
-    window.setTimeout(() => setHighlightedMessageId((current) => current === messageId ? null : current), 1600);
+    onFocusMessage(messageId);
   };
+
+  const focusIsLoaded = messages.some((message) => message.id === messageFocus?.messageId && !isPendingMessageDecryption(message));
+  useEffect(() => {
+    if (!messageFocus || !focusIsLoaded || isLoadingChat || messageFocus.conversationId !== activeConversation?.id) return;
+    const { messageId } = messageFocus;
+    if (messageSearchTerm) {
+      setMessageSearchTerm('');
+      return;
+    }
+    const target = messagesListRef.current?.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
+    if (!target) return;
+    target.scrollIntoView({ behavior: 'instant', block: 'center' });
+    setMessageHighlight((current) => ({ id: messageId, sequence: (current?.sequence ?? 0) + 1 }));
+    const timer = window.setTimeout(() => setMessageHighlight(null), 1000);
+    return () => window.clearTimeout(timer);
+  }, [messageFocus, activeConversation?.id, messageSearchTerm, focusIsLoaded, isLoadingChat]);
 
   if (!activeConversation && !selectedUser) {
     return <EmptyChatState panelBg={panelBg} textColor={textColor} iconColor={iconColor} />;
   }
 
-  const displayedMessages = messageSearchTerm.trim() !== ''
-    ? messages.filter(m => m.content.toLowerCase().includes(messageSearchTerm.toLowerCase()))
-    : messages;
+  const displayedMessages = messages.filter((message) => !isPendingMessageDecryption(message) && (
+    !messageSearchTerm.trim() || message.content.toLowerCase().includes(messageSearchTerm.toLowerCase())
+  ));
 
   const conversationOfflineMessages = offlineQueue.filter(m => m.conversationId === activeConversation?.id);
   const combinedMessages = [...displayedMessages, ...conversationOfflineMessages];
@@ -830,7 +848,8 @@ export default function ChatArea({
   const mediaMessages = mediaPanelData.mediaMessages;
   const linkItems = mediaPanelData.linkItems;
   const conversationSystemEntries = activeConversation?.id
-    ? systemTimelineEntries.filter((entry) => entry.conversationId === activeConversation.id)
+    ? systemTimelineEntries.filter((entry) => entry.conversationId === activeConversation.id &&
+        (!activeConversation.historyClearedAt || entry.createdAt > activeConversation.historyClearedAt))
     : [];
   const timelineItemsWithDateSeparators = buildTimelineWithDateSeparators(
     combinedMessages,
@@ -927,10 +946,17 @@ export default function ChatArea({
           onToggleConversationMute={onToggleConversationMute}
           onToggleConversationPin={onToggleConversationPin}
           onToggleConversationArchive={onToggleConversationArchive}
+          onDeleteConversationHistory={onDeleteConversationHistory}
+          onClearPersonalHistory={onClearPersonalHistory}
           handleDisappearingMode={handleDisappearingMode}
           isBlockedLocally={isBlockedLocally}
           handleBlockToggle={handleBlockToggle}
         />
+        {hasNewer && (
+          <div className="chat-history-jump">
+            <button type="button" className="action-btn-outline" onClick={() => onFocusMessage()}>Son mesajlara dön</button>
+          </div>
+        )}
         
         {/* KAYBOLAN MESAJ MODALI */}
         {isDisappearingSettingsOpen && activeConversation?.id && (
@@ -1022,7 +1048,7 @@ export default function ChatArea({
             </div>
           ) : (
             <>
-              {activeConversation?.isGroup && (
+              {activeConversation?.isGroup && !activeConversation.historyClearedAt && (
                 <div style={{ display: 'flex', justifyContent: 'center', margin: '10px 0 25px 0' }}>
                   <div style={{ background: isDarkMode ? '#182229' : '#fff5c4', color: isDarkMode ? '#8696a0' : '#54656f', padding: '8px 14px', borderRadius: '8px', fontSize: '12.5px', textAlign: 'center', boxShadow: '0 1px 2px rgba(0,0,0,0.05)', maxWidth: '85%' }}>
                     <span style={{ fontSize: '14px', marginRight: '5px' }}>🔒</span>
@@ -1032,6 +1058,9 @@ export default function ChatArea({
                 </div>
               )}
 
+              {isReadOnlyHistory && messages.length === 0 && (
+                <p style={{ textAlign: 'center', color: iconColor }}>Bu cihazda görüntülenebilen grup mesajı yok.</p>
+              )}
               {timelineItemsWithDateSeparators.map((item) => (
                 <MessageBubble
                   key={item.id}
@@ -1044,7 +1073,7 @@ export default function ChatArea({
                   selectedMessageIds={selectedMessageIds}
                   toggleSelectMessage={toggleSelectMessage}
                   handleSelectMessage={handleSelectMessage}
-                  highlightedMessageId={highlightedMessageId}
+                  highlightSequence={messageHighlight?.id === item.id ? messageHighlight.sequence : undefined}
                   setAvatarProfileUser={setAvatarProfileUser}
                   setLightboxImageUrl={setLightboxImageUrl}
                   isDarkMode={isDarkMode}

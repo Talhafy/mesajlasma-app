@@ -5,6 +5,7 @@ export interface Message {
   senderId: string;
   sender?: { username: string };
   readByIds?: string[];
+  groupRecipientIds?: string[];
   conversationId: string;
   conversation?: Conversation;
   createdAt?: string;
@@ -30,6 +31,23 @@ export interface Message {
   encryptedFileMetadata?: string | null;
   messageType?: string;
   isDeletedForEveryone?: boolean;
+  isLocalGroupHistory?: boolean;
+  isPriorMembershipMessage?: boolean;
+  archivedFileAvailable?: boolean;
+  decryptionPending?: boolean;
+  accountHistoryCopy?: { version: string; iv: string; payload: string };
+  historyDelivery?: {
+    version: string;
+    iv: string;
+    payload: string;
+    target: string;
+    signature: string;
+    signer: string;
+    vaultOnly?: boolean;
+    key?: string;
+    keys?: Record<string, string>;
+    deviceKeys?: Record<string, { userId: string; key: string }>;
+  };
 }
 
 export interface User {
@@ -69,5 +87,9 @@ export interface Conversation {
   isDeleted?: boolean;
   otherUser?: User | null;
   lastMessage?: Message | null;
+  historyClearedAt?: string | null;
   participants?: Array<{ user: User }>;
 }
+
+export const isReadOnlyGroup = (conversation: Conversation | null | undefined): boolean =>
+  Boolean(conversation?.isGroup && (conversation.isActive === false || conversation.isDeleted));

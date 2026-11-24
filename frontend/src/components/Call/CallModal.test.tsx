@@ -1,12 +1,13 @@
 import type { ComponentProps } from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DisconnectReason } from 'livekit-client';
+import { ConnectionState, DisconnectReason, Track } from 'livekit-client';
 import { LiveKitRoom } from '@livekit/components-react';
 import CallModal, { type ActiveCall } from './CallModal';
 
 const mocks = vi.hoisted(() => ({
   room: vi.fn(), encryptionSupported: vi.fn(), setE2EEEnabled: vi.fn(),
+  connectionState: vi.fn(), participants: vi.fn(), tracks: vi.fn(),
 }));
 vi.mock('livekit-client', async (importOriginal) => ({
   ...await importOriginal<typeof import('livekit-client')>(),
@@ -21,15 +22,15 @@ vi.mock('@livekit/components-react', () => ({
   LiveKitRoom: (props: { children: React.ReactNode }) => { mocks.room(props); return props.children; },
   RoomAudioRenderer: () => null,
   VideoConference: () => null,
-  VideoTrack: () => null,
+  VideoTrack: ({ trackRef }: { trackRef: { participant: { identity: string } } }) => <video data-testid={trackRef.participant.identity} />,
   TrackToggle: ({ children, title, disabled }: { children: React.ReactNode; title: string; disabled: boolean }) => <button title={title} disabled={disabled}>{children}</button>,
   MediaDeviceMenu: ({ children, title }: { children: React.ReactNode; title: string }) => <button title={title}>{children}</button>,
   StartAudio: () => null,
-  useParticipants: () => [],
-  useTracks: () => [],
+  useParticipants: mocks.participants,
+  useTracks: mocks.tracks,
   useMaybeRoomContext: () => undefined,
   useLocalParticipant: () => ({ isCameraEnabled: false, isMicrophoneEnabled: true, isScreenShareEnabled: false, localParticipant: { name: 'Siz' } }),
-  useConnectionState: () => 'connecting',
+  useConnectionState: mocks.connectionState,
 }));
 
 const call: ActiveCall = {
@@ -42,11 +43,47 @@ beforeEach(() => {
   mocks.room.mockClear();
   mocks.setE2EEEnabled.mockReset().mockResolvedValue(undefined);
   mocks.encryptionSupported.mockReturnValue(true);
+  mocks.connectionState.mockReturnValue(ConnectionState.Connecting);
+  mocks.participants.mockReturnValue([]);
+  mocks.tracks.mockReturnValue([]);
   vi.stubGlobal('Worker', class extends EventTarget { terminate() {} });
 });
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+});
+
+it('lets the caller resize their preview before answering and swap views after the other camera joins', async () => {
+  const mine = { identity: 'local-camera', isLocal: true };
+  const other = { identity: 'remote-camera', name: 'Test', isLocal: false, isMicrophoneEnabled: true };
+  const localTrack = { participant: mine, source: Track.Source.Camera, publication: { isMuted: false } };
+  const remoteTrack = { participant: other, source: Track.Source.Camera, publication: { isMuted: false } };
+  const videoCall: ActiveCall = { ...call, callType: 'video' };
+  const onClose = vi.fn();
+  mocks.connectionState.mockReturnValue(ConnectionState.Connected);
+  mocks.participants.mockReturnValue([mine]);
+  mocks.tracks.mockReturnValue([localTrack]);
+  const { rerender } = render(<CallModal call={videoCall} title="Test" onClose={onClose} />);
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Kendi görüntünü büyüt' }));
+  expect(screen.getByRole('main')).toHaveClass('is-self-expanded');
+  expect(screen.getByRole('status')).toHaveTextContent('Aranıyor');
+  fireEvent.click(screen.getByRole('button', { name: 'Kendi görüntünü küçült' }));
+  expect(screen.getByRole('main')).not.toHaveClass('is-self-expanded');
+  fireEvent.click(screen.getByRole('button', { name: 'Kendi görüntünü büyüt' }));
+
+  mocks.participants.mockReturnValue([mine, other]);
+  mocks.tracks.mockReturnValue([localTrack, remoteTrack]);
+  rerender(<CallModal call={videoCall} title="Test" onClose={onClose} />);
+  const localVideo = screen.getByTestId(mine.identity);
+  const remoteVideo = screen.getByTestId(other.identity);
+  expect(screen.getByRole('main')).toHaveClass('is-self-expanded');
+
+  fireEvent.click(screen.getByRole('button', { name: 'Kendi görüntünü küçült' }));
+  expect(screen.getByRole('main')).not.toHaveClass('is-self-expanded');
+  expect(screen.getByTestId(mine.identity)).toBe(localVideo);
+  expect(screen.getByTestId(other.identity)).toBe(remoteVideo);
+  expect(roomProps().video).toBe(true);
 });
 
 describe('CallModal connection failures', () => {

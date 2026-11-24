@@ -13,13 +13,128 @@ import { respondWithError } from '../errors/AppError';
 import { authenticateToken, CustomRequest } from '../middleware/authMiddleware';
 import { validateRequest } from '../middleware/validateRequest';
 import * as backupService from '../services/backupService';
+import * as accountHistoryService from '../services/accountHistoryService';
 import * as mlsDeliveryService from '../services/mlsDeliveryService';
 import { getAuthenticatedUserId as getUserId, getRouteParam as getParam } from '../utils/request';
-import { mlsSchemas } from '../validation/schemas';
+import { accountHistorySchemas, mlsSchemas } from '../validation/schemas';
+import { bindDeviceSession } from '../services/deviceSessionService';
 
 const router = express.Router();
 
 router.use(authenticateToken);
+
+router.get('/mls/account-history/key', async (req: CustomRequest, res: Response) => {
+  try {
+    return res.set('Cache-Control', 'no-store').json({ key: await accountHistoryService.getAccountHistoryKey(getUserId(req)) });
+  } catch (error) {
+    return respondWithError(res, error, 'Şifreli hesap geçmişi açılamadı.');
+  }
+});
+
+router.post('/mls/account-history/key', validateRequest({ body: accountHistorySchemas.enroll }), async (req: CustomRequest, res: Response) => {
+  try {
+    const { password, ...wrappedKey } = req.body;
+    return res.json({ key: await accountHistoryService.enrollAccountHistory(getUserId(req), password, wrappedKey) });
+  } catch (error) {
+    return respondWithError(res, error, 'Şifreli hesap geçmişi ayarlanamadı.');
+  }
+});
+
+router.post('/mls/account-history/vault', validateRequest({ body: accountHistorySchemas.setupVault }), async (req: CustomRequest, res: Response) => {
+  try {
+    const key = await accountHistoryService.setupAccountVault(getUserId(req), req.body);
+    req.app.get('io')?.emit('user_directory_changed');
+    return res.set('Cache-Control', 'no-store').json({ key });
+  } catch (error) {
+    return respondWithError(res, error, 'Kasa kurulamadı.');
+  }
+});
+
+router.put('/mls/account-history/vault/access', validateRequest({ body: accountHistorySchemas.updateVaultAccess }), async (req: CustomRequest, res: Response): Promise<any> => {
+  try {
+    await accountHistoryService.updateAccountVaultAccess(getUserId(req), req.body);
+    return res.sendStatus(204);
+  } catch (error) {
+    return respondWithError(res, error, 'Kasa erişimi güncellenemedi.');
+  }
+});
+
+router.post('/mls/account-history/approve-device', validateRequest({ body: accountHistorySchemas.approveVaultDevice }), async (req: CustomRequest, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const { deviceId, signature } = req.body;
+    if (req.deviceId && req.deviceId !== deviceId) {
+      return res.status(403).json({ error: 'Bu oturum başka bir cihaza bağlı.', code: 'FORBIDDEN' });
+    }
+    const approved = await accountHistoryService.approveAccountVaultDevice(userId, deviceId, signature);
+    await bindDeviceSession(userId, req.user!.sessionId, deviceId);
+    if (approved) {
+      const conversationIds = await mlsDeliveryService.listDeviceConversationIds(userId);
+      req.app.get('io')?.to([userId, ...conversationIds]).emit('mls:device_approved', { userId, deviceId, conversationIds });
+    }
+    return res.json({ approved: true });
+  } catch (error) {
+    return respondWithError(res, error, 'Cihaz onaylanamadı.');
+  }
+});
+
+router.put('/mls/account-history/messages', validateRequest({ body: accountHistorySchemas.messages }), async (req: CustomRequest, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const entries: Parameters<typeof accountHistoryService.storeAccountHistory>[1] = req.body.entries;
+    const result = await accountHistoryService.storeAccountHistory(userId, entries);
+    if (result.accepted.length) {
+      const versions = new Map(result.accepted.map((entry) => [entry.messageId, entry.version]));
+      req.app.get('io')?.to(userId).emit('account_history_synced', entries.filter((entry) => versions.get(entry.messageId) === entry.version));
+    }
+    return res.json(result);
+  } catch (error) {
+    return respondWithError(res, error, 'Şifreli hesap geçmişi eşitlenemedi.');
+  }
+});
+
+router.get('/mls/account-history/recipients/:id', validateRequest({ params: mlsSchemas.conversationParams, query: accountHistorySchemas.recipientsQuery }), async (req: CustomRequest, res: Response) => {
+  try {
+    return res.json(await accountHistoryService.listAccountHistoryRecipients(getUserId(req), getParam(req, 'id'), req.query.messageId as string | undefined));
+  } catch (error) {
+    return respondWithError(res, error, 'Geçmiş alıcıları yüklenemedi.');
+  }
+});
+
+router.put('/mls/account-history/device', validateRequest({ body: accountHistorySchemas.device }), async (req: CustomRequest, res: Response) => {
+  try {
+    await accountHistoryService.registerHistoryDevice(getUserId(req), req.body);
+    return res.sendStatus(204);
+  } catch (error) {
+    return respondWithError(res, error, 'Cihaz geçmişi ayarlanamadı.');
+  }
+});
+
+router.get('/mls/account-history/repair', validateRequest({ query: accountHistorySchemas.repairQuery }), async (req: CustomRequest, res: Response) => {
+  try {
+    const { deviceId, cursor } = req.query as unknown as { deviceId: string; cursor?: string };
+    return res.json(await accountHistoryService.listHistoryRepairs(getUserId(req), deviceId, cursor));
+  } catch (error) {
+    return respondWithError(res, error, 'Geçmiş eşitleme sırası yüklenemedi.');
+  }
+});
+
+router.put('/mls/account-history/repair/:id', validateRequest({ params: mlsSchemas.conversationParams, body: accountHistorySchemas.repairMessage }), async (req: CustomRequest, res: Response) => {
+  try {
+    const messageId = getParam(req, 'id');
+    const result = await accountHistoryService.repairHistoryMessage(getUserId(req), messageId, req.body);
+    const io = req.app.get('io');
+    if (result && io) {
+      for (const userId of result.allowed) {
+        const historyDelivery = accountHistoryService.historyDeliveryFor(result.delivery, userId);
+        if (historyDelivery) io.to(userId).emit('account_history_repaired', { messageId, conversationId: result.conversationId, historyDelivery });
+      }
+    }
+    return res.json({ repaired: Boolean(result) });
+  } catch (error) {
+    return respondWithError(res, error, 'Eski mesaj eşitlenemedi.');
+  }
+});
 
 /** POST /api/v1/mls/devices -> Cihaz Kimlik Anahtarı Kaydı */
 router.post('/mls/devices', validateRequest({ body: mlsSchemas.registerDevice }), async (req: CustomRequest, res: Response): Promise<any> => {
@@ -155,6 +270,25 @@ router.get('/mls/conversations/:id/sync', validateRequest({
 });
 
 /** POST /api/v1/mls/backups -> Kullanıcı Kontrollü Şifreli Geçmiş Yedeği Kaydetme */
+router.get('/mls/conversations/:id/group-info', validateRequest({ params: mlsSchemas.conversationParams,
+  query: mlsSchemas.syncConversationQuery }), async (req: CustomRequest, res: Response) => {
+  try {
+    return res.json(await mlsDeliveryService.getCurrentGroupInfo(getUserId(req), getParam(req, 'id'), String(req.query.deviceId)));
+  } catch (error) {
+    return respondWithError(res, error, 'Sohbet bilgisi alınamadı.');
+  }
+});
+
+router.put('/mls/conversations/:id/group-info', validateRequest({ params: mlsSchemas.conversationParams,
+  body: mlsSchemas.publishGroupInfo }), async (req: CustomRequest, res: Response) => {
+  try {
+    await mlsDeliveryService.publishCurrentGroupInfo(getUserId(req), getParam(req, 'id'), req.body);
+    return res.sendStatus(204);
+  } catch (error) {
+    return respondWithError(res, error, 'Sohbet bilgisi yayımlanamadı.');
+  }
+});
+
 router.post('/mls/backups', validateRequest({ body: mlsSchemas.saveBackup }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
     const userId = getUserId(req);

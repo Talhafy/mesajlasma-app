@@ -253,6 +253,22 @@ router.get('/conversations', validateRequest({ query: chatSchemas.paginationQuer
   }
 });
 
+router.get('/conversations/history-cutoffs', async (req: CustomRequest, res: Response) => {
+  try {
+    return res.json(await conversationService.listPersonalHistoryCutoffs(getUserId(req)));
+  } catch (error) {
+    return respondWithError(res, error, 'Sohbet geçmişi durumu alınamadı.');
+  }
+});
+
+router.delete('/conversations/:id/history', validateRequest({ params: chatSchemas.conversationIdParams }), async (req: CustomRequest, res: Response): Promise<any> => {
+  try {
+    return res.json(await conversationService.clearPersonalConversationHistory(getParam(req, 'id'), getUserId(req), req.app.get('io')));
+  } catch (error) {
+    return respondWithError(res, error, 'Sohbet geçmişi temizlenemedi.');
+  }
+});
+
 /** DELETE /api/v1/conversations/:id -> Sohbet Geçmişini Temizleme/Silme */
 router.delete('/conversations/:id', validateRequest({ params: chatSchemas.conversationIdParams }), async (req: CustomRequest, res: Response): Promise<any> => {
   try {
@@ -503,7 +519,8 @@ router.get('/conversations/:conversationId/messages', validateRequest({
     const cursor = req.query.cursor ? String(req.query.cursor) : undefined;
     const limit = req.query.limit ? Number(req.query.limit) : undefined;
     const userId = getUserId(req);
-    const messages = await messageService.fetchMessages(conversationId, userId, cursor, limit);
+    const anchor = req.query.anchor ? String(req.query.anchor) : undefined;
+    const messages = await messageService.fetchMessages(conversationId, userId, cursor, limit, anchor);
     return res.status(200).json(messages);
   } catch (error: any) {
     logger.error({ event: 'chat.messages_fetch_failed', err: error, userId: req.user?.userId, conversationId: req.params.conversationId, ip: req.ip }, 'Messages fetch failed');

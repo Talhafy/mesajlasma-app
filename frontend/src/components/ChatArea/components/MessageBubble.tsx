@@ -16,8 +16,8 @@
 import { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
 import type { User, Conversation, Message } from '../../../types/chat';
-import { getMessagePreview, isDeletedForEveryoneMessage, isVideoMessage } from '../chatTimeline';
-import { decryptAttachmentToBlobUrl } from '../../../crypto/fileCrypto';
+import { getMessagePreview, hasReadReceipt, isDeletedForEveryoneMessage, isVideoMessage } from '../chatTimeline';
+import { decryptAttachmentToBlobUrl, openGroupAttachment } from '../../../crypto/fileCrypto';
 
 interface TimelineRenderItem {
   type: 'message' | 'system' | 'date';
@@ -43,7 +43,7 @@ interface MessageBubbleProps {
   selectedMessageIds: Set<string>;
   toggleSelectMessage: (msgId: string) => void;
   handleSelectMessage: (msgId: string) => void;
-  highlightedMessageId: string | null;
+  highlightSequence?: number;
   setAvatarProfileUser: (user: User) => void;
   setLightboxImageUrl: (url: string | null) => void;
   isDarkMode: boolean;
@@ -258,7 +258,7 @@ function DocumentMessageCard({
  */
 export default function MessageBubble({
   item, currentUser, activeConversation, groupMembers, usersList,
-  isSelectMode, selectedMessageIds, toggleSelectMessage, handleSelectMessage, highlightedMessageId,
+  isSelectMode, selectedMessageIds, toggleSelectMessage, handleSelectMessage, highlightSequence,
   setAvatarProfileUser, setLightboxImageUrl, isDarkMode: _isDarkMode, textColor, iconColor,
   borderColor, inputBg, panelBg, handleReply, handleForward, handleStar, handlePin,
   handleDeleteForMe, handleDeleteForEveryone, handleEditMessage, setMessageInfo, selectedUser: _selectedUser
@@ -278,13 +278,20 @@ export default function MessageBubble({
 
   useEffect(() => {
     const targetMsg = item.message;
-    if (!targetMsg?.fileUrl || !targetMsg?.encryptedFileMetadata) {
-      setDecryptedMediaUrl(null);
-      return;
-    }
+    setDecryptedMediaUrl(null);
+    if (!targetMsg) return;
+    const local = !targetMsg.fileUrl && targetMsg.archivedFileAvailable;
+    if (!local && (!targetMsg.fileUrl || !targetMsg.encryptedFileMetadata)) return;
     let cancelled = false;
-    void decryptAttachmentToBlobUrl(targetMsg.fileUrl, targetMsg.encryptedFileMetadata)
+    let localUrl: string | null = null;
+    const source = local ? openGroupAttachment(currentUser.id, targetMsg) :
+      decryptAttachmentToBlobUrl(targetMsg.fileUrl!, targetMsg.encryptedFileMetadata!);
+    void source
       .then((blobUrl) => {
+        if (local) {
+          if (cancelled && blobUrl) URL.revokeObjectURL(blobUrl);
+          else localUrl = blobUrl;
+        }
         if (!cancelled) setDecryptedMediaUrl(blobUrl);
       })
       .catch(() => {
@@ -292,8 +299,9 @@ export default function MessageBubble({
       });
     return () => {
       cancelled = true;
+      if (localUrl) URL.revokeObjectURL(localUrl);
     };
-  }, [item.message?.fileUrl, item.message?.encryptedFileMetadata]);
+  }, [currentUser.id, item.message]);
 
   const closeDropdown = () => {
     setActiveDropdownMsgId(null);
@@ -390,7 +398,6 @@ export default function MessageBubble({
 
   const isMe = msg.senderId === currentUser.id;
   const isSelected = selectedMessageIds.has(msg.id);
-  const isHighlighted = highlightedMessageId === msg.id;
   const voiceSender = isMe
     ? currentUser
     : groupMembers.find(member => member.id === msg.senderId)
@@ -399,14 +406,16 @@ export default function MessageBubble({
       || undefined;
   const isVideoAttachment = isVideoMessage(msg);
   const isImageAttachment = msg.fileType === 'image' || msg.fileType?.startsWith('image');
-  const isAudioAttachment = msg.fileType === 'audio' && !isVideoAttachment;
+  const isAudioAttachment = (msg.fileType === 'audio' || msg.fileType?.startsWith('audio/')) && !isVideoAttachment;
   const isDeletedForEveryone = isDeletedForEveryoneMessage(msg);
+  const hasBeenRead = hasReadReceipt(msg, Boolean(activeConversation?.isGroup));
+  const displayFileUrl = decryptedMediaUrl || (msg.encryptedFileMetadata ? undefined : msg.fileUrl);
   const isGeneratedVoiceLabel = isAudioAttachment
     && /^Sesli mesaj(?:\s*\(\d+:\d{2}\))?$/i.test(msg.content.trim());
   const visibleContent = isGeneratedVoiceLabel || isDeletedForEveryone ? '' : msg.content;
   const isReadOnlyHistory = Boolean(
-    activeConversation?.isGroup
-    && (activeConversation.isActive === false || activeConversation.isDeleted)
+    msg.isPriorMembershipMessage || msg.isLocalGroupHistory || (activeConversation?.isGroup &&
+      (activeConversation.isActive === false || activeConversation.isDeleted))
   );
 
   // Açılır Menü Konumunu Hesaplama
@@ -445,8 +454,8 @@ export default function MessageBubble({
     <div
       id={`msg-${msg.id}`}
       data-message-id={msg.id}
-      className={`message-row ${isMe ? 'mine' : 'other'} ${isHighlighted ? 'highlighted' : ''}`}
-      onClick={() => isSelectMode && toggleSelectMessage(msg.id)}
+      className={`message-row ${isMe ? 'mine' : 'other'}`}
+      onClick={() => isSelectMode && !isReadOnlyHistory && toggleSelectMessage(msg.id)}
       style={{
         display: 'flex',
         margin: '6px 0',
@@ -459,7 +468,7 @@ export default function MessageBubble({
       }}
     >
       {/* SEÇİM MODUNDA CHECKBOX */}
-      {isSelectMode && (
+      {isSelectMode && !isReadOnlyHistory && (
         <input
           type="checkbox"
           checked={isSelected}
@@ -490,6 +499,9 @@ export default function MessageBubble({
           color: isDeletedForEveryone ? undefined : isMe ? '#ffffff' : textColor
         }}
       >
+        {highlightSequence !== undefined && (
+          <span key={highlightSequence} className="message-bubble-highlight" aria-hidden="true" />
+        )}
         {/* GRUP İÇİNDE GÖNDEREN ADI */}
         {!isMe && activeConversation?.isGroup && (
           <div style={{ fontSize: '11px', fontWeight: 'bold', color: '#f97316', marginBottom: '4px' }}>
@@ -506,12 +518,12 @@ export default function MessageBubble({
         )}
 
         {/* MEDYA / DOSYA İÇERİĞİ */}
-        {msg.fileUrl && (
+        {msg.fileKey && !displayFileUrl && !isDeletedForEveryone && (
+          <div className="message-attachment">{msg.fileName || 'Ek dosya'}</div>
+        )}
+        {displayFileUrl && (
           <div className="message-attachment" style={{ marginBottom: isAudioAttachment ? '2px' : '6px' }}>
             {(() => {
-              const displayFileUrl = msg.encryptedFileMetadata
-                ? decryptedMediaUrl || msg.fileUrl
-                : msg.fileUrl;
               return isImageAttachment ? (
                 <img
                   className="message-image-attachment"
@@ -554,11 +566,12 @@ export default function MessageBubble({
             </span>
           )}
           {visibleContent && <span className="message-text-content">{visibleContent}</span>}
-          <span className={`message-inline-meta ${msg.fileUrl || (!visibleContent && !isDeletedForEveryone) ? 'message-inline-meta-stacked' : ''}`}>
+          <span className={`message-inline-meta ${displayFileUrl || (!visibleContent && !isDeletedForEveryone) ? 'message-inline-meta-stacked' : ''}`}>
             {!isDeletedForEveryone && msg.starredByIds?.includes(currentUser.id) && <span aria-label="Yıldızlı mesaj">★</span>}
             <span>{msg.createdAt ? new Date(msg.createdAt).toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' }) : ''}</span>
-            {isMe && (
-              <span className={`message-read-ticks ${msg.readByIds && msg.readByIds.length > 0 ? 'is-read' : ''}`} aria-label={msg.readByIds && msg.readByIds.length > 0 ? 'Okundu' : 'Gönderildi'}>
+            {isMe && msg.isOffline && <span title="Gönderim bekliyor" aria-label="Gönderim bekliyor">◷</span>}
+            {isMe && !msg.isOffline && (
+              <span className={`message-read-ticks ${hasBeenRead ? 'is-read' : ''}`} aria-label={hasBeenRead ? (activeConversation?.isGroup ? 'Herkes okudu' : 'Okundu') : 'Gönderildi'}>
                 ✓✓
               </span>
             )}
@@ -566,7 +579,7 @@ export default function MessageBubble({
         </div>
 
         {/* MESAJ SEÇENEKLERİ DROPDOWN AÇMA BUTONU */}
-        {!isSelectMode && (
+        {!isSelectMode && !msg.isOffline && (
           <button
             className={`message-menu-trigger ${activeDropdownMsgId === msg.id ? 'is-open' : ''}`}
             onClick={(e) => openMenu(e, msg.id)}
@@ -614,10 +627,10 @@ export default function MessageBubble({
           {visibleContent && <button className="msg-dropdown-btn" onClick={() => { void copyMessageText(visibleContent); setActiveDropdownMsgId(null); }}>📋 Kopyala</button>}
           {!isReadOnlyHistory && !isDeletedForEveryone && <button className="msg-dropdown-btn" onClick={() => { handleSelectMessage(msg.id); setActiveDropdownMsgId(null); }}>☑️ Seç</button>}
           {!isReadOnlyHistory && !isDeletedForEveryone && isMe && <button className="msg-dropdown-btn" onClick={() => { handleEditMessage(msg); setActiveDropdownMsgId(null); }}>✏️ Düzenle</button>}
-          {!isDeletedForEveryone && <button className="msg-dropdown-btn" onClick={() => { handleForward(msg); setActiveDropdownMsgId(null); }}>➡️ İlet</button>}
+          {!isDeletedForEveryone && (!isReadOnlyHistory || !msg.fileKey) && <button className="msg-dropdown-btn" onClick={() => { handleForward(msg); setActiveDropdownMsgId(null); }}>➡️ İlet</button>}
           {!isReadOnlyHistory && !isDeletedForEveryone && <button className="msg-dropdown-btn" onClick={() => { handleStar(msg.id); setActiveDropdownMsgId(null); }}>{msg.starredByIds?.includes(currentUser.id) ? '⭐ Yıldızı Kaldır' : '⭐ Yıldızla'}</button>}
           {!isReadOnlyHistory && !isDeletedForEveryone && <button className="msg-dropdown-btn" onClick={() => { handlePin(msg.id); setActiveDropdownMsgId(null); }}>{msg.isPinned ? '📌 Sabitlemeyi Kaldır' : '📌 Sabitle'}</button>}
-          {!isReadOnlyHistory && <button className="msg-dropdown-btn" onClick={() => { handleDeleteForMe(msg.id); setActiveDropdownMsgId(null); }}>🗑️ Benden Sil</button>}
+          <button className="msg-dropdown-btn" onClick={() => { handleDeleteForMe(msg.id); setActiveDropdownMsgId(null); }}>🗑️ Benden Sil</button>
           {!isReadOnlyHistory && !isDeletedForEveryone && isMe && <button className="msg-dropdown-btn danger-text" onClick={() => { handleDeleteForEveryone(msg.id); setActiveDropdownMsgId(null); }}>⛔ Herkesten Sil</button>}
         </div>,
         document.body

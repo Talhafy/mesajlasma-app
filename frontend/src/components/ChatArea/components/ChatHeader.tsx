@@ -52,6 +52,8 @@ interface ChatHeaderProps {
   onToggleConversationMute: (conversationId: string) => void;
   onToggleConversationPin: (conversationId: string) => void;
   onToggleConversationArchive: (conversationId: string) => void;
+  onDeleteConversationHistory: (conversationId: string) => void;
+  onClearPersonalHistory: (conversationId: string) => void;
   handleDisappearingMode: () => void;
   isBlockedLocally: boolean;
   handleBlockToggle: () => void;
@@ -64,7 +66,7 @@ export default function ChatHeader({
   handleBulkStar, isBulkDeleteMenuOpen, setIsBulkDeleteMenuOpen, handleBulkDeleteForMe, handleBulkDeleteForEveryone,
   onStartCall, isSearchOpen, setIsSearchOpen,
   setMessageSearchTerm, isChatMenuOpen, setIsChatMenuOpen, openConversationInfoPanel,
-  onToggleConversationMute, onToggleConversationPin, onToggleConversationArchive,
+  onToggleConversationMute, onToggleConversationPin, onToggleConversationArchive, onDeleteConversationHistory, onClearPersonalHistory,
   handleDisappearingMode, isBlockedLocally, handleBlockToggle
 }: ChatHeaderProps) {
   // Gruptan ayrılmış veya silinmiş sohbetlerde salt okunur mod kontrolü
@@ -145,8 +147,11 @@ export default function ChatHeader({
           <Button variant="icon" onClick={() => onStartCall('video')} disabled={!activeConversation?.id || isReadOnlyHistory} title="Görüntülü Ara" aria-label="Görüntülü arama yap" style={{ color: iconColor }} icon={<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M17 10.5V6c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v12c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-4.5l4 4v-11z"></path></svg>} />
           <Button variant="icon" onClick={() => { setIsSearchOpen(!isSearchOpen); setMessageSearchTerm(''); }} title="Mesajlarda Ara" aria-label="Mesajlarda ara" style={{ color: iconColor }} icon={<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M15.009 13.805h-.636l-.22-.219a5.184 5.184 0 0 0 1.256-3.386 5.207 5.207 0 1 0-5.207 5.208 5.183 5.183 0 0 0 3.385-1.255l.221.22v.635l4.004 3.999 1.194-1.195-3.997-4.007zm-4.8 0a3.6 3.6 0 1 1 0-7.2 3.6 3.6 0 0 1 0 7.2z"></path></svg>} />
           <div style={{ position: 'relative' }}>
-            <Button variant="icon" onClick={() => setIsChatMenuOpen((previous) => !previous)} disabled={isReadOnlyHistory} title="Sohbet seçenekleri" aria-label="Sohbet seçeneklerini aç" style={{ color: iconColor }} icon={<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M12 8a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm0 2a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm0 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"></path></svg>} />
-            {isChatMenuOpen && activeConversation?.id && (
+            {!isReadOnlyHistory && <Button variant="icon" onClick={() => setIsChatMenuOpen((previous) => !previous)} title="Sohbet seçenekleri" aria-label="Sohbet seçeneklerini aç" style={{ color: iconColor }} icon={<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M12 8a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm0 2a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm0 6a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"></path></svg>} />}
+            {isReadOnlyHistory && activeConversation && (
+              <Button variant="icon" onClick={() => onDeleteConversationHistory(activeConversation.id)} title="Sohbet geçmişini sil" aria-label="Sohbet geçmişini sil" style={{ color: iconColor }} icon={<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7m4 4v5m4-5v5" /></svg>} />
+            )}
+            {isChatMenuOpen && activeConversation?.id && !isReadOnlyHistory && (
               <>
                 <div style={{ position: 'fixed', inset: 0, zIndex: 90 }} onClick={() => setIsChatMenuOpen(false)} />
                 <div className="dropdown-menu" style={{ right: 0, top: '42px', width: '245px', color: textColor }}>
@@ -156,6 +161,10 @@ export default function ChatHeader({
                   <button className="msg-dropdown-btn" onClick={() => { onToggleConversationPin(activeConversation.id); setIsChatMenuOpen(false); }}>{activeConversation.isPinned ? '📌 Sabitlemeyi kaldır' : '📌 Sohbeti sabitle'}</button>
                   <button className="msg-dropdown-btn" onClick={() => { onToggleConversationArchive(activeConversation.id); setIsChatMenuOpen(false); }}>{activeConversation.isArchived ? '🗄️ Arşivden çıkar' : '🗄️ Arşivle'}</button>
                   <button className="msg-dropdown-btn" onClick={handleDisappearingMode}>⏳ Kaybolan mesaj modu</button>
+                  <button className="msg-dropdown-btn danger-text" onClick={() => {
+                    setIsChatMenuOpen(false);
+                    onClearPersonalHistory(activeConversation.id);
+                  }}>Geçmişi benden temizle</button>
                   {!activeConversation.isGroup && (
                     <button className="msg-dropdown-btn danger-text" onClick={() => { handleBlockToggle(); setIsChatMenuOpen(false); }}>
                       {isBlockedLocally ? '✅ Engeli Kaldır' : '🚫 Kişiyi Engelle'}

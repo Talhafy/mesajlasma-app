@@ -16,18 +16,27 @@
 import { Request, Response, NextFunction } from 'express';
 import { logger } from '../config/logger';
 import { AccessTokenPayload, verifyAccessToken } from '../services/authTokens';
+import { activeDeviceSession } from '../services/deviceSessionService';
+import { AppError } from '../errors/AppError';
 
 /**
  * Express Request arabirimini genişleterek doğrulanmış kullanıcı payload'unu (`req.user`) taşır.
  */
 export interface CustomRequest extends Request {
   user?: AccessTokenPayload;
+  deviceId?: string | null;
 }
 
+const vaultSetupRoutes = new Set([
+  'GET /user/me', 'GET /mls/account-history/key', 'POST /mls/account-history/vault',
+  'PUT /mls/account-history/vault/access', 'POST /mls/devices', 'POST /mls/key-packages',
+  'POST /mls/account-history/approve-device', 'POST /logout-all'
+]);
 /**
  * JWT Access Token Doğrulama Fonksiyonu
  */
-export const authenticateToken = (req: CustomRequest, res: Response, next: NextFunction) => {
+export const authenticateToken = async (req: CustomRequest, res: Response, next: NextFunction) => {
+  if (req.user) return next();
   // 'Authorization: Bearer <token>' başlığını alıyoruz
   const authHeader = req.headers.authorization;
   const token = authHeader && authHeader.split(' ')[1];
@@ -47,11 +56,19 @@ export const authenticateToken = (req: CustomRequest, res: Response, next: NextF
 
   try {
     // Access token'ın imzasını, son kullanma tarihini ve audience/issuer bilgilerini doğruluyoruz
-    req.user = verifyAccessToken(token);
-
-    // Doğrulama başarılıysa zincirdeki bir sonraki rotaya geç
-    next();
+    const user = verifyAccessToken(token);
+    const session = await activeDeviceSession(user);
+    const path = req.originalUrl.split('?')[0].replace(/^\/api(?:\/v1)?(?=\/)/, '').replace(/\/$/, '');
+    if (!session.deviceId && !vaultSetupRoutes.has(req.method + ' ' + path)) {
+      return res.status(403).json({ error: 'Devam etmek için bu cihazda kasanı aç.', code: 'DEVICE_APPROVAL_REQUIRED' });
+    }
+    req.user = user;
+    req.deviceId = session.deviceId;
+    return next();
   } catch (error) {
+    if (error instanceof AppError && error.code === 'DEVICE_ACCESS_REVOKED') {
+      return res.status(401).json({ error: error.message, code: error.code });
+    }
     // Süresi dolmuş, imzası bozuk veya sahtelenmiş token'lar burada yakalanır
     logger.warn({
       event: 'auth.token_invalid',

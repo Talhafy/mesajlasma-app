@@ -18,17 +18,17 @@ interface SettingsModalProps {
   /** Ayarlar mesajını güncelleyen setter fonksiyonu */
   setSettingsMessage: (msg: { type: string; text: string }) => void;
   /** Kullanıcı adı değiştirme alanındaki yeni kullanıcı adı değeri */
-  newUsernameSettings: string;
+  newUsernameSettings: string | null;
   /** Yeni kullanıcı adı değerini güncelleyen setter fonksiyonu */
   setNewUsernameSettings: (val: string) => void;
   /** Kullanıcı adı güncelleme işlemini tetikleyen fonksiyon */
-  handleUpdateUsername: () => void;
+  handleUpdateUsername: () => Promise<void>;
   /** E-posta değiştirme alanındaki yeni e-posta değeri */
-  newEmailSettings: string;
+  newEmailSettings: string | null;
   /** Yeni e-posta değerini güncelleyen setter fonksiyonu */
   setNewEmailSettings: (val: string) => void;
   /** E-posta adresi güncelleme işlemini tetikleyen fonksiyon */
-  handleUpdateEmail: () => void;
+  handleUpdateEmail: () => Promise<void>;
   /** Oturum açmış olan mevcut kullanıcı bilgisi */
   currentUser: User | null;
   /** Okundu bilgisi (mavi tik) tercihini değiştiren fonksiyon */
@@ -46,7 +46,7 @@ interface SettingsModalProps {
   /** Profil resmini sunucuya yükleme ve güncelleme fonksiyonu */
   handleUpdateAvatar: (file: File) => Promise<void>;
   /** Kullanıcı hesabını kalıcı olarak silme fonksiyonu */
-  handleDeleteAccount: () => void;
+  handleDeleteAccount: () => Promise<void>;
   /** Kullanıcının oturumunu sonlandıran çıkış yap fonksiyonu */
   cikisYap: () => void;
 }
@@ -57,7 +57,7 @@ interface SettingsModalProps {
  */
 export default function SettingsModal(props: SettingsModalProps) {
   // --- LOCAL STATE (YEREL DURUMLAR) ---
-  /** Aktif sekme: 'profile' (Profil), 'account' (Hesap), 'security' (MLS E2EE & Kasa) veya 'blocked' (Engellenenler) */
+  /** Aktif sekme: Profil, Hesap, Şifreli kasa veya Engellenenler. */
   const [activeTab, setActiveTab] = useState<'profile' | 'account' | 'security' | 'blocked'>(
     props.vaultSetup ? 'security' : 'profile'
   );
@@ -71,6 +71,26 @@ export default function SettingsModal(props: SettingsModalProps) {
   const [blockedUsers, setBlockedUsers] = useState<User[]>([]);
   /** Engellenenler listesi yüklenirken gösterilen yükleniyor durumu */
   const [isBlockedUsersLoading, setIsBlockedUsersLoading] = useState(false);
+  const [pendingAction, setPendingAction] = useState<'username' | 'email' | 'delete' | null>(null);
+
+  const runAction = async (action: NonNullable<typeof pendingAction>, run: () => Promise<void>) => {
+    if (pendingAction) return;
+    setPendingAction(action);
+    try {
+      await run();
+    } finally {
+      setPendingAction(null);
+    }
+  };
+
+  const profileFields = [
+    { id: 'username', label: 'Kullanıcı adı', type: 'text', min: 3, max: 30,
+      current: props.currentUser?.username, draft: props.newUsernameSettings,
+      edit: props.setNewUsernameSettings, save: props.handleUpdateUsername },
+    { id: 'email', label: 'E-posta adresi', type: 'email', min: undefined, max: 254,
+      current: props.currentUser?.email, draft: props.newEmailSettings,
+      edit: props.setNewEmailSettings, save: props.handleUpdateEmail }
+  ] as const;
 
   /**
    * Engellenen kullanıcılar listesini backend API'sinden çeker.
@@ -136,12 +156,11 @@ export default function SettingsModal(props: SettingsModalProps) {
               <span>⚙️</span> Hesap
             </button>
 
-            {/* MLS E2EE & Şifreli Kasa Sekme Butonu */}
             <button
               onClick={() => { setActiveTab('security'); props.setSettingsMessage({ type: '', text: '' }); }}
               className={`settings-tab-btn ${activeTab === 'security' ? 'active' : ''}`}
             >
-              <span>🔒</span> E2EE & Kasa
+              <span aria-hidden="true">🔒</span> Şifreli kasa
             </button>
 
             {/* Engellenenler Sekme Butonu */}
@@ -174,7 +193,7 @@ export default function SettingsModal(props: SettingsModalProps) {
 
               {/* Bilgi / Hata Mesajı Bildirimi */}
               {props.settingsMessage.text && (
-                <div className={`settings-msg ${props.settingsMessage.type}`}>
+                <div className={`settings-msg ${props.settingsMessage.type}`} role={props.settingsMessage.type === "error" ? "alert" : "status"}>
                   {props.settingsMessage.text}
                 </div>
               )}
@@ -207,39 +226,27 @@ export default function SettingsModal(props: SettingsModalProps) {
                 </div>
               </div>
 
-              {/* Kullanıcı Adı, E-posta ve Okundu Bilgisi Ayarları */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                {/* Kullanıcı Adı Değiştirme */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  <label className="settings-label">Kullanıcı Adını Değiştir</label>
-                  <div style={{ display: 'flex', gap: '10px' }}>
-                    <input
-                      type="text"
-                      placeholder="Yeni kullanıcı adı"
-                      value={props.newUsernameSettings}
-                      onChange={(e) => props.setNewUsernameSettings(e.target.value)}
-                      className="settings-modern-input"
-                    />
-                    <button onClick={props.handleUpdateUsername} className="modern-primary-btn">Kaydet</button>
-                  </div>
-                </div>
-
-                {/* E-posta Hesabı Değiştirme */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  <label className="settings-label">E-posta Hesabı</label>
-                  <div style={{ fontSize: '13px', color: '#8696a0' }}>{props.currentUser?.email}</div>
-                  <div style={{ display: 'flex', gap: '10px' }}>
-                    <input
-                      type="email"
-                      placeholder="Yeni e-posta"
-                      value={props.newEmailSettings}
-                      onChange={(e) => props.setNewEmailSettings(e.target.value)}
-                      className="settings-modern-input"
-                    />
-                    <button onClick={props.handleUpdateEmail} className="modern-primary-btn">Kaydet</button>
-                  </div>
-                </div>
-
+              <div className="settings-profile-fields">
+                {profileFields.map(({ id, label, type, min, max, current, draft, edit, save }) => (
+                  <form key={id} className="settings-edit-card" onSubmit={(event) => {
+                    event.preventDefault();
+                    if (draft?.trim() && draft.trim() !== current) void runAction(id, save);
+                  }}>
+                    <label className="settings-edit-label" htmlFor={'settings-' + id}>{label}</label>
+                    {draft !== null && current && draft !== current && (
+                      <span className="settings-edit-current">Şu an kayıtlı değer {current}</span>
+                    )}
+                    <div className="settings-edit-row">
+                      <input id={'settings-' + id} type={type} autoComplete={id} minLength={min} maxLength={max} required
+                        className="settings-modern-input" value={draft ?? current ?? ''} disabled={pendingAction === id}
+                        onChange={(event) => edit(event.target.value)} />
+                      <button type="submit" className="modern-primary-btn"
+                        disabled={Boolean(pendingAction) || !draft?.trim() || draft.trim() === current}>
+                        {pendingAction === id ? 'Kaydediliyor…' : 'Kaydet'}
+                      </button>
+                    </div>
+                  </form>
+                ))}
                 {/* Okundu Bilgisi (Mavi Tik) Anahtarı */}
                 <div className="settings-info-box">
                   <div className="settings-info-box-text">
@@ -266,7 +273,7 @@ export default function SettingsModal(props: SettingsModalProps) {
 
               {/* Bilgi / Hata Mesajı Bildirimi */}
               {props.settingsMessage.text && (
-                <div className={`settings-msg ${props.settingsMessage.type}`}>
+                <div className={`settings-msg ${props.settingsMessage.type}`} role={props.settingsMessage.type === "error" ? "alert" : "status"}>
                   {props.settingsMessage.text}
                 </div>
               )}
@@ -293,19 +300,17 @@ export default function SettingsModal(props: SettingsModalProps) {
                 <button onClick={props.handleUpdatePassword} className="modern-primary-btn" style={{ alignSelf: 'flex-start' }}>Şifreyi Güncelle</button>
               </div>
 
-              {/* Tehlikeli Bölge (Hesap Silme) */}
-              <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '20px' }}>
-                <h4 style={{ margin: '0 0 10px 0', color: '#d32f2f', fontSize: '16px' }}>Tehlikeli Bölge</h4>
-                <p className="settings-label" style={{ marginBottom: '15px' }}>Hesabınızı silerseniz, tüm sohbet geçmişiniz, gruplarınız ve verileriniz kalıcı olarak yok olur.</p>
-                <button onClick={props.handleDeleteAccount} className="danger-action-btn" style={{ justifyContent: 'center' }}>
-                  <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
-                  Hesabımı Kalıcı Olarak Sil
+              <section className="settings-edit-card settings-delete-card">
+                <h3 className="settings-edit-label">Hesabı sil</h3>
+                <p>Hesabın ve hesabına ait veriler kalıcı olarak silinir. Bu işlem geri alınamaz.</p>
+                <button type="button" className="settings-delete-button" disabled={Boolean(pendingAction)}
+                  onClick={() => void runAction('delete', props.handleDeleteAccount)}>
+                  {pendingAction === 'delete' ? 'İşlem sürüyor…' : 'Hesabımı sil'}
                 </button>
-              </div>
+              </section>
             </div>
           )}
 
-          {/* ================= MLS E2EE & ŞİFRELİ KASA SEKMESİ ================= */}
           {activeTab === 'security' && props.currentUser && (
             <SecurityVaultModal userId={props.currentUser.id} vaultSetup={props.vaultSetup} />
           )}

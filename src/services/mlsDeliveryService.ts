@@ -16,8 +16,10 @@
  */
 
 import prisma from '../db';
+import { deviceSessionRoom } from './deviceSessionService';
 import { AppError } from '../errors/AppError';
 import { requireActiveParticipant, requireHistoryParticipant } from './conversationAccess';
+import { publicVaultAuthority } from './accountHistoryService';
 
 const LOW_KEY_PACKAGE_THRESHOLD = 5;
 const textEncoder = new TextEncoder();
@@ -120,7 +122,7 @@ export const registerOrUpdateDevice = async (
   });
   if (existingByKey?.revokedAt) {
     throw AppError.forbidden(
-      'MLS_DEVICE_NOT_FOUND',
+      'DEVICE_ACCESS_REVOKED',
       'İptal edilmiş bir cihaz anahtarı yeniden aktifleştirilemez. Lütfen yeni bir cihaz kimliği oluşturun.'
     );
   }
@@ -128,10 +130,13 @@ export const registerOrUpdateDevice = async (
     const existingById = await prisma.userDevice.findUnique({
       where: { id: input.deviceId }
     });
-    if (existingById && (existingById.userId !== userId || existingById.revokedAt)) {
+    if (existingById?.userId === userId && existingById.revokedAt) {
+      throw AppError.forbidden('DEVICE_ACCESS_REVOKED', 'Bu cihazın erişimi kaldırıldı.');
+    }
+    if (existingById && existingById.userId !== userId) {
       throw AppError.forbidden(
         'MLS_DEVICE_NOT_FOUND',
-        'Belirtilen cihaz kimliği iptal edilmiş veya başka bir kullanıcıya ait.'
+        'Belirtilen cihaz kimliği başka bir kullanıcıya ait.'
       );
     }
   }
@@ -269,10 +274,13 @@ export const getConversationDeviceDirectory = async (userId: string, conversatio
     where: { userId: { in: userIds }, approvedAt: { not: null } },
     select: {
       id: true, userId: true, signaturePublicKey: true, approvedByDeviceId: true,
-      approvalSignature: true, revokedAt: true
+      approvalSignature: true, approvedByVault: true, revokedAt: true
     }
   });
-  return { userIds, devices, isGroup: conversation.isGroup, adminId: conversation.adminId };
+  const vaults = await prisma.accountHistoryKey.findMany({ where: { userId: { in: userIds } },
+    select: { userId: true, publicKey: true, vaultApproval: true } });
+  const vaultAuthorities = vaults.flatMap((vault) => publicVaultAuthority(vault.userId, vault.publicKey, vault.vaultApproval));
+  return { userIds, devices, vaultAuthorities, isGroup: conversation.isGroup, adminId: conversation.adminId };
 };
 
 export const listDeviceConversationIds = async (userId: string) => (
@@ -300,17 +308,22 @@ export const revokeDevice = async (
     throw AppError.notFound('MLS_DEVICE_NOT_FOUND', 'Cihaz bulunamadı.');
   }
 
-  await prisma.$transaction([
-    prisma.userDevice.update({
-      where: { id: deviceId },
-      data: { revokedAt: new Date() }
-    }),
-    prisma.mlsKeyPackage.deleteMany({
-      where: { deviceId, consumedAt: null }
-    })
-  ]);
+  await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "User" WHERE id = ${userId} FOR UPDATE`;
+    const stillApproved = await tx.userDevice.findFirst({
+      where: { id: approverId, userId, approvedAt: { not: null }, revokedAt: null }, select: { id: true }
+    });
+    if (!stillApproved) throw AppError.forbidden('MLS_DEVICE_APPROVAL_INVALID', 'Cihaz iptali için onaylı cihaz gerekir.');
+    const revokedAt = new Date();
+    await tx.userDevice.updateMany({ where: { id: deviceId, userId, revokedAt: null }, data: { revokedAt } });
+    await tx.refreshSession.updateMany({ where: { deviceId, userId, revokedAt: null }, data: { revokedAt } });
+    await tx.mlsKeyPackage.deleteMany({ where: { deviceId, consumedAt: null } });
+  });
 
   if (io) {
+    const room = io.in(deviceSessionRoom(deviceId));
+    room.emit('auth:session-revoked', { reason: 'device_revoked' });
+    room.disconnectSockets(true);
     const conversationIds = await listDeviceConversationIds(userId);
     const targetRooms = [...new Set([userId, ...conversationIds])];
     io.to(targetRooms).emit('mls:device_revoked', {
@@ -526,12 +539,14 @@ export const submitCommit = async (
   if (!await crypto.subtle.verify('Ed25519', signingKey, Buffer.from(input.deliverySignature, 'base64'), signedCommit)) {
     throw AppError.forbidden('MLS_INVALID_COMMIT', 'Commit imzası doğrulanamadı.');
   }
-  let wire: { version?: number; groupId?: string; epoch?: number; senderDeviceId?: string; tsMlsCommitBase64?: string };
+  let wire: { version?: number; groupId?: string; epoch?: number; senderDeviceId?: string; tsMlsCommitBase64?: string;
+    external?: boolean; groupInfoBase64?: string };
   try { wire = JSON.parse(input.commitData); }
   catch { throw AppError.badRequest('MLS_INVALID_COMMIT', 'Commit biçimi geçersiz.'); }
   if (wire?.version !== 2 || wire.groupId !== 'mls:' + conversationId || wire.epoch !== input.epoch ||
       wire.senderDeviceId !== input.senderDeviceId || !wire.tsMlsCommitBase64 ||
-      Buffer.from(wire.tsMlsCommitBase64, 'base64').length < 16) {
+      Buffer.from(wire.tsMlsCommitBase64, 'base64').length < 16 ||
+      (wire.groupInfoBase64 !== undefined && (typeof wire.groupInfoBase64 !== 'string' || wire.groupInfoBase64.length > 160_000))) {
     throw AppError.badRequest('MLS_INVALID_COMMIT', 'Commit bağlamı geçersiz.');
   }
 
@@ -558,7 +573,7 @@ export const submitCommit = async (
     const activeParticipantSet = new Set(conversation.participants.map((p) => p.userId));
     const previous = conversation.mlsCurrentEpoch > 0 ? await tx.mlsCommit.findUnique({
       where: { conversationId_epoch: { conversationId, epoch: conversation.mlsCurrentEpoch } },
-      select: { ratchetTree: true }
+      select: { ratchetTree: true, groupInfo: true }
     }) : null;
     const oldRoster = previous ? readCommitRoster(previous.ratchetTree) : [];
     const oldDevices = new Set(oldRoster.map((entry) => entry.deviceId));
@@ -569,8 +584,13 @@ export const submitCommit = async (
     const approved = new Map(devices.filter((device) => activeParticipantSet.has(device.userId))
       .map((device) => [device.id, device]));
     const isAdmin = !conversation.isGroup || conversation.adminId === userId;
+    const external = wire.external === true;
+    const canCommit = external ? previous?.groupInfo && !oldDevices.has(input.senderDeviceId) &&
+      roster.length === oldRoster.length + 1 && oldRoster.every((leaf) => roster.some((next) =>
+        next.deviceId === leaf.deviceId && next.leafIndex === leaf.leafIndex && next.signaturePublicKeyBase64 === leaf.signaturePublicKeyBase64)) &&
+      !(input.welcomes?.length) : previous ? oldDevices.has(input.senderDeviceId) : isAdmin;
     if (!activeParticipantSet.has(userId) || !newDevices.has(input.senderDeviceId) ||
-        (previous ? !oldDevices.has(input.senderDeviceId) : !isAdmin) ||
+        !canCommit ||
         roster.some((entry) => {
           const device = approved.get(entry.deviceId);
           return device?.userId !== entry.userId || device.signaturePublicKey !== entry.signaturePublicKeyBase64 ||
@@ -639,6 +659,7 @@ export const submitCommit = async (
         epoch: input.epoch,
         senderDeviceId: input.senderDeviceId,
         commitData: input.commitData,
+        groupInfo: wire.groupInfoBase64 ?? null,
         ratchetTree: input.ratchetTree || null
       }
     });
@@ -691,6 +712,36 @@ export const submitCommit = async (
   }
 
   return result.commitRecord;
+};
+
+export const getCurrentGroupInfo = async (userId: string, conversationId: string, deviceId: string) => {
+  await requireActiveParticipant(conversationId, userId);
+  const device = await prisma.userDevice.findFirst({ where: { id: deviceId, userId, revokedAt: null, approvedAt: { not: null } } });
+  if (!device) throw AppError.forbidden('MLS_DEVICE_NOT_FOUND', 'Onaylı cihaz bulunamadı.');
+  const conversation = await prisma.conversation.findUniqueOrThrow({ where: { id: conversationId }, select: { mlsCurrentEpoch: true } });
+  const latest = await prisma.mlsCommit.findUnique({ where: { conversationId_epoch: { conversationId, epoch: conversation.mlsCurrentEpoch } },
+    select: { groupInfo: true } });
+  return { epoch: conversation.mlsCurrentEpoch, groupInfo: latest?.groupInfo ?? null };
+};
+
+export const publishCurrentGroupInfo = async (userId: string, conversationId: string,
+  { epoch, deviceId, groupInfo, signature }: { epoch: number; deviceId: string; groupInfo: string; signature: string }) => {
+  await requireActiveParticipant(conversationId, userId);
+  const [device, commit] = await Promise.all([
+    prisma.userDevice.findFirst({ where: { id: deviceId, userId, revokedAt: null, approvedAt: { not: null } } }),
+    prisma.mlsCommit.findUnique({ where: { conversationId_epoch: { conversationId, epoch } }, select: { ratchetTree: true, groupInfo: true } })
+  ]);
+  if (!device || !commit || !readCommitRoster(commit.ratchetTree).some((leaf) => leaf.deviceId === deviceId &&
+    leaf.userId === userId && leaf.signaturePublicKeyBase64 === device.signaturePublicKey)) {
+    throw AppError.forbidden('MLS_INVALID_COMMIT', 'Sohbet bilgisi yalnızca mevcut MLS üyelerince yayımlanabilir.');
+  }
+  const key = await crypto.subtle.importKey('raw', Buffer.from(device.signaturePublicKey, 'base64'), 'Ed25519', false, ['verify']);
+  const data = Buffer.from(JSON.stringify(['mls-group-info-v1', conversationId, epoch, deviceId, groupInfo]));
+  if (!await crypto.subtle.verify('Ed25519', key, Buffer.from(signature, 'base64'), data)) {
+    throw AppError.forbidden('MLS_INVALID_COMMIT', 'Sohbet bilgisi imzası geçersiz.');
+  }
+  if (!commit.groupInfo) await prisma.mlsCommit.updateMany({ where: { conversationId, epoch, groupInfo: null,
+    conversation: { mlsCurrentEpoch: epoch, isDeleted: false } }, data: { groupInfo } });
 };
 
 /**

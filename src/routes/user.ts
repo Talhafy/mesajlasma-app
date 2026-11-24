@@ -21,8 +21,11 @@ import { getAuthenticatedUserId as getUserId } from '../utils/request';
 import { logger } from '../config/logger';
 import { attachOwnedAsset } from '../services/uploadedAssetService';
 import { respondWithError } from '../errors/AppError';
+import { disconnectUserSockets } from '../socket/sessionControl';
 
 const router = express.Router();
+const notifyProfileChanged = (req: CustomRequest, userId: string) => req.app.get('io')?.to(userId).emit('profile_changed');
+const isDuplicate = (error: unknown) => (error as { code?: string })?.code === 'P2002';
 
 /** PUT /api/v1/username -> Kullanıcı Adı Güncelleme */
 router.put('/username', authenticateToken, validateRequest({ body: userSchemas.username }), async (req: CustomRequest, res: any) => {
@@ -31,15 +34,17 @@ router.put('/username', authenticateToken, validateRequest({ body: userSchemas.u
     const { newUsername } = req.body;
 
     const existingUser = await prisma.user.findUnique({ where: { username: newUsername } });
-    if (existingUser) return res.status(400).json({ error: "Bu kullanıcı adı zaten alınmış." });
+    if (existingUser && existingUser.id !== userId) return res.status(409).json({ error: "Bu kullanıcı adı zaten alınmış." });
 
     const updatedUser = await prisma.user.update({
       where: { id: userId },
       data: { username: newUsername }
     });
 
-    res.status(200).json({ message: "Kullanıcı adı güncellendi", username: updatedUser.username });
+    notifyProfileChanged(req, userId);
+    res.status(200).json({ message: "Kullanıcı adı güncellendi.", username: updatedUser.username });
   } catch (error: any) {
+    if (isDuplicate(error)) return res.status(409).json({ error: 'Bu kullanıcı adı zaten alınmış.' });
     logger.error({ event: 'user.update_username_failed', err: error, userId }, 'Username update failed');
     res.status(500).json({ error: "İsim güncellenemedi." });
   }
@@ -52,15 +57,17 @@ router.put('/email', authenticateToken, validateRequest({ body: userSchemas.emai
     const { newEmail } = req.body;
 
     const existingUser = await prisma.user.findUnique({ where: { email: newEmail } });
-    if (existingUser && existingUser.id !== userId) return res.status(400).json({ error: "Bu e-posta zaten kullanılıyor." });
+    if (existingUser && existingUser.id !== userId) return res.status(409).json({ error: "Bu e-posta zaten kullanılıyor." });
 
     const updatedUser = await prisma.user.update({
       where: { id: userId },
       data: { email: newEmail }
     });
 
+    notifyProfileChanged(req, userId);
     res.status(200).json({ message: "E-posta güncellendi.", email: updatedUser.email });
   } catch (error) {
+    if (isDuplicate(error)) return res.status(409).json({ error: 'Bu e-posta zaten kullanılıyor.' });
     logger.error({ event: 'user.update_email_failed', err: error, userId }, 'Email update failed');
     res.status(500).json({ error: "E-posta güncellenemedi." });
   }
@@ -70,7 +77,7 @@ router.put('/email', authenticateToken, validateRequest({ body: userSchemas.emai
 router.put('/password', authenticateToken, validateRequest({ body: userSchemas.password }), async (req: CustomRequest, res: any) => {
   const userId = getUserId(req);
   try {
-    const { oldPassword, newPassword } = req.body;
+    const { oldPassword, newPassword, accountHistoryKey } = req.body;
 
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) return res.status(404).json({ error: "Kullanıcı bulunamadı." });
@@ -79,7 +86,17 @@ router.put('/password', authenticateToken, validateRequest({ body: userSchemas.p
     if (!isMatch) return res.status(400).json({ error: "Mevcut şifreniz yanlış." });
 
     const hashedNewPassword = await bcrypt.hash(newPassword, 10);
-    await prisma.$transaction(async (tx) => {
+    const changed = await prisma.$transaction(async (tx) => {
+      const accounts = await tx.$queryRaw<{ id: string }[]>`
+        SELECT "id" FROM "User" WHERE "id" = ${userId} AND "password_hash" = ${user.password_hash} FOR UPDATE
+      `;
+      if (!accounts.length) return false;
+      const historyKey = await tx.accountHistoryKey.findUnique({ where: { userId }, select: { revision: true, vaultApproval: true } });
+      if (historyKey && !historyKey.vaultApproval) {
+        if (!accountHistoryKey || historyKey.revision !== accountHistoryKey.revision) return false;
+        const { salt, iv, wrappedKey } = accountHistoryKey;
+        await tx.accountHistoryKey.update({ where: { userId }, data: { salt, iv, wrappedKey, revision: { increment: 1 } } });
+      }
       await tx.user.update({
         where: { id: userId },
         data: { password_hash: hashedNewPassword }
@@ -89,10 +106,13 @@ router.put('/password', authenticateToken, validateRequest({ body: userSchemas.p
         where: { userId, revokedAt: null },
         data: { revokedAt: new Date() }
       });
+      return true;
     });
+    if (!changed) return res.status(409).json({ error: 'Hesap anahtarı değişti. Parola değiştirme işlemini tekrar deneyin.' });
 
     clearRefreshCookie(res);
     res.status(200).json({ message: "Şifreniz değiştirildi. Güvenlik için yeniden giriş yapın." });
+    disconnectUserSockets(req.app.get('io'), userId, 'password_changed');
   } catch (error) {
     logger.error({ event: 'user.update_password_failed', err: error, userId }, 'Password update failed');
     res.status(500).json({ error: "Şifre güncellenemedi." });
@@ -220,7 +240,7 @@ router.get('/me', authenticateToken, async (req: CustomRequest, res: any) => {
 
     if (!user) return res.status(404).json({ error: "Kullanıcı bulunamadı." });
 
-    res.status(200).json({
+    res.set('Cache-Control', 'no-store').status(200).json({
       id: user.id,
       username: user.username,
       email: user.email,
@@ -246,6 +266,7 @@ router.put('/settings/read-receipts', authenticateToken, validateRequest({ body:
       data: { readReceiptsOn: isEnabled }
     });
 
+    notifyProfileChanged(req, userId);
     res.status(200).json({ message: "Görüldü ayarı güncellendi.", readReceiptsOn: updatedUser.readReceiptsOn });
   } catch (error) {
     logger.error({ event: 'user.update_read_receipts_failed', err: error, userId }, 'Read receipts settings update failed');
@@ -276,6 +297,7 @@ router.put('/avatar', authenticateToken, validateRequest({ body: userSchemas.ava
       await deleteFileIfUnreferenced(previous.avatarFileKey);
     }
 
+    notifyProfileChanged(req, userId);
     return res.status(200).json({
       avatarFileKey: updated.avatarFileKey,
       avatarUrl: updated.avatarFileKey ? await createSignedFileUrl(updated.avatarFileKey) : null

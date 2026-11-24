@@ -12,7 +12,10 @@
 import { Server } from 'socket.io';
 import { logger } from '../config/logger';
 import prisma from '../db';
+import { userWithAccountVault } from '../services/accountHistoryService';
 import { verifyAccessToken } from '../services/authTokens';
+import { activeDeviceSession, browserSessionRoom, deviceSessionRoom } from '../services/deviceSessionService';
+import { AppError } from '../errors/AppError';
 import {
   checkDistributedSocketRateLimit,
   getOnlineUserIds,
@@ -39,7 +42,12 @@ export const registerSocketHandlers = (io: Server) => {
 
     try {
       const decoded = verifyAccessToken(token);
-      const userExists = await prisma.user.findUnique({ where: { id: decoded.userId }, select: { id: true } });
+      const session = await activeDeviceSession(decoded);
+      if (!session.deviceId) return next(new Error('Önce bu cihazda kasanı aç.'));
+      const userExists = await prisma.user.findUnique({
+        where: { id: decoded.userId, ...userWithAccountVault },
+        select: { id: true }
+      });
       if (!userExists) return next(new Error('Kimlik doğrulama hatası: Kullanıcı bulunamadı.'));
 
       socket.data.user = {
@@ -47,15 +55,29 @@ export const registerSocketHandlers = (io: Server) => {
         username: decoded.username,
         accessTokenExpiresAt: decoded.exp * 1000
       } satisfies SocketUser;
+      socket.data.access = decoded;
+      socket.data.deviceId = session.deviceId;
       next();
-    } catch {
-      next(new Error('Kimlik doğrulama hatası: Geçersiz access token.'));
+    } catch (error) {
+      next(Object.assign(new Error('Kimlik doğrulaması başarısız.'), {
+        data: { code: error instanceof AppError ? error.code : 'UNAUTHORIZED' }
+      }));
     }
   });
 
   // SOKET BAĞLANTISI BAŞLADIĞINDA
   io.on('connection', async (socket) => {
     const currentUser = socket.data.user as SocketUser;
+    await socket.join([deviceSessionRoom(socket.data.deviceId), browserSessionRoom(socket.data.access.sessionId)]);
+    try {
+      await activeDeviceSession(socket.data.access);
+    } catch (error) {
+      socket.emit('auth:session-revoked', { reason: error instanceof AppError && error.code === 'DEVICE_ACCESS_REVOKED'
+        ? 'device_revoked' : 'session_revoked' });
+      socket.disconnect(true);
+      return;
+    }
+    if (!socket.connected) return;
     // İNAKTİVİTE VE TOKEN ZAMAN AŞIMI YÖNETİMİ
     let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
     let inactivityDeadlineAt = Date.now() + SOCKET_INACTIVITY_TIMEOUT_MS;
@@ -123,7 +145,7 @@ export const registerSocketHandlers = (io: Server) => {
         }
 
         const decoded = verifyAccessToken(token);
-        if (decoded.userId !== currentUser.userId) {
+        if (decoded.userId !== currentUser.userId || decoded.sessionId !== socket.data.access.sessionId) {
           logger.warn({
             event: 'security.socket_refresh_user_mismatch',
             userId: currentUser.userId,
@@ -133,6 +155,7 @@ export const registerSocketHandlers = (io: Server) => {
           acknowledge?.({ ok: false, error: 'Token kullanıcı kimliği ile eşleşmiyor.' });
           return;
         }
+        await activeDeviceSession(decoded);
 
         const nextExpiresAt = decoded.exp * 1000;
         if (nextExpiresAt <= Date.now()) {
@@ -161,7 +184,8 @@ export const registerSocketHandlers = (io: Server) => {
       if (!await markUserOfflineIfDisconnected(io, currentUser.userId, socket.id)) return;
       const lastSeenAt = new Date();
       try {
-        await prisma.user.update({ where: { id: currentUser.userId }, data: { lastSeenAt } });
+        const updated = await prisma.user.updateMany({ where: { id: currentUser.userId }, data: { lastSeenAt } });
+        if (!updated.count) return;
       } catch (error) {
         logger.error({ event: 'socket.last_seen_failed', err: error, userId: currentUser.userId }, 'Last seen update failed');
       }

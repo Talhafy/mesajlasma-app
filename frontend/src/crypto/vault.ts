@@ -20,6 +20,8 @@
  *    ilerletilir ve tüketilen mesaj anahtarları hemen silinir.
  */
 
+import type { Message } from '../types/chat';
+
 export interface StoredDeviceIdentity {
   userId: string;
   deviceId: string;
@@ -161,11 +163,11 @@ const memoryKeyStore = new Map<string, CryptoKey>();
 const memoryRecordStore = new Map<string, { iv: string; ciphertext: string }>();
 
 export const bytesToBase64 = (bytes: Uint8Array): string => {
-  let binary = '';
-  for (let i = 0; i < bytes.byteLength; i++) {
-    binary += String.fromCharCode(bytes[i]);
+  const chunks: string[] = [];
+  for (let offset = 0; offset < bytes.byteLength; offset += 8192) {
+    chunks.push(String.fromCharCode(...bytes.subarray(offset, offset + 8192)));
   }
-  return btoa(binary);
+  return btoa(chunks.join(''));
 };
 
 export const base64ToBytes = (base64: string): Uint8Array => {
@@ -249,7 +251,7 @@ const idbGetAllWithPrefix = async (
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_RECORDS, 'readonly');
     const store = tx.objectStore(STORE_RECORDS);
-    const req = store.openCursor();
+    const req = store.openCursor(prefix ? IDBKeyRange.bound(prefix, prefix + '\uffff') : undefined);
     const items: Array<{ key: string; value: { iv: string; ciphertext: string } }> = [];
     req.onsuccess = () => {
       const cursor = req.result;
@@ -336,7 +338,8 @@ const unwrapPreviousVaultKey = async (userId: string, passphrase: string, wrappe
 };
 
 export const openDeviceVault = async (userId: string, loginPassword?: string): Promise<boolean> => {
-  if (!hasIndexedDb()) return true;
+  if (typeof window === 'undefined' && !hasIndexedDb()) return true;
+  if (!hasIndexedDb() || !globalThis.crypto?.subtle) throw new Error('Bu tarayıcıda şifreli depolama kullanılamıyor.');
   if (!navigator.locks) throw new Error('Bu tarayıcı güvenli kasa kilidini desteklemiyor.');
   const generation = lockGenerations.get(userId);
   return navigator.locks.request(JSON.stringify(['vault-unlock', userId]), async () => {
@@ -700,10 +703,134 @@ export const saveConversationMlsState = async (
 // 3. ÇÖZÜLMÜŞ MESAJ ÖNBELLEĞİ VE YEREL ARAMA / MEDYA İNDEKSİ
 // ============================================================================
 
+export const readGroupHistory = async (userId: string, conversationId: string) => {
+  const archive = await readEncryptedRecord<{ leftAt: string | null; messages: Message[]; historyId?: string; attachmentsReady?: boolean }>(
+    `group-history:${userId}:${conversationId}`);
+  if (!archive) return null;
+  const cutoff = await readEncryptedRecord<string>(historyCutoffKey(userId, conversationId));
+  return cutoff ? { ...archive, messages: archive.messages.filter((message) => message.createdAt && message.createdAt > cutoff) } : archive;
+};
+
+type LocalAccountHistoryKey = { key: string; inboxKey: string };
+export const readAccountHistoryKey = (userId: string) => readEncryptedRecord<LocalAccountHistoryKey>(`account-history-key:${userId}`);
+export const saveAccountHistoryKey = (userId: string, key: LocalAccountHistoryKey) => writeEncryptedRecord(`account-history-key:${userId}`, key);
+export const clearLegacyAccountHistoryKey = (userId: string) => deleteEncryptedRecord(`account-history-key:${userId}`);
+
+type RememberedVaultSession = { deviceId: string; revision: number; wrappedByDeviceVault: string };
+const rememberedVaultRecord = (userId: string, sessionId: string) => `account-vault-session:${userId}:${sessionId}`;
+export const readRememberedVaultSession = (userId: string, sessionId: string) =>
+  readEncryptedRecord<RememberedVaultSession>(rememberedVaultRecord(userId, sessionId));
+export const saveRememberedVaultSession = (userId: string, sessionId: string, session: RememberedVaultSession) =>
+  writeEncryptedRecord(rememberedVaultRecord(userId, sessionId), session);
+export const forgetRememberedVaultSession = (userId: string, sessionId: string) =>
+  deleteEncryptedRecord(rememberedVaultRecord(userId, sessionId));
+
+type LocalHistoryDevice = { publicKey: string; privateKey: string };
+export const readHistoryDevice = (userId: string, deviceId: string) =>
+  readEncryptedRecord<LocalHistoryDevice>(`account-history-device:${userId}:${deviceId}`);
+export const saveHistoryDevice = (userId: string, deviceId: string, keys: LocalHistoryDevice) =>
+  writeEncryptedRecord(`account-history-device:${userId}:${deviceId}`, keys);
+
+export const pinAccountHistoryBinding = async (userId: string, kind: 'recipient' | 'device', id: string, publicKey: string) => {
+  const key = `account-history-pin:${userId}:${kind}:${id}`;
+  const check = async () => {
+    const existing = await readEncryptedRecord<string>(key);
+    if (existing) return existing === publicKey;
+    await writeEncryptedRecord(key, publicKey);
+    return true;
+  };
+  return hasIndexedDb() ? navigator.locks.request(key, check) : check();
+};
+
+export const readAccountHistoryUploadMarkers = async (userId: string) => {
+  const prefix = `account-history-uploaded:${userId}:`;
+  const records = await idbGetAllWithPrefix(prefix);
+  const markers = new Map<string, string>();
+  for (const { key } of records) {
+    const version = await readEncryptedRecord<string>(key).catch(() => null);
+    if (version) markers.set(key.slice(prefix.length), version);
+  }
+  return markers;
+};
+
+export const saveAccountHistoryUploadMarkers = async (userId: string, entries: { messageId: string; version: string }[]) => {
+  const records = await Promise.all(entries.map(({ messageId, version }) =>
+    prepareRecord(`account-history-uploaded:${userId}:${messageId}`, version)));
+  await writeRecordsAtomically(records);
+};
+
+export const saveGroupHistory = (userId: string, conversationId: string, archive: NonNullable<Awaited<ReturnType<typeof readGroupHistory>>>) =>
+  writeEncryptedRecord(`group-history:${userId}:${conversationId}`, archive);
+
+const groupFilePrefix = (userId: string, conversationId: string) => `group-file:${userId}:${conversationId}:`;
+
+export const readGroupAttachment = (userId: string, conversationId: string, fileKey: string) =>
+  readEncryptedRecord<{ bytes: string; mimeType: string }>(groupFilePrefix(userId, conversationId) + fileKey);
+
+export const saveGroupAttachment = (userId: string, conversationId: string, fileKey: string, bytes: Uint8Array, mimeType: string) =>
+  writeEncryptedRecord(groupFilePrefix(userId, conversationId) + fileKey, { bytes: bytesToBase64(bytes), mimeType });
+
+export const deleteGroupHistory = async (userId: string, conversationId: string) => {
+  const [attachments, messages] = await Promise.all([
+    idbGetAllWithPrefix(groupFilePrefix(userId, conversationId)),
+    listAllLocalMessages(userId)
+  ]);
+  await writeRecordsAtomically([], [
+    `group-history:${userId}:${conversationId}`,
+    ...attachments.map(({ key }) => key),
+    ...messages.filter((message) => message.conversationId === conversationId).map((message) => `msg:${userId}:${message.id}`)
+  ]);
+};
+
+export const deleteLocalHistoryMessage = async (userId: string, conversationId: string, messageId: string) => {
+  const [archive, cached] = await Promise.all([
+    readGroupHistory(userId, conversationId), getCachedDecryptedMessage(userId, messageId)
+  ]);
+  const fileKey = archive?.messages.find((message) => message.id === messageId)?.fileKey ?? cached?.fileKey;
+  const deletes = [`msg:${userId}:${messageId}`];
+  if (fileKey && !archive?.messages.some((message) => message.id !== messageId && message.fileKey === fileKey)) {
+    deletes.push(groupFilePrefix(userId, conversationId) + fileKey);
+  }
+  if (!archive?.messages.some((message) => message.id === messageId || message.replyTo?.id === messageId)) {
+    return writeRecordsAtomically([], deletes);
+  }
+  const messages = archive.messages.filter((message) => message.id !== messageId)
+    .map((message) => message.replyTo?.id === messageId ? { ...message, replyTo: undefined } : message);
+  const record = await prepareRecord(`group-history:${userId}:${conversationId}`, { ...archive, messages });
+  await writeRecordsAtomically([record], deletes);
+};
+
+const historyCutoffKey = (userId: string, conversationId: string) => `history-cleared:${userId}:${conversationId}`;
+
+export const clearLocalConversationHistory = async (userId: string, conversationId: string, clearedAt: string) => {
+  const key = historyCutoffKey(userId, conversationId);
+  const clear = async () => {
+    const previous = await readEncryptedRecord<string>(key);
+    if (previous && previous >= clearedAt) return;
+    const [messages, archive] = await Promise.all([listAllLocalMessages(userId), readGroupHistory(userId, conversationId)]);
+    const isCleared = (message: { createdAt?: string }) => !message.createdAt || Date.parse(message.createdAt) <= Date.parse(clearedAt);
+    const discarded = messages.filter((message) => message.conversationId === conversationId && isCleared(message));
+    const retained = archive?.messages.filter((message) => !isCleared(message)) ?? [];
+    const retainedFiles = new Set([...retained, ...messages.filter((message) => message.conversationId === conversationId && !isCleared(message))]
+      .map((message) => message.fileKey));
+    const clearedFiles = new Set([...discarded, ...(archive?.messages.filter(isCleared) ?? [])]
+      .map((message) => message.fileKey).filter((fileKey): fileKey is string => Boolean(fileKey && !retainedFiles.has(fileKey))));
+    const writes = [await prepareRecord(key, clearedAt)];
+    if (archive) writes.push(await prepareRecord(`group-history:${userId}:${conversationId}`, { ...archive, messages: retained }));
+    await writeRecordsAtomically(writes, [
+      ...discarded.map((message) => `msg:${userId}:${message.id}`),
+      ...[...clearedFiles].map((fileKey) => groupFilePrefix(userId, conversationId) + fileKey)
+    ]);
+  };
+  return hasIndexedDb() ? navigator.locks.request(key, clear) : clear();
+};
+
 export const cacheDecryptedMessage = async (
   userId: string,
   entry: VaultMessageEntry
 ): Promise<void> => {
+  const cutoff = await readEncryptedRecord<string>(historyCutoffKey(userId, entry.conversationId));
+  if (cutoff && Date.parse(entry.createdAt) <= Date.parse(cutoff)) return;
   await writeEncryptedRecord(`msg:${userId}:${entry.id}`, entry);
 };
 
@@ -731,9 +858,15 @@ export const getCachedOutgoingPlaintextByCiphertext = async (
 export const listAllLocalMessages = async (userId: string): Promise<VaultMessageEntry[]> => {
   const rawRecords = await idbGetAllWithPrefix(`msg:${userId}:`);
   const entries: VaultMessageEntry[] = [];
+  const cutoffs = new Map<string, string | null>();
   for (const item of rawRecords) {
     const parsed = await readEncryptedRecord<VaultMessageEntry>(item.key);
-    if (parsed) entries.push(parsed);
+    if (!parsed) continue;
+    if (!cutoffs.has(parsed.conversationId)) {
+      cutoffs.set(parsed.conversationId, await readEncryptedRecord<string>(historyCutoffKey(userId, parsed.conversationId)));
+    }
+    const cutoff = cutoffs.get(parsed.conversationId);
+    if (!cutoff || Date.parse(parsed.createdAt) > Date.parse(cutoff)) entries.push(parsed);
   }
   return entries.sort(
     (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()

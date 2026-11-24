@@ -44,6 +44,7 @@ export type AppErrorCode =
   // MLS (RFC 9420) ve Şifreli Yedekleme Kodları
   | 'MLS_EPOCH_MISMATCH'          // Sohbetin MLS epoch değeri ilerlemiş (Commit çakışması)
   | 'MLS_DEVICE_APPROVAL_INVALID'
+  | 'DEVICE_ACCESS_REVOKED'
   | 'MLS_INVALID_COMMIT'
   | 'MLS_DEVICE_NOT_FOUND'        // İstemci MLS cihaz kaydı bulunamadı veya iptal edilmiş
   | 'MLS_KEY_PACKAGE_EXHAUSTED'   // Hedef kullanıcının kullanılabilir KeyPackage paketi kalmadı
@@ -51,6 +52,8 @@ export type AppErrorCode =
   | 'MLS_INVALID_KEY_PACKAGE'     // KeyPackage imzası veya kullanıcı/cihaz kimlik bağlaması geçersiz
   | 'MLS_RECIPIENT_FORBIDDEN'     // Welcome/Commit alıcı cihazı bu sohbetin aktif katılımcısına ait değil
   | 'BACKUP_VERSION_CONFLICT'     // Şifreli geçmiş yedeği sürümü daha yeni bir sürümle çakıştı
+  | 'HISTORY_RECIPIENTS_CHANGED'
+  | 'HISTORY_VAULT_REQUIRED'
   // Genel HTTP Kodları
   | 'FORBIDDEN'                   // Yetkisiz erişim (403)
   | 'NOT_FOUND'                   // Bulunamadı (404)

@@ -10,9 +10,10 @@
 import prisma from '../db';
 import { AppError } from '../errors/AppError';
 import { createSignedFileUrl } from './fileStorage';
+import { userWithAccountVault } from './accountHistoryService';
 
 /**
- * Mevcut kullanıcı hariç tüm kullanıcıları engellenme durumlarıyla birlikte listeler.
+ * Kasasını kurmuş diğer kullanıcıları engellenme durumlarıyla birlikte listeler.
  */
 export const listUsers = async (
   currentUserId: string,
@@ -25,6 +26,7 @@ export const listUsers = async (
   const users = await prisma.user.findMany({
     where: {
       NOT: { id: currentUserId },
+      ...userWithAccountVault,
       ...(normalizedSearchTerm
         ? { username: { contains: normalizedSearchTerm, mode: 'insensitive' as const } }
         : {})
@@ -76,7 +78,7 @@ export const listUsers = async (
  */
 export const getUserProfile = async (targetId: string, currentUserId: string) => {
   const user = await prisma.user.findUnique({
-    where: { id: targetId },
+    where: { id: targetId, ...(currentUserId !== targetId ? userWithAccountVault : {}) },
     select: { id: true, username: true, avatarFileKey: true, lastSeenAt: true, createdAt: true }
   });
   if (!user) return null;
@@ -106,7 +108,7 @@ export const getUserProfile = async (targetId: string, currentUserId: string) =>
  */
 export const getBlockedUsers = async (currentUserId: string) => {
   const rows = await prisma.blockedUser.findMany({
-    where: { userId: currentUserId },
+    where: { userId: currentUserId, blocked: userWithAccountVault },
     include: { blocked: { select: { id: true, username: true, avatarFileKey: true } } }
   });
 
@@ -128,7 +130,10 @@ export const blockUser = async (currentUserId: string, targetId: string, io: any
     throw AppError.badRequest('CANNOT_BLOCK_SELF', 'Kendinizi engelleyemezsiniz.');
   }
 
-  const targetUser = await prisma.user.findUnique({ where: { id: targetId }, select: { id: true } });
+  const targetUser = await prisma.user.findUnique({
+    where: { id: targetId, ...userWithAccountVault },
+    select: { id: true }
+  });
   if (!targetUser) return null;
 
   await prisma.blockedUser.upsert({

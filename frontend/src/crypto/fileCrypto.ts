@@ -20,8 +20,11 @@
 import {
   base64ToBytes,
   bytesToBase64,
+  readGroupAttachment,
+  saveGroupAttachment,
   type EncryptedFileMetadata
 } from './vault';
+import type { Message } from '../types/chat';
 
 const MSE1_MAGIC = new Uint8Array([0x4d, 0x53, 0x45, 0x31]); // "MSE1"
 const decryptedObjectUrlCache = new Map<string, string>();
@@ -178,4 +181,34 @@ export const decryptAttachmentToBlobUrl = async (
   const objectUrl = URL.createObjectURL(blob);
   decryptedObjectUrlCache.set(cacheKey, objectUrl);
   return objectUrl;
+};
+
+export const cacheGroupAttachment = async (userId: string, message: Message, signal: AbortSignal) => {
+  const { conversationId, fileKey, fileUrl } = message;
+  if (!fileKey || !fileUrl || await readGroupAttachment(userId, conversationId, fileKey)) return;
+  const response = await fetch(fileUrl, { signal });
+  if (!response.ok) throw new Error(`Grup eki indirilemedi (${response.status})`);
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  try {
+    signal.throwIfAborted();
+    await saveGroupAttachment(userId, conversationId, fileKey, bytes, response.headers.get('content-type') || '');
+  } finally {
+    bytes.fill(0);
+  }
+};
+
+export const openGroupAttachment = async (userId: string, message: Message): Promise<string | null> => {
+  if (!message.fileKey) return null;
+  const cached = await readGroupAttachment(userId, message.conversationId, message.fileKey);
+  if (!cached) return null;
+  const bytes = base64ToBytes(cached.bytes);
+  const metadata: EncryptedFileMetadata | null = message.encryptedFileMetadata ? JSON.parse(message.encryptedFileMetadata) : null;
+  const decoded = metadata ? await decryptBytesFromMse1(bytes, metadata) : bytes;
+  try {
+    const mimeType = metadata?.mimeType || cached.mimeType || 'application/octet-stream';
+    return URL.createObjectURL(new Blob([decoded as unknown as BlobPart], { type: mimeType }));
+  } finally {
+    bytes.fill(0);
+    decoded.fill(0);
+  }
 };

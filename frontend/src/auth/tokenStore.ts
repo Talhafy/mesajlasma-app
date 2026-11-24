@@ -59,6 +59,26 @@ const scheduleRefresh = (token: string) => {
 /** Bellekteki aktif Access Token'ı döner */
 export const getAccessToken = () => accessToken;
 
+const readSessionId = (token: string | null) => {
+  if (!token) return null;
+  try {
+    const payload = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    const sessionId: unknown = JSON.parse(atob(payload)).sessionId;
+    return typeof sessionId === 'string' ? sessionId : null;
+  } catch {
+    return null;
+  }
+};
+
+export const getAccessSessionId = () => readSessionId(accessToken);
+export const expireAccessSession = (reason?: string) => {
+  window.dispatchEvent(new CustomEvent('auth:expired', { detail: reason }));
+  setAccessToken(null);
+};
+
+const withRefreshLock = <T>(run: () => Promise<T>) =>
+  navigator.locks ? navigator.locks.request('mesajlasma-refresh-token', run) : run();
+
 /**
  * Bellekteki Access Token'ı günceller, zamanlayıcıyı yeniler ve dinleyen bileşenlere bildirir.
  */
@@ -84,20 +104,23 @@ export const subscribeAccessToken = (listener: (token: string | null) => void) =
  */
 export const refreshAccessSession = async (): Promise<RefreshResponse> => {
   if (!refreshPromise) {
+    const previousToken = accessToken;
+    const sessionId = readSessionId(previousToken);
     const performRefresh = () => authApi.post<RefreshResponse>('/refresh');
     // Web Locks API ile tarayıcı sekmeleri arası yarış durumunu (race condition) engelliyoruz
-    const refreshRequest = navigator.locks
-      ? navigator.locks.request('mesajlasma-refresh-token', performRefresh)
-      : performRefresh();
+    const refreshRequest = withRefreshLock(performRefresh);
 
     refreshPromise = refreshRequest
       .then((response) => {
+        if (accessToken !== previousToken || (sessionId && sessionId !== readSessionId(response.data.accessToken))) {
+          throw new Error('Tarayıcı oturumu değişti.');
+        }
         setAccessToken(response.data.accessToken);
         return response.data;
       })
       .catch((error) => {
-        setAccessToken(null);
-        window.dispatchEvent(new Event('auth:expired'));
+        const response = (error as AxiosError<{ code?: string }>).response;
+        if (accessToken === previousToken) expireAccessSession(response?.data?.code === 'DEVICE_ACCESS_REVOKED' ? 'device_revoked' : undefined);
         throw error;
       })
       .finally(() => {
@@ -110,7 +133,7 @@ export const refreshAccessSession = async (): Promise<RefreshResponse> => {
 /** Oturumu Güvenle Kapatma */
 export const closeRefreshSession = async () => {
   try {
-    await authApi.post('/logout');
+    await withRefreshLock(() => authApi.post('/logout'));
   } finally {
     setAccessToken(null);
   }
@@ -131,10 +154,18 @@ export const configureAxiosAuth = () => {
   // Gelen yanıt 401 Unauthorized ise otomatik token yenileyip isteği 1 kez tekrar dener
   api.interceptors.response.use(
     (response) => response,
-    async (error: AxiosError) => {
+    async (error: AxiosError<{ code?: string }>) => {
       const config = error.config as RetryableConfig | undefined;
       const path = config?.url || '';
       const isAuthRoute = ['/login', '/register', '/refresh'].some((route) => path.endsWith(route));
+
+      if (error.response?.status === 401 && error.response.data?.code === 'DEVICE_ACCESS_REVOKED') {
+        const requestToken = config?.headers.Authorization;
+        if (getAccessSessionId() === readSessionId(typeof requestToken === 'string' ? requestToken.replace(/^Bearer /, '') : null)) {
+          expireAccessSession('device_revoked');
+        }
+        throw error;
+      }
 
       if (error.response?.status !== 401 || !config || config._retry || isAuthRoute) {
         throw error;

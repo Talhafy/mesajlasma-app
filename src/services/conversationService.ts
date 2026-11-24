@@ -14,7 +14,8 @@ import { AppError } from '../errors/AppError';
 import { createSignedFileUrl } from './fileStorage';
 import { deleteFileIfUnreferenced } from './fileCleanup';
 import { requireActiveParticipant } from './conversationAccess';
-import { serializeMessage } from './messageService';
+import { selectAccountHistory, serializeMessage } from './messageService';
+import { removeHistoryDeliveryFor, userWithAccountVault } from './accountHistoryService';
 import { attachOwnedAsset } from './uploadedAssetService';
 
 /**
@@ -66,7 +67,8 @@ export const listConversations = async (userId: string, cursor?: string, limit: 
               sender: { select: { username: true } },
               reads: { select: { userId: true } },
               stars: { select: { userId: true } },
-              deletions: { select: { userId: true } }
+              deletions: { select: { userId: true } },
+              accountHistory: selectAccountHistory(userId)
             }
           }
         }
@@ -133,13 +135,14 @@ export const listConversations = async (userId: string, cursor?: string, limit: 
             sender: { select: { username: true } },
             reads: { select: { userId: true } },
             stars: { select: { userId: true } },
-            deletions: { select: { userId: true } }
+            deletions: { select: { userId: true } },
+            accountHistory: selectAccountHistory(userId)
           }
         });
       }
 
       const lastMessage = lastMessageRaw
-        ? await serializeMessage(lastMessageRaw)
+        ? await serializeMessage(lastMessageRaw, [], userId)
         : null;
 
       return {
@@ -155,6 +158,7 @@ export const listConversations = async (userId: string, cursor?: string, limit: 
         isMuted: membership.isMuted,
         isActive: membership.isActive,
         leftAt: membership.leftAt ? membership.leftAt.toISOString() : null,
+        historyClearedAt: membership.historyClearedAt?.toISOString() ?? null,
         disappearingDurationSeconds: conversation.disappearingDurationSeconds,
         mlsCurrentEpoch: conversation.mlsCurrentEpoch ?? 0,
         mlsGroupId: conversation.mlsGroupId ?? null,
@@ -263,9 +267,6 @@ export const createDirectConversation = async (currentUserId: string, targetUser
     throw AppError.badRequest('CANNOT_CHAT_SELF', 'Kendinizle sohbet oluşturamazsınız.');
   }
 
-  const targetUser = await prisma.user.findUnique({ where: { id: targetUserId }, select: { id: true } });
-  if (!targetUser) throw AppError.notFound('USER_NOT_FOUND', 'Hedef kullanıcı bulunamadı.');
-
   let conversation = await prisma.conversation.findFirst({
     where: {
       isGroup: false,
@@ -279,6 +280,11 @@ export const createDirectConversation = async (currentUserId: string, targetUser
 
   if (!conversation) {
     conversation = await prisma.$transaction(async (tx) => {
+      const readyUserCount = await tx.user.count({
+        where: { id: { in: [currentUserId, targetUserId] }, ...userWithAccountVault }
+      });
+      if (readyUserCount !== 2) throw AppError.notFound('USER_NOT_FOUND', 'Hedef kullanıcı bulunamadı.');
+
       const createdConversation = await tx.conversation.create({
         data: { isGroup: false }
       });
@@ -310,12 +316,13 @@ export const createDirectConversation = async (currentUserId: string, targetUser
  */
 export const createGroupConversation = async (adminId: string, name: string, participantIds: string[], io: any) => {
   const allMemberIds = [...new Set([...participantIds, adminId])];
-  const existingUserCount = await prisma.user.count({ where: { id: { in: allMemberIds } } });
-  if (existingUserCount !== allMemberIds.length) {
-    throw AppError.notFound('USER_NOT_FOUND', 'Seçilen kullanıcılardan biri bulunamadı.');
-  }
 
   const newGroup = await prisma.$transaction(async (tx) => {
+    const readyUserCount = await tx.user.count({ where: { id: { in: allMemberIds }, ...userWithAccountVault } });
+    if (readyUserCount !== allMemberIds.length) {
+      throw AppError.notFound('USER_NOT_FOUND', 'Seçilen kullanıcılardan biri bulunamadı.');
+    }
+
     const createdGroup = await tx.conversation.create({
       data: {
         isGroup: true,
@@ -540,9 +547,10 @@ export const removeGroupParticipant = async (groupId: string, participantId: str
     ? `[SYSTEM_LEAVE]:${participantUser.username}`
     : `[SYSTEM_KICK]:${adminUser.username}:${participantUser.username}`;
 
+  const leftAt = new Date();
   await (prisma.participant.update as any)({
     where: { userId_conversationId: { userId: participantId, conversationId: groupId } },
-    data: { isActive: false, leftAt: new Date() }
+    data: { isActive: false, leftAt }
   });
   
   const systemMessage = await prisma.message.create({
@@ -562,9 +570,11 @@ export const removeGroupParticipant = async (groupId: string, participantId: str
 
   if (io && systemMessage) {
     const serialized = await serializeMessage(systemMessage);
-    io.to(groupId).emit('yeni_mesaj_geldi', serialized);
-    io.to(groupId).emit('gruptan_atildi', { groupId, removedUserId: participantId, removedById: adminId });
+    io.to([groupId, participantId]).emit('gruptan_atildi', {
+      groupId, removedUserId: participantId, removedById: adminId, leftAt: leftAt.toISOString()
+    });
     io.in(participantId).socketsLeave(groupId);
+    io.to(groupId).except(participantId).emit('yeni_mesaj_geldi', serialized);
   }
 
   const remainingParticipants = await prisma.participant.findMany({
@@ -632,7 +642,7 @@ export const removeGroupParticipant = async (groupId: string, participantId: str
     }
   }
 
-  return { message: "İşlem başarılı." };
+  return { message: "İşlem başarılı.", leftAt: leftAt.toISOString() };
 };
 
 /**
@@ -645,8 +655,8 @@ export const addGroupParticipants = async (groupId: string, participantIds: stri
     'Bu gruba üye ekleme yetkiniz yok.'
   );
   const uniqueUserIds = [...new Set(participantIds)];
-  const existingUserCount = await prisma.user.count({ where: { id: { in: uniqueUserIds } } });
-  if (existingUserCount !== uniqueUserIds.length) {
+  const readyUserCount = await prisma.user.count({ where: { id: { in: uniqueUserIds }, ...userWithAccountVault } });
+  if (readyUserCount !== uniqueUserIds.length) {
     throw AppError.notFound('USER_NOT_FOUND', 'Eklenecek kullanıcılardan biri bulunamadı.');
   }
 
@@ -661,9 +671,19 @@ export const addGroupParticipants = async (groupId: string, participantIds: stri
       where: { userId_conversationId: { userId, conversationId: groupId } }
     });
     if (existing) {
-      await (prisma.participant.update as any)({
-        where: { id: existing.id },
-        data: { isActive: true, leftAt: null, joinedAt: new Date() }
+      if (existing.isActive) continue;
+      await prisma.$transaction(async (tx) => {
+        const updated = await tx.participant.updateMany({
+          where: { id: existing.id, isActive: false, joinedAt: existing.joinedAt, leftAt: existing.leftAt },
+          data: { isActive: true, leftAt: null, joinedAt: new Date() }
+        });
+        if (updated.count && existing.leftAt) {
+          await tx.participantHistoryPeriod.create({ data: {
+            participantId: existing.id,
+            joinedAt: existing.joinedAt,
+            leftAt: existing.leftAt
+          } });
+        }
       });
     } else {
       await (prisma.participant.create as any)({
@@ -846,6 +866,38 @@ export const deleteGroup = async (groupId: string, adminId: string, io: any) => 
 /**
  * Kullanıcı için sohbet geçmişini temizler/siler.
  */
+export const listPersonalHistoryCutoffs = async (userId: string) => {
+  const records = await prisma.participant.findMany({
+    where: { userId, historyClearedAt: { not: null } },
+    select: { conversationId: true, historyClearedAt: true }
+  });
+  return records.map(({ conversationId, historyClearedAt }) => ({ conversationId, clearedAt: historyClearedAt!.toISOString() }));
+};
+
+export const clearPersonalConversationHistory = async (conversationId: string, userId: string, io?: import('socket.io').Server) => {
+  const clearedAt = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "Participant" WHERE "conversationId" = ${conversationId} AND "userId" = ${userId} FOR UPDATE`;
+    const participant = await tx.participant.findUnique({
+      where: { userId_conversationId: { userId, conversationId } }
+    });
+    if (!participant) throw AppError.notFound('CONVERSATION_NOT_FOUND', 'Sohbet bulunamadı.');
+    const latest = await tx.message.findFirst({ where: { conversationId }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
+    const through = new Date(Math.max(latest?.createdAt.getTime() ?? 0, participant.historyClearedAt?.getTime() ?? 0));
+    await tx.$executeRaw`
+      INSERT INTO "MessageDeletion" ("messageId", "userId")
+      SELECT id, ${userId} FROM "Message" WHERE "conversationId" = ${conversationId} AND "createdAt" <= ${through}
+      ON CONFLICT ("messageId", "userId") DO NOTHING
+    `;
+    await tx.accountHistoryMessage.deleteMany({ where: { userId, message: { conversationId, createdAt: { lte: through } } } });
+    await removeHistoryDeliveryFor(tx, userId, { conversationId, through });
+    await tx.participant.update({ where: { id: participant.id }, data: { historyClearedAt: through } });
+    return through;
+  });
+  const result = { conversationId, clearedAt: clearedAt.toISOString() };
+  io?.to(userId).emit('sohbet_gecmisi_temizlendi', result);
+  return result;
+};
+
 export const deleteConversationHistory = async (conversationId: string, userId: string, io: any = null) => {
   const group = await prisma.conversation.findUnique({ where: { id: conversationId } });
   
@@ -890,27 +942,18 @@ export const deleteConversationHistory = async (conversationId: string, userId: 
     }
   }
 
-  await prisma.participant.delete({
-    where: {
-      userId_conversationId: {
-        userId,
-        conversationId
-      }
+  await prisma.$transaction(async (tx) => {
+    const deleted = await tx.participant.deleteMany({ where: { userId, conversationId } });
+    if (deleted.count) {
+      await tx.accountHistoryMessage.deleteMany({ where: { userId, message: { conversationId } } });
+      await removeHistoryDeliveryFor(tx, userId, { conversationId });
+      await tx.conversation.deleteMany({ where: { id: conversationId, participants: { none: {} } } });
     }
-  }).catch(() => undefined);
-
-  const remainingCount = await prisma.participant.count({
-    where: { conversationId }
   });
-
-  if (remainingCount === 0) {
-    await prisma.conversation.delete({
-      where: { id: conversationId }
-    }).catch(() => undefined);
-  }
 
   if (io) {
     io.in(userId).socketsLeave(conversationId);
+    io.to(userId).emit('sohbet_gecmisi_silindi', { conversationId });
   }
 
   return { message: "Sohbet başarıyla temizlendi." };

@@ -595,3 +595,12 @@ body.dark-theme .auth-switch-text {
     padding: 36px 20px;
   }
 }
+.auth-session-notice {
+  margin: 0 0 16px;
+  padding: 11px 13px;
+  border-radius: 8px;
+  background: #fff3e6;
+  color: #733d19;
+  font-size: 14px;
+  line-height: 1.5;
+}

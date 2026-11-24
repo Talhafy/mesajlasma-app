@@ -118,7 +118,7 @@ export const buildTimelineWithDateSeparators = (
   currentUsername?: string
 ) => {
   const items: TimelineItem[] = [
-    ...messages.map((message): TimelineItem => {
+    ...messages.filter((message) => !isPendingMessageDecryption(message)).map((message): TimelineItem => {
       const createdAt = message.createdAt || new Date(0).toISOString();
       const systemText = formatSystemMessage(message.content, currentUsername);
       if (systemText) {
@@ -168,6 +168,7 @@ export const getUnixEpoch = (dateString?: string) => dateString ? Math.floor(new
  */
 export const getMessagePreview = (message?: Message | null) => {
   if (!message) return '';
+  if (isPendingMessageDecryption(message)) return '';
   if (isDeletedForEveryoneMessage(message)) return 'Bu mesaj silindi';
   if (message.content?.trim()) return message.content;
   if (message.fileType === 'image' || message.fileType?.startsWith('image')) return '📷 Görsel';
@@ -177,6 +178,13 @@ export const getMessagePreview = (message?: Message | null) => {
   return '';
 };
 
+export const isPendingMessageDecryption = (message: Message) => message.decryptionPending ?? Boolean(
+  message.protocolVersion && message.content?.startsWith('🔒 ') && [
+    '🔒 Şifreli mesaj eksik.', '🔒 Bu cihazda şifreli geçmiş henüz açılamadı.',
+    '🔒 Bu cihazda mesajın anahtarı bulunamadı.', '🔒 Şifreli mesaj doğrulanamadı.'
+  ].includes(message.content)
+);
+
 /** Herkesten silinen mesajlar backend tarafından bu özel içerikle saklanır. */
 export const isDeletedForEveryoneMessage = (message?: Pick<Message, 'content' | 'fileKey'> | null) => {
   if (!message || message.fileKey) return false;
@@ -185,13 +193,30 @@ export const isDeletedForEveryoneMessage = (message?: Pick<Message, 'content' | 
 };
 
 /** Yeni video türünü ve daha önce yanlışlıkla audio kaydedilmiş video eklerini tanır. */
-export const isVideoMessage = (message?: { fileType?: string | null; fileName?: string | null } | null) => {
+export const isVideoMessage = (message?: { fileType?: string | null; fileName?: string | null; content?: string; encryptedFileMetadata?: string | null } | null) => {
   if (!message) return false;
   if (message.fileType === 'video' || message.fileType?.startsWith('video')) return true;
-  return message.fileType === 'audio' && /\.(?:mp4|webm|mov|m4v|ogv)$/i.test(message.fileName || '');
+  if (message.fileType !== 'audio') return false;
+  if (message.encryptedFileMetadata) {
+    try {
+      const { mimeType } = JSON.parse(message.encryptedFileMetadata);
+      if (typeof mimeType === 'string' && /^(audio|video)\//.test(mimeType)) return mimeType.startsWith('video/');
+    } catch {
+      // Eski mesajlarda dosya adını kullan.
+    }
+  }
+  if (message.fileName?.startsWith('voice-') || /^Sesli mesaj(?:\s*\(\d+:\d{2}\))?$/i.test(message.content?.trim() ?? '')) return false;
+  return /\.(?:mp4|webm|mov|m4v|ogv)$/i.test(message.fileName || '');
 };
 
 /** HTTP yanıtı ve socket olayıyla gelen aynı mesajı tek kayıtta birleştirir. */
+export const hasReadReceipt = (message: Message, isGroup: boolean) => {
+  const readers = message.readByIds ?? [];
+  if (!isGroup) return readers.some((reader) => reader !== message.senderId);
+  const recipients = message.groupRecipientIds ?? [];
+  return recipients.length > 0 && recipients.every((recipient) => readers.includes(recipient));
+};
+
 export const mergeMessage = (messages: Message[], incoming: Message) => {
   const existingIndex = messages.findIndex((message) => (
     message.id === incoming.id
@@ -200,7 +225,18 @@ export const mergeMessage = (messages: Message[], incoming: Message) => {
 
   if (existingIndex === -1) return [...messages, incoming];
 
+  const existing = messages[existingIndex];
   const next = [...messages];
-  next[existingIndex] = { ...messages[existingIndex], ...incoming };
+  next[existingIndex] = { ...existing, ...incoming };
+  if (existing.readByIds && incoming.readByIds) {
+    next[existingIndex].readByIds = [...new Set([...existing.readByIds, ...incoming.readByIds])];
+  }
+  if (incoming.decryptionPending && !isPendingMessageDecryption(existing) && incoming.ciphertext && incoming.ciphertext === existing.ciphertext) {
+    next[existingIndex] = {
+      ...next[existingIndex], content: existing.content, decryptionPending: false,
+      fileName: existing.fileName, fileUrl: incoming.fileUrl ?? existing.fileUrl,
+      encryptedFileMetadata: existing.encryptedFileMetadata
+    };
+  }
   return next;
 };

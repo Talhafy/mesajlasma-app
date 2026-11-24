@@ -46,6 +46,7 @@ export default function CallSessionContent({ title, isVideoCall, avatarUrl, loca
   const showVideo = !!screenTrack || remoteCameras.length > 0;
   const [participantsOpen, setParticipantsOpen] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
+  const [selfPreviewExpanded, setSelfPreviewExpanded] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const startedAt = useRef<number | null>(null);
   const shellRef = useRef<HTMLElement>(null);
@@ -68,6 +69,9 @@ export default function CallSessionContent({ title, isVideoCall, avatarUrl, loca
 
   const duration = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`;
   const connected = connectionState === ConnectionState.Connected;
+  const hasSelfPreview = isVideoCall || isCameraEnabled;
+  const showExpandedSelfPreview = hasSelfPreview && selfPreviewExpanded;
+  const selfPreviewLabel = showExpandedSelfPreview ? 'Kendi görüntünü küçült' : 'Kendi görüntünü büyüt';
   const statusLabel = connectionState === ConnectionState.Connecting
     ? 'Bağlanılıyor…'
     : connectionState === ConnectionState.Reconnecting || connectionState === ConnectionState.SignalReconnecting
@@ -83,7 +87,7 @@ export default function CallSessionContent({ title, isVideoCall, avatarUrl, loca
   };
 
   return (
-    <section ref={shellRef} className={`call-session ${showVideo ? 'has-video' : ''}`} aria-label={`${title} ile görüşme`}>
+    <section ref={shellRef} className={`call-session ${showVideo || showExpandedSelfPreview ? 'has-video' : ''}`} aria-label={`${title} ile görüşme`}>
       <RoomAudioRenderer />
       <StartAudio className="call-enable-audio" label="Görüşmenin sesini etkinleştir" />
 
@@ -113,7 +117,7 @@ export default function CallSessionContent({ title, isVideoCall, avatarUrl, loca
         <div className={`call-connection-badge ${connected && hasRemoteParticipant ? 'is-connected' : ''}`}><span />{connected && hasRemoteParticipant ? 'Bağlandı' : 'Görüşme'}</div>
       </header>
 
-      <main className="call-main-stage">
+      <main className={`call-main-stage ${showExpandedSelfPreview ? 'is-self-expanded' : ''}`}>
         {showVideo ? (
           <div className={`call-video-grid ${screenTrack ? 'is-screen-share' : ''} ${!screenTrack && remoteParticipants.length > 1 ? 'is-group' : ''}`}>
             {screenTrack ? (
@@ -135,10 +139,19 @@ export default function CallSessionContent({ title, isVideoCall, avatarUrl, loca
           </div>
         )}
 
-        {(isVideoCall || isCameraEnabled) && (
+        {hasSelfPreview && (
           <aside className="call-self-preview" aria-label="Kamera önizlemeniz">
             {localCamera ? <VideoTrack trackRef={localCamera} /> : <div className="call-self-placeholder"><CallAvatar name={localParticipant.name || 'Siz'} src={localAvatarUrl} /><span>Kamera kapalı</span></div>}
             <span className="call-tile-name">Siz{!isMicrophoneEnabled && <CallIcon name="mic-off" width="14" height="14" />}</span>
+            <button
+              type="button"
+              className="call-preview-toggle"
+              title={selfPreviewLabel}
+              aria-label={selfPreviewLabel}
+              onClick={() => setSelfPreviewExpanded((expanded) => !expanded)}
+            >
+              <CallIcon name={showExpandedSelfPreview ? 'collapse' : 'expand'} width="19" height="19" />
+            </button>
           </aside>
         )}
       </main>

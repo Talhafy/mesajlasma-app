@@ -29,6 +29,35 @@ model User {
   conversationReadStates    ConversationReadState[]
   devices                   UserDevice[]
   historyBackup             EncryptedHistoryBackup?
+  accountHistoryKey         AccountHistoryKey?
+  accountHistoryMessages    AccountHistoryMessage[]
+}
+
+model AccountHistoryKey {
+  userId     String @id
+  salt       String
+  iv         String
+  wrappedKey String
+  publicKey  String
+  inboxIv    String
+  inboxKey   String
+  revision   Int    @default(1)
+  vaultApproval Json?
+  vaultRecovery Json?
+  user       User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model AccountHistoryMessage {
+  userId    String
+  messageId String
+  version   String
+  iv        String
+  payload   String
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  message   Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@id([userId, messageId, version])
+  @@index([messageId])
 }
 
 enum UploadedAssetStatus {
@@ -70,14 +99,19 @@ model RefreshSession {
   /// Ham refresh token hiçbir zaman veritabanına yazılmaz; yalnızca HMAC özeti tutulur.
   id        String    @id @default(uuid())
   userId    String
+  sessionId String    @default(uuid())
+  deviceId  String?
   tokenHash String    @unique
   expiresAt DateTime
   revokedAt DateTime?
   createdAt DateTime  @default(now())
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device    UserDevice? @relation(fields: [deviceId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([expiresAt])
+  @@index([sessionId])
+  @@index([deviceId])
 }
 
 model Conversation {
@@ -112,11 +146,22 @@ model Participant {
   isMuted        Boolean      @default(false)
   isActive       Boolean      @default(true)
   leftAt         DateTime?
+  historyClearedAt DateTime?
   user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  historyPeriods ParticipantHistoryPeriod[]
 
   @@unique([userId, conversationId])
   @@index([conversationId])
+}
+
+model ParticipantHistoryPeriod {
+  participantId String
+  joinedAt      DateTime
+  leftAt        DateTime
+  participant   Participant @relation(fields: [participantId], references: [id], onDelete: Cascade)
+
+  @@id([participantId, joinedAt])
 }
 
 model Message {
@@ -131,6 +176,8 @@ model Message {
   reads          MessageRead[]
   stars          MessageStar[]
   deletions      MessageDeletion[]
+  accountHistory AccountHistoryMessage[]
+  historyDelivery Json?
   isPinned       Boolean      @default(false)
   isForwarded    Boolean      @default(false)
   protocolVersion Int         @default(0)
@@ -210,16 +257,19 @@ model UserDevice {
   userId             String
   deviceName         String          @default("Web Browser")
   signaturePublicKey String
+  historyPublicKey   String?
   credential         String
   lastActiveAt       DateTime        @default(now())
   revokedAt          DateTime?
   approvedAt         DateTime?
   approvedByDeviceId String?
   approvalSignature  String?
+  approvedByVault    Boolean         @default(false)
   createdAt          DateTime        @default(now())
   user               User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   keyPackages        MlsKeyPackage[]
   welcomes           MlsWelcome[]
+  refreshSessions    RefreshSession[]
 
   @@unique([userId, signaturePublicKey])
   @@index([userId, revokedAt])
@@ -246,6 +296,7 @@ model MlsCommit {
   senderDeviceId String
   commitData     String
   ratchetTree    String?
+  groupInfo      String?
   createdAt      DateTime     @default(now())
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 

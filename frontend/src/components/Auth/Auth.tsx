@@ -21,9 +21,10 @@ import type { User } from '../../types/chat';
 interface AuthProps {
   /** Giriş başarılı olduğunda token ve kullanıcı nesnesiyle çağrılan geribildirim fonksiyonu */
   onLoginSuccess: (token: string, user: User, password: string) => Promise<void>;
+  notice?: string;
 }
 
-export default function Auth({ onLoginSuccess }: AuthProps) {
+export default function Auth({ onLoginSuccess, notice }: AuthProps) {
   // Görünüm Durumu: 'login' (Giriş) veya 'register' (Kayıt)
   const [currentView, setCurrentView] = useState<'login' | 'register'>('login');
 
@@ -185,6 +186,7 @@ export default function Auth({ onLoginSuccess }: AuthProps) {
           </div>
 
           {/* HATA BİLDİRİM UYARISI */}
+          {notice && !hataMesaji && <p className="auth-session-notice" role="status">{notice}</p>}
           {hataMesaji && (
             <div className="error-alert">
               <svg className="error-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

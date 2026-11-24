@@ -13,6 +13,7 @@ import { Prisma } from '@prisma/client';
 import prisma from '../db';
 import { AppError } from '../errors/AppError';
 import { withSignedFileUrl } from './fileStorage';
+import { historyDeliveryFor, historyVersion, listHistoryReaders, removeHistoryDeliveryFor, requireVaultRecipients, verifyHistoryDelivery, type HistoryDelivery } from './accountHistoryService';
 import { deleteFileIfUnreferenced } from './fileCleanup';
 import { attachOwnedAsset, cloneAssetForOwner } from './uploadedAssetService';
 import {
@@ -44,6 +45,21 @@ const replyToSelect = {
   fileName: true,
   sender: { select: { username: true } }
 } satisfies Prisma.MessageSelect;
+
+type MessagePeriod = { joinedAt: Date; leftAt: Date | null };
+
+const messagePeriods = (membership: MessagePeriod & { historyPeriods?: MessagePeriod[] }) =>
+  [membership, ...(membership.historyPeriods ?? [])];
+
+const messagePeriodWhere = (periods: MessagePeriod[]): Prisma.MessageWhereInput => ({
+  OR: periods.map(({ joinedAt, leftAt }) => ({ createdAt: { gte: joinedAt, ...(leftAt ? { lte: leftAt } : {}) } }))
+});
+
+const withGroupRecipients = <T extends { senderId: string; createdAt: Date }>(message: T, activeMembers: { userId: string; joinedAt: Date }[]) => ({
+  ...message,
+  groupRecipientIds: activeMembers.filter((member) => member.userId !== message.senderId && member.joinedAt <= message.createdAt)
+    .map((member) => member.userId)
+});
 
 /** Kullanıcının aktif olduğu sohbet pencerelerini getirir */
 const getActiveMessageWindows = (userId: string) => (
@@ -148,9 +164,16 @@ export type MessageWithReads = Prisma.MessageGetPayload<{
 /**
  * Mesajı imzalı dosya URL'leri ile zenginleştirir ve okundu listesine göndericiyi dahil eder.
  */
-export const serializeMessage = async (msg: MessageWithReads, cursorReadByIds: string[] = []) => {
+type MessageWithAccountHistory = MessageWithReads & {
+  accountHistory?: { version: string; iv: string; payload: string }[];
+};
+
+export const selectAccountHistory = (userId: string) => ({ where: { userId }, select: { version: true, iv: true, payload: true } } as const);
+
+export const serializeMessage = async (msg: MessageWithAccountHistory, cursorReadByIds: string[] = [], viewerId?: string) => {
   const signed = await withSignedFileUrl(msg);
-  const { reads = [], stars = [], deletions = [], ...rest } = signed;
+  const { reads = [], stars = [], deletions = [], historyDelivery, accountHistory, ...rest } = signed;
+  const version = viewerId && accountHistory?.length && msg.ciphertext ? historyVersion(msg.ciphertext) : undefined;
 
   const readByIds = [...new Set([
     ...reads.map((r) => r.userId),
@@ -162,6 +185,8 @@ export const serializeMessage = async (msg: MessageWithReads, cursorReadByIds: s
 
   return {
     ...rest,
+    historyDelivery: historyDeliveryFor(historyDelivery, viewerId),
+    accountHistoryCopy: version ? accountHistory?.find((copy) => copy.version === version) : undefined,
     readByIds,
     starredByIds,
     deletedForIds
@@ -172,7 +197,7 @@ export const serializeMessage = async (msg: MessageWithReads, cursorReadByIds: s
  * Read cursor'larını tek sorguda çekerek eski MessageRead kayıtlarıyla birleştirir.
  * Böylece yeni mesajlar için MessageRead yazmadan, sayfa yenilendiğinde de read receipt gösterilir.
  */
-export const serializeMessages = async (messages: MessageWithReads[]) => {
+export const serializeMessages = async (messages: MessageWithAccountHistory[], viewerId?: string) => {
   if (messages.length === 0) return [];
   const conversationIds = [...new Set(messages.map((message) => message.conversationId))];
   const states = await prisma.conversationReadState.findMany({
@@ -191,7 +216,7 @@ export const serializeMessages = async (messages: MessageWithReads[]) => {
     const stateReaders = (statesByWindow.get(message.conversationId) || [])
       .filter((state) => state.userId !== message.senderId && state.lastReadAt >= message.createdAt)
       .map((state) => state.userId);
-    return serializeMessage(message, stateReaders);
+    return serializeMessage(message, stateReaders, viewerId);
   }));
 };
 
@@ -211,6 +236,7 @@ export const sendMessage = async (
     senderDeviceId?: string | null;
     ciphertext?: string | null;
     encryptedFileMetadata?: string | null;
+    historyDelivery?: HistoryDelivery;
     replyToId?: string | null;
     isForwarded?: boolean;
     fileKey?: string | null;
@@ -230,7 +256,8 @@ export const sendMessage = async (
     isForwarded,
     fileKey,
     fileType,
-    fileName
+    fileName,
+    historyDelivery
   } = payload;
 
   const membership = await requireActiveParticipant(
@@ -250,6 +277,7 @@ export const sendMessage = async (
   if (!conversation.participants.some((participant: any) => participant.userId === senderId && participant.isActive)) {
     throw AppError.forbidden('CONVERSATION_FORBIDDEN', 'Bu sohbete mesaj gönderme yetkiniz yok.');
   }
+  let activeMembers: { userId: string; joinedAt: Date }[] = conversation.participants.filter((participant) => participant.isActive);
 
   // Yeni MLS zarfları şifreli içeriğe sohbet ve mesaj kimliğini bağlar.
   const activeEpoch = (conversation as any).mlsCurrentEpoch ?? 0;
@@ -303,12 +331,16 @@ export const sendMessage = async (
     if (!repliedMessage) throw AppError.badRequest('BAD_REQUEST', 'Yanıtlanan mesaj bu sohbete ait değil.');
   }
 
-  const resolvedFileKey = await resolveMessageAsset({ fileKey, fileName, isForwarded, senderId });
+  if (!historyDelivery) throw AppError.badRequest('HISTORY_VAULT_REQUIRED', 'Mesajın şifreli geçmiş kopyası gerekli.');
+  let recovery = await verifyHistoryDelivery(historyDelivery, conversationId, senderId, clientId,
+    ciphertext, senderDevice.signaturePublicKey, activeMembers.map((member) => member.userId));
+
+  const attachInTransaction = Boolean(fileKey && !isForwarded);
+  const resolvedFileKey = attachInTransaction ? fileKey ?? null : await resolveMessageAsset({ fileKey, fileName, isForwarded, senderId });
 
   let savedMessage;
   try {
-    const createdMessage = await prisma.message.create({
-      data: {
+    const data = {
         clientId,
         content: '',
         protocolVersion,
@@ -326,7 +358,31 @@ export const sendMessage = async (
         expiresAt: conversation.disappearingDurationSeconds
           ? new Date(Date.now() + conversation.disappearingDurationSeconds * 1000)
           : null
+    };
+    const createdMessage = await prisma.$transaction(async (tx) => {
+      const lockedMembers = await tx.$queryRaw<{ userId: string; joinedAt: Date; historyClearedAt: Date | null }[]>`
+        SELECT "userId", "joinedAt", "historyClearedAt" FROM "Participant"
+        WHERE "conversationId" = ${conversationId} AND "isActive" ORDER BY "userId" FOR SHARE
+      `;
+      activeMembers = lockedMembers;
+      if (!activeMembers.some((member) => member.userId === senderId)) {
+        throw AppError.forbidden('CONVERSATION_FORBIDDEN', 'Bu sohbete mesaj gönderme yetkiniz yok.');
       }
+      const [current] = await tx.$queryRaw<{ mlsCurrentEpoch: number; isDeleted: boolean }[]>`
+        SELECT "mlsCurrentEpoch", "isDeleted" FROM "Conversation" WHERE "id" = ${conversationId} FOR SHARE
+      `;
+      if (!current || current.isDeleted || current.mlsCurrentEpoch !== epoch) {
+        throw AppError.conflict('MLS_EPOCH_MISMATCH', 'Mesaj göndermeden önce MLS dönemini eşitleyin.');
+      }
+      const recipients = await requireVaultRecipients(activeMembers.map((member) => member.userId), tx);
+      if (recipients.some(({ userId }) => !historyDelivery.keys[userId])) {
+        throw AppError.conflict('HISTORY_RECIPIENTS_CHANGED', 'Şifreli geçmiş alıcıları değişti.');
+      }
+      recovery = { ...recovery, keys: Object.fromEntries(recipients.map(({ userId }) => [userId, historyDelivery.keys[userId]])), deviceKeys: {} };
+      if (attachInTransaction && resolvedFileKey) await attachOwnedAsset(resolvedFileKey, senderId, tx);
+      const createdAt = new Date(lockedMembers.reduce((time, member) =>
+        Math.max(time, (member.historyClearedAt?.getTime() ?? 0) + 1), Date.now()));
+      return tx.message.create({ data: { ...data, createdAt, historyDelivery: { ...recovery, vaultOnly: true } } });
     });
 
     savedMessage = await prisma.message.findUnique({
@@ -344,7 +400,7 @@ export const sendMessage = async (
   } catch (error) {
     // Idempotency (clientId unique key çakışması) kontrolü
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
-      if (resolvedFileKey) await deleteFileIfUnreferenced(resolvedFileKey);
+      if (resolvedFileKey && !attachInTransaction) await deleteFileIfUnreferenced(resolvedFileKey);
       const existingMessage = await prisma.message.findUnique({
         where: { senderId_clientId: { senderId, clientId } },
         include: {
@@ -357,18 +413,23 @@ export const sendMessage = async (
         }
       });
       if (!existingMessage) throw error;
-      return serializeMessage(existingMessage);
+      if (!(existingMessage.historyDelivery as { vaultOnly?: boolean } | null)?.vaultOnly) {
+        throw AppError.conflict('HISTORY_VAULT_REQUIRED', 'Önceki gönderimin kasa kopyası bulunamadı.');
+      }
+      const serialized = await serializeMessage(existingMessage, [], senderId);
+      return conversation.isGroup ? withGroupRecipients(serialized, activeMembers) : serialized;
     }
-    if (resolvedFileKey) await deleteFileIfUnreferenced(resolvedFileKey);
+    if (resolvedFileKey && !attachInTransaction) await deleteFileIfUnreferenced(resolvedFileKey);
     throw error;
   }
 
-  const responseMessage = await serializeMessage(savedMessage);
+  const serialized = await serializeMessage(savedMessage, [], senderId);
+  const responseMessage = conversation.isGroup ? withGroupRecipients(serialized, activeMembers) : serialized;
 
   if (io) {
-    const targetRooms = conversation.participants.filter((p: any) => p.isActive).map((p) => p.userId);
+    const targetRooms = activeMembers.map((p) => p.userId);
     targetRooms.push(conversationId);
-    io.to(targetRooms).emit('yeni_mesaj_geldi', responseMessage);
+    io.to(targetRooms).emit('yeni_mesaj_geldi', { ...responseMessage, historyDelivery: { ...recovery, vaultOnly: true } });
   }
 
   return responseMessage;
@@ -378,7 +439,7 @@ export const sendMessage = async (
  * MESAJLARI GETİRME (Cursor Pagination)
  * Geçmiş mesajları kullanıcının katılım tarihine (`joinedAt`) göre süzerek getirir.
  */
-export const fetchMessages = async (conversationId: string, userId: string, cursor?: string, limit: number = 50) => {
+export const fetchMessages = async (conversationId: string, userId: string, cursor?: string, limit: number = 50, anchor?: string) => {
   const participant = await requireHistoryParticipant(
     conversationId,
     userId,
@@ -403,39 +464,73 @@ export const fetchMessages = async (conversationId: string, userId: string, curs
     }
   }
 
-  const whereClause: any = {
+  const periods = messagePeriods(participant);
+  const whereClause: Prisma.MessageWhereInput = {
     conversationId,
     deletions: { none: { userId } },
-    ...visibleMessageWhere(),
-    createdAt: {
-      gte: participant.joinedAt,
-      ...(participant.leftAt ? { lte: participant.leftAt } : {})
-    },
-    ...tupleCursorWhere
+    ...(participant.historyClearedAt && { createdAt: { gt: participant.historyClearedAt } }),
+    AND: [visibleMessageWhere(), messagePeriodWhere(periods)],
   };
 
-  const rawMessages = await prisma.message.findMany({
-    where: whereClause,
-    take: takeLimit + 1,
-    orderBy: [
-      { createdAt: 'desc' },
-      { id: 'desc' }
-    ],
-    include: {
+  const anchorMessage = anchor
+    ? await prisma.message.findFirst({ where: { ...whereClause, id: anchor }, select: { id: true, createdAt: true } })
+    : null;
+  if (anchor && !anchorMessage) throw AppError.notFound('NOT_FOUND', 'Mesaj bu sohbet geçmişinde bulunamadı.');
+  const descending = [{ createdAt: 'desc' }, { id: 'desc' }] as const;
+  const include = {
       sender: { select: { username: true } },
-      replyTo: { select: replyToSelect },
+      replyTo: { select: { ...replyToSelect, conversationId: true, createdAt: true, expiresAt: true, deletions: { where: { userId }, select: { userId: true } } } },
+      accountHistory: selectAccountHistory(userId),
       reads: { select: { userId: true } },
       stars: { select: { userId: true } },
       deletions: { select: { userId: true } }
-    }
-  });
+  } satisfies Prisma.MessageInclude;
+  const newerLimit = 15;
+  const [rawMessages, newer] = await Promise.all([
+    prisma.message.findMany({
+      where: { ...whereClause, ...(anchorMessage ? { OR: [
+        { createdAt: { lt: anchorMessage.createdAt } },
+        { createdAt: anchorMessage.createdAt, id: { lte: anchorMessage.id } }
+      ] } : tupleCursorWhere) },
+      take: takeLimit + 1,
+      orderBy: [...descending],
+      include
+    }),
+    anchorMessage ? prisma.message.findMany({
+      where: { ...whereClause, OR: [
+        { createdAt: { gt: anchorMessage.createdAt } },
+        { createdAt: anchorMessage.createdAt, id: { gt: anchorMessage.id } }
+      ] },
+      take: newerLimit + 1,
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      include
+    }) : []
+  ]);
 
   const hasNext = rawMessages.length > takeLimit;
   const pageMessages = hasNext ? rawMessages.slice(0, takeLimit) : rawMessages;
   const nextCursor = hasNext ? pageMessages[pageMessages.length - 1].id : null;
 
-  const items = await serializeMessages(pageMessages.reverse());
-  return { items, nextCursor };
+  const now = new Date();
+  const serialized = await serializeMessages([...pageMessages.reverse(), ...newer.slice(0, newerLimit)].map(({ replyTo, ...message }) => ({
+    ...message,
+    replyTo: replyTo && replyTo.conversationId === conversationId && !replyTo.deletions.length && (!replyTo.expiresAt || replyTo.expiresAt > now) &&
+      (!participant.historyClearedAt || replyTo.createdAt > participant.historyClearedAt) &&
+      periods.some(({ joinedAt, leftAt }) => replyTo.createdAt >= joinedAt && (!leftAt || replyTo.createdAt <= leftAt))
+      ? replyTo : null
+  })), userId);
+  const activeMembers = participant.conversation?.isGroup ? await prisma.participant.findMany({
+    where: { conversationId, isActive: true },
+    select: { userId: true, joinedAt: true }
+  }) : null;
+  const items = serialized.map((message) => ({
+    ...(activeMembers ? withGroupRecipients(message, activeMembers) : message),
+    isPriorMembershipMessage: message.createdAt < participant.joinedAt
+  }));
+  const historySince = periods.reduce((earliest, period) => period.joinedAt < earliest ? period.joinedAt : earliest, participant.joinedAt);
+  return { items, nextCursor, historySince, historyId: participant.id,
+    ...(anchorMessage && { hasNewer: newer.length > newerLimit }),
+    ...(participant.historyClearedAt && { historyClearedAt: participant.historyClearedAt.toISOString() }) };
 };
 
 /**
@@ -474,6 +569,7 @@ export const searchMessages = async (userId: string, searchTerm: string) => {
       reads: { select: { userId: true } },
       stars: { select: { userId: true } },
       deletions: { select: { userId: true } },
+      accountHistory: selectAccountHistory(userId),
       conversation: {
         include: {
           participants: {
@@ -488,7 +584,7 @@ export const searchMessages = async (userId: string, searchTerm: string) => {
   const byId = new Map(messages.map((message) => [message.id, message]));
   return serializeMessages(matches
     .map((match) => byId.get(match.id))
-    .filter((message): message is typeof messages[number] => Boolean(message)));
+    .filter((message): message is typeof messages[number] => Boolean(message)), userId);
 };
 
 /**
@@ -517,6 +613,7 @@ export const fetchStarredMessages = async (userId: string) => {
       reads: { select: { userId: true } },
       stars: { select: { userId: true } },
       deletions: { select: { userId: true } },
+      accountHistory: selectAccountHistory(userId),
       conversation: {
         include: {
           participants: {
@@ -530,7 +627,7 @@ export const fetchStarredMessages = async (userId: string) => {
     take: 50
   });
 
-  return serializeMessages(messages);
+  return serializeMessages(messages, userId);
 };
 
 /**
@@ -539,7 +636,7 @@ export const fetchStarredMessages = async (userId: string) => {
 export const editMessage = async (
   messageId: string,
   userId: string,
-  editPayload: { protocolVersion: 2; epoch: number; senderDeviceId: string; ciphertext: string },
+  editPayload: { protocolVersion: 2; epoch: number; senderDeviceId: string; ciphertext: string; historyDelivery?: HistoryDelivery },
   io: any
 ) => {
   const message = await prisma.message.findUnique({ where: { id: messageId } });
@@ -565,16 +662,26 @@ export const editMessage = async (
     throw AppError.forbidden('MLS_DEVICE_NOT_FOUND', 'Düzenleyen cihaz doğrulanamadı veya iptal edilmiş.');
   }
 
-  const updatedMessageRecord = await prisma.message.update({
-    where: { id: messageId },
-    data: {
-      content: '',
-      protocolVersion: editPayload.protocolVersion,
-      epoch: editPayload.epoch,
-      senderDeviceId: editPayload.senderDeviceId,
-      ciphertext: editPayload.ciphertext,
-      editedAt: new Date()
+  const delivery = editPayload.historyDelivery;
+  if (!delivery) throw AppError.badRequest('HISTORY_VAULT_REQUIRED', 'Mesajın şifreli geçmiş kopyası gerekli.');
+
+  const updatedMessageRecord = await prisma.$transaction(async (tx) => {
+    const recipients = await requireVaultRecipients(await listHistoryReaders(message, tx), tx);
+    if (recipients.some(({ userId }) => !delivery.keys[userId])) {
+      throw AppError.conflict('HISTORY_RECIPIENTS_CHANGED', 'Şifreli geçmiş alıcıları değişti.');
     }
+    const recovery = await verifyHistoryDelivery(delivery, message.conversationId,
+      userId, messageId, editPayload.ciphertext, senderDevice.signaturePublicKey, recipients.map((member) => member.userId));
+    const updated = await tx.message.update({
+      where: { id: messageId },
+      data: {
+        content: '', protocolVersion: editPayload.protocolVersion, epoch: editPayload.epoch,
+        senderDeviceId: editPayload.senderDeviceId, ciphertext: editPayload.ciphertext,
+        editedAt: new Date(), historyDelivery: { ...recovery, vaultOnly: true }
+      }
+    });
+    await tx.accountHistoryMessage.deleteMany({ where: { messageId, version: { not: historyVersion(editPayload.ciphertext) } } });
+    return updated;
   });
 
   const updatedMessage = await prisma.message.findUnique({
@@ -590,10 +697,10 @@ export const editMessage = async (
   });
   if (!updatedMessage) throw AppError.internal('Mesaj yüklenemedi.');
 
-  const responseMessage = await serializeMessage(updatedMessage);
+  const responseMessage = await serializeMessage(updatedMessage, [], userId);
 
   if (io) {
-    io.to(message.conversationId).emit('mesaj_guncellendi', responseMessage);
+    io.to(message.conversationId).emit('mesaj_guncellendi', { ...responseMessage, historyDelivery: updatedMessage.historyDelivery });
   }
 
   return responseMessage;
@@ -606,7 +713,9 @@ export const fetchConversationMedia = async (conversationId: string, userId: str
   const membership = await requireActiveParticipant(
     conversationId,
     userId,
-    'Bu sohbetin medya bilgilerini görme yetkiniz yok.'
+    'Bu sohbetin medya bilgilerini görme yetkiniz yok.',
+    prisma,
+    true
   );
 
   const records = await prisma.message.findMany({
@@ -615,7 +724,7 @@ export const fetchConversationMedia = async (conversationId: string, userId: str
       deletions: { none: { userId } },
       AND: [
         visibleMessageWhere(),
-        { createdAt: { gte: membership.joinedAt } },
+        messagePeriodWhere(messagePeriods(membership)),
         {
           OR: [
             { fileKey: { not: null } },
@@ -629,11 +738,12 @@ export const fetchConversationMedia = async (conversationId: string, userId: str
       sender: { select: { username: true } },
       reads: { select: { userId: true } },
       stars: { select: { userId: true } },
-      deletions: { select: { userId: true } }
+      deletions: { select: { userId: true } },
+      accountHistory: selectAccountHistory(userId)
     }
   });
 
-  const signedRecords = await Promise.all(records.map((record) => serializeMessage(record)));
+  const signedRecords = await Promise.all(records.map((record) => serializeMessage(record, [], userId)));
   const mediaMessages = signedRecords.filter((message) => Boolean(message.fileKey));
   const linkItems = signedRecords.flatMap((message) => {
     const urls = message.content?.match(/https?:\/\/[^\s]+/g) || [];
@@ -730,13 +840,9 @@ export const starMessage = async (messageId: string, userId: string, io: any) =>
 export const deleteMessage = async (messageId: string, userId: string, forEveryone: boolean, io: any) => {
   const message = await prisma.message.findUnique({ where: { id: messageId } });
   if (!message) throw AppError.notFound('MESSAGE_NOT_FOUND', 'Mesaj bulunamadı.');
-  await requireActiveMessageAccess(
-    message,
-    userId,
-    'Bu mesajı silme yetkiniz yok.'
-  );
 
   if (forEveryone) {
+    await requireActiveMessageAccess(message, userId, 'Bu mesajı silme yetkiniz yok.');
     if (message.senderId !== userId) {
       throw AppError.forbidden('MESSAGE_FORBIDDEN', 'Sadece kendi mesajınızı herkesten silebilirsiniz.');
     }
@@ -744,12 +850,14 @@ export const deleteMessage = async (messageId: string, userId: string, forEveryo
     const updatedMessageId = await prisma.$transaction(async (tx) => {
       // Mesaja verilen yanıtların FK'lerini temizle
       await tx.message.updateMany({ where: { replyToId: messageId }, data: { replyToId: null } });
+      await tx.accountHistoryMessage.deleteMany({ where: { messageId } });
       const updatedMessageRecord = await tx.message.update({
         where: { id: messageId },
         data: {
           content: '🚫 Bu mesaj silindi',
           isDeletedForEveryone: true,
           ciphertext: null,
+          historyDelivery: Prisma.DbNull,
           encryptedFileMetadata: null,
           fileKey: null,
           fileType: null,
@@ -782,11 +890,18 @@ export const deleteMessage = async (messageId: string, userId: string, forEveryo
     }
     return { message: "Mesaj herkesten silindi." };
   } else {
-    // Sadece benden sil
-    await prisma.messageDeletion.upsert({
-      where: { messageId_userId: { messageId, userId } },
-      create: { messageId, userId },
-      update: {}
+    const participant = await requireHistoryParticipant(message.conversationId, userId, 'Bu mesajı silme yetkiniz yok.');
+    if (!messagePeriods(participant).some(({ joinedAt, leftAt }) => message.createdAt >= joinedAt && (!leftAt || message.createdAt <= leftAt))) {
+      throw AppError.forbidden('CONVERSATION_FORBIDDEN', 'Bu mesajı silme yetkiniz yok.');
+    }
+    await prisma.$transaction(async (tx) => {
+      await tx.messageDeletion.upsert({
+        where: { messageId_userId: { messageId, userId } },
+        create: { messageId, userId },
+        update: {}
+      });
+      await tx.accountHistoryMessage.deleteMany({ where: { messageId, userId } });
+      await removeHistoryDeliveryFor(tx, userId, { messageId });
     });
 
     if (io) {
@@ -863,11 +978,12 @@ export const markAsRead = async (
       "updatedAt" = CURRENT_TIMESTAMP
   `;
 
-  if (updatedCount > 0 && emitReceipt !== false && io) {
+  if (updatedCount > 0 && (membership.conversation.isGroup || emitReceipt !== false) && io) {
     io.to(conversationId).emit('mesajlar_okundu', {
       conversationId,
       readByUserId: userId,
-      lastReadMessageId: lastReadMessageId || null
+      lastReadMessageId: lastReadMessageId || null,
+      readThroughAt: readCursor.toISOString()
     });
   }
 

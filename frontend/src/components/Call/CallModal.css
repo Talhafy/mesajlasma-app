@@ -23,7 +23,14 @@
 .has-video .call-header-kind, .has-video .call-connection-badge { color: #e3e8e5; }
 .has-video .call-connection-badge { background: #171c1970; backdrop-filter: blur(12px); }
 
-.call-main-stage { position: absolute; inset: 0 0 106px; }
+.call-main-stage {
+  --call-preview-width: clamp(170px, 20vw, 260px);
+  --call-preview-aspect: 16/10;
+  --call-preview-right: 28px;
+  --call-preview-bottom: 22px;
+  position: absolute;
+  inset: 0 0 106px;
+}
 .call-person { position: absolute; inset: 80px 24px 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding-bottom: 8px; text-align: center; }
 .call-person-avatar { position: relative; margin-bottom: 25px; }
 .call-profile { width: 160px; height: 160px; border-radius: 50%; display: flex; align-items: center; justify-content: center; overflow: hidden; flex-shrink: 0; background: linear-gradient(145deg, #42665c, #284a40); color: #dfede5; font-weight: 400; font-size: 52px; letter-spacing: -.04em; }
@@ -67,11 +74,67 @@
 .is-screen-share .call-video-tile video { object-fit: contain; }
 .call-video-tile::after { content: ''; position: absolute; inset: auto 0 0; height: 90px; background: linear-gradient(transparent, #0005); pointer-events: none; }
 .call-tile-name { position: absolute; bottom: 18px; left: 22px; display: flex; align-items: center; gap: 9px; max-width: calc(100% - 40px); color: #fff; font-size: 13px; z-index: 1; text-shadow: 0 1px 8px #0009; }
-.call-self-preview { position: absolute; bottom: 22px; right: 28px; width: clamp(170px, 20vw, 260px); aspect-ratio: 16/10; border: 1px solid #ffffff20; border-radius: 17px; overflow: hidden; background: #2a322e; box-shadow: 0 12px 40px #0005; z-index: 2; }
+.call-self-preview,
+.is-self-expanded > :is(.call-video-grid, .call-person) {
+  position: absolute;
+  inset: auto var(--call-preview-right) var(--call-preview-bottom) auto;
+  width: var(--call-preview-width);
+  aspect-ratio: var(--call-preview-aspect);
+  border: 1px solid #ffffff20;
+  border-radius: 17px;
+  overflow: hidden;
+  background: #2a322e;
+  box-shadow: 0 12px 40px #0005;
+  z-index: 2;
+}
 .call-self-preview video { display: block; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
 .call-self-preview .call-tile-name { left: 13px; bottom: 12px; font-size: 12px; }
 .call-self-placeholder { display: flex; height: 100%; align-items: center; justify-content: center; flex-direction: column; gap: 9px; color: #a8b4ad; font-size: 11px; }
 .call-self-placeholder .call-profile { width: 52px; height: 52px; font-size: 20px; }
+.call-preview-toggle {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border: 1px solid #ffffff30;
+  border-radius: 10px;
+  background: #171c19d9;
+  color: #fff;
+}
+.call-preview-toggle:hover { background: #414b45; }
+.call-session .call-preview-toggle:focus-visible { outline-offset: -4px; }
+
+.is-self-expanded > .call-self-preview {
+  inset: 0;
+  width: auto;
+  aspect-ratio: auto;
+  z-index: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.is-self-expanded .call-self-preview video { object-fit: contain; }
+.is-self-expanded .call-preview-toggle { top: 84px; right: var(--call-preview-right); }
+.is-self-expanded > .call-video-grid.is-group {
+  padding: 0;
+  gap: 2px;
+  grid-auto-rows: minmax(64px, 1fr);
+  overflow-y: auto;
+}
+.is-self-expanded .call-video-tile { min-height: 0; border-radius: 0; }
+.is-self-expanded .call-video-tile .call-tile-name { left: 8px; bottom: 8px; font-size: 11px; }
+.is-self-expanded .call-video-tile .call-profile,
+.is-self-expanded .call-person .call-profile { width: 38px; height: 38px; font-size: 15px; }
+.is-self-expanded > .call-person { padding: 8px; }
+.is-self-expanded .call-person-avatar { margin-bottom: 7px; }
+.is-self-expanded .call-person h2 { max-width: 100%; margin-bottom: 2px; font-size: 13px; }
+.is-self-expanded .call-person-status { font-size: 12px; }
+.is-self-expanded .call-person-caption { display: none; }
 
 .call-participants-panel { position: absolute; right: 28px; bottom: 122px; width: 320px; max-width: calc(100% - 32px); max-height: calc(100% - 220px); overflow-y: auto; z-index: 7; padding: 20px; background: #272e2a; border: 1px solid #ffffff12; border-radius: 20px; box-shadow: 0 16px 60px #0006; }
 .call-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -110,8 +173,14 @@
   .call-session .call-hangup { width: 68px; margin-left: 0; }
   .call-session .call-fullscreen { display: none; }
   .call-control > svg { width: 23px; height: 23px; }
-  .call-main-stage { bottom: 96px; }
-  .call-self-preview { width: 118px; right: 16px; bottom: 18px; aspect-ratio: 3/4; border-radius: 14px; }
+  .call-main-stage {
+    --call-preview-width: 118px;
+    --call-preview-aspect: 3/4;
+    --call-preview-right: 16px;
+    --call-preview-bottom: 18px;
+    bottom: 96px;
+  }
+  .call-self-preview, .is-self-expanded > :is(.call-video-grid, .call-person) { border-radius: 14px; }
   .call-self-placeholder .call-profile { width: 42px; height: 42px; font-size: 16px; }
   .call-tile-name { left: 16px; bottom: 22px; }
   .call-video-grid.is-group { padding: 112px 12px 8px; gap: 8px; }
@@ -123,7 +192,7 @@
   .call-person { top: 65px; }
   .call-person h2 { font-size: 22px; }
   .call-person-caption { display: none; }
-  .call-self-preview { width: 170px; }
+  .call-main-stage { --call-preview-width: 170px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .is-ringing .call-person-avatar::before, .is-ringing .call-person-avatar::after { animation: none; }

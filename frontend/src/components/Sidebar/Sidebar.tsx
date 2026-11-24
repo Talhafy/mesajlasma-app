@@ -3,7 +3,7 @@ import { api } from '../../api/httpClient';
 import './Sidebar.css';
 import type { User, Conversation, Message } from '../../types/chat';
 import Button from '../UI/Button';
-import { getMessagePreview, isDeletedForEveryoneMessage, isVideoMessage } from '../ChatArea/chatTimeline';
+import { getMessagePreview, isDeletedForEveryoneMessage, isPendingMessageDecryption, isVideoMessage } from '../ChatArea/chatTimeline';
 import { decryptMessageList } from '../../crypto/mlsClient';
 import { searchLocalMessages } from '../../crypto/vault';
 
@@ -28,7 +28,7 @@ interface SidebarProps {
   currentUser: User;
   /** Kullanıcının dahil olduğu sohbet/grup listesi */
   conversationList: Conversation[];
-  /** Uygulamadaki tüm kayıtlı kullanıcıların listesi */
+  /** Mesajlaşmaya hazır kullanıcıların listesi */
   usersList: User[];
   /** O anda açık olan sohbet nesnesi */
   activeConversation: Conversation | null;
@@ -37,9 +37,9 @@ interface SidebarProps {
   /** Sohbet ID'sine veya kullanıcı ID'sine göre okunmamış mesaj sayıları haritası */
   unreadCounts: Record<string, number>;
   /** Grup sohbetini aktif sohbet olarak başlatan fonksiyon */
-  startGroupChat: (group: Conversation) => void;
+  startGroupChat: (group: Conversation, messageId?: string) => void;
   /** Birebir sohbeti başlatan fonksiyon */
-  startChat: (user: User) => void;
+  startChat: (user: User, messageId?: string) => void;
   /** Yeni grup oluşturma modalını açan setter fonksiyonu */
   setIsGroupModalOpen: (isOpen: boolean) => void;
   /** Ayarlar modalını açan setter fonksiyonu */
@@ -75,8 +75,6 @@ export default function Sidebar({
   const [searchTerm, setSearchTerm] = useState('');
   /** Yerel kasada bulunan mesajlar */
   const [messageResults, setMessageResults] = useState<Message[]>([]);
-  /** Yerel kullanıcı listesindeki eşleşmeler */
-  const [userResults, setUserResults] = useState<User[]>([]);
   /** Mesaj arama isteğinin devam edip etmediği durumu */
   const [isSearching, setIsSearching] = useState(false);
   const searchRequestIdRef = useRef(0);
@@ -98,6 +96,12 @@ export default function Sidebar({
   const [starredMessages, setStarredMessages] = useState<Message[]>([]);
   /** Yıldızlı mesajlar yüklenirken gösterilen yükleniyor durumu */
   const [isLoadingStarred, setIsLoadingStarred] = useState(false);
+  const visibleInHistory = (message: Message) => {
+    const cutoff = conversationList.find((conversation) => conversation.id === message.conversationId)?.historyClearedAt;
+    return !cutoff || Boolean(message.createdAt && message.createdAt > cutoff);
+  };
+  const visibleStarredMessages = starredMessages.filter(visibleInHistory);
+  const visibleMessageResults = messageResults.filter(visibleInHistory);
 
   // Tema renk token'ları
   const panelBg = isDarkMode ? '#202c33' : '#f0f2f5';
@@ -120,7 +124,6 @@ export default function Sidebar({
 
     if (cleanTerm.length < 2) {
       setMessageResults([]);
-      setUserResults([]);
       setIsSearching(false);
       return;
     }
@@ -129,9 +132,6 @@ export default function Sidebar({
     try {
       const localHits = await searchLocalMessages(currentUser.id, cleanTerm);
       if (requestId !== searchRequestIdRef.current) return;
-      const normalized = cleanTerm.toLocaleLowerCase('tr-TR');
-      const matches = usersList.filter((user) => user.username.toLocaleLowerCase('tr-TR').includes(normalized));
-
       const mergedById = new Map<string, Message>();
       for (const localMsg of localHits) {
         if (!mergedById.has(localMsg.id)) {
@@ -154,11 +154,9 @@ export default function Sidebar({
       }
 
       setMessageResults(Array.from(mergedById.values()));
-      setUserResults(matches.slice(0, 20));
     } catch (error) {
       if (requestId !== searchRequestIdRef.current) return;
       setMessageResults([]);
-      setUserResults([]);
       console.error('Global arama hatası:', error);
     } finally {
       if (requestId === searchRequestIdRef.current) setIsSearching(false);
@@ -171,13 +169,13 @@ export default function Sidebar({
   const handleMessageClick = (msg: Message) => {
     if (!msg.conversation) return;
     if (msg.conversation.isGroup) {
-      startGroupChat(msg.conversation);
+      startGroupChat(msg.conversation, msg.id);
     } else {
       const otherParticipant = msg.conversation.participants?.find((p: { user: User }) => p.user.id !== currentUser.id);
       if (otherParticipant) {
-        startChat(otherParticipant.user);
+        startChat(otherParticipant.user, msg.id);
       } else if (msg.conversation.otherUser) {
-        startChat(msg.conversation.otherUser);
+        startChat(msg.conversation.otherUser, msg.id);
       }
     }
   };
@@ -194,6 +192,7 @@ export default function Sidebar({
    */
   const getConversationPreview = (conversation: Conversation) => {
     if (!conversation.lastMessage) return 'Henüz mesaj yok';
+    if (isPendingMessageDecryption(conversation.lastMessage)) return '';
     if (isDeletedForEveryoneMessage(conversation.lastMessage)) return 'Bu mesaj silindi';
     const content = conversation.lastMessage.content;
     if (content) {
@@ -276,7 +275,10 @@ export default function Sidebar({
 
   const filteredContactUsers = usersList.filter(user => user.username.toLowerCase().includes(contactsSearchTerm.toLowerCase()));
   
-  const searchUserResults = isGlobalSearchActive ? userResults : [];
+  const normalizedSearch = searchTerm.trim().toLocaleLowerCase('tr-TR');
+  const searchUserResults = isGlobalSearchActive
+    ? usersList.filter((user) => user.username.toLocaleLowerCase('tr-TR').includes(normalizedSearch)).slice(0, 20)
+    : [];
 
   /** Yıldızlı mesajlar panelini açar ve kayıtlı mesajları yükler */
   const openStarredMessages = async () => {
@@ -287,7 +289,7 @@ export default function Sidebar({
     try {
       const res = await api.get('/messages/starred');
       const decryptedStarred = await decryptMessageList(currentUser.id, res.data);
-      setStarredMessages(decryptedStarred);
+      setStarredMessages(decryptedStarred.filter((message) => !isPendingMessageDecryption(message)));
     } catch {
       alert('Yıldızlı mesajlar getirilemedi.');
     } finally {
@@ -565,8 +567,8 @@ export default function Sidebar({
           <div style={{ maxHeight: 'calc(72vh - 58px)', overflowY: 'auto' }}>
             {isLoadingStarred ? (
               <div style={{ padding: '18px', textAlign: 'center', color: iconColor, fontSize: '13px' }}>Yıldızlı mesajlar yükleniyor...</div>
-            ) : starredMessages.length > 0 ? (
-              starredMessages.map((msg) => (
+            ) : visibleStarredMessages.length > 0 ? (
+              visibleStarredMessages.map((msg) => (
                 <div key={msg.id} onClick={() => { handleMessageClick(msg); setIsStarredPanelOpen(false); }} className="user-item" style={{ flexDirection: 'column', alignItems: 'flex-start', padding: '12px 15px', borderBottom: `1px solid ${borderColor}`, cursor: 'pointer', color: textColor }}>
                   <div style={{ fontSize: '12px', color: iconColor, marginBottom: '5px', width: '100%', display: 'flex', justifyContent: 'space-between', gap: '10px' }}>
                     <strong style={{ color: textColor, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{msg.sender?.username || 'Kullanıcı'}</strong>
@@ -724,8 +726,8 @@ export default function Sidebar({
               <h3 className="list-title" style={{ padding: '15px 15px 5px 15px', margin: 0, fontSize: '13px', color: '#f97316', textTransform: 'uppercase' }}>Mesajlarda Bulunanlar</h3>
               {isSearching ? (
                 <div style={{ padding: '14px 15px', fontSize: '13px', color: iconColor }}>Aranıyor...</div>
-              ) : messageResults.length > 0 ? (
-                messageResults.map((msg) => (
+              ) : visibleMessageResults.length > 0 ? (
+                visibleMessageResults.map((msg) => (
                   <div key={msg.id} className="user-item" onClick={() => handleMessageClick(msg)} style={{ flexDirection: 'column', alignItems: 'flex-start', padding: '12px 15px', borderBottom: `1px solid ${borderColor}`, cursor: 'pointer' }}>
                     <div style={{ fontSize: '12px', color: iconColor, marginBottom: '4px' }}>
                       <strong style={{ color: textColor }}>{msg.sender?.username}</strong> yazdı:

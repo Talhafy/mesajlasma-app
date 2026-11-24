@@ -33,6 +33,7 @@ import {
   createApplicationMessage,
   createCommit,
   createGroup,
+  createGroupInfoWithExternalPubAndRatchetTree,
   decodeGroupState,
   decodeMlsMessage,
   defaultCapabilities,
@@ -44,6 +45,7 @@ import {
   getCiphersuiteFromName,
   getCiphersuiteImpl,
   joinGroup,
+  joinGroupExternal,
   mlsExporter,
   processMessage,
   zeroOutUint8Array,
@@ -71,6 +73,8 @@ import {
 } from 'ts-mls/welcome.js';
 import { api } from '../api/httpClient';
 import type { Message } from '../types/chat';
+import { createAccountHistoryDelivery, queueAccountHistoryMessage, recoverAccountHistoryMessage, recoverDeliveredHistoryMessage,
+  registerHistoryDevice, syncAuthoredHistory } from './accountHistory';
 import {
   base64ToBytes,
   bytesToBase64,
@@ -194,6 +198,8 @@ export interface MlsCommitWirePayload {
   senderDeviceId: string;
   /** `ts-mls` `encodeMlsMessage(commitResult.commit)` TLS ikili verisinin Base64 karşılığı */
   tsMlsCommitBase64: string;
+  external?: boolean;
+  groupInfoBase64?: string;
 }
 
 export interface MlsWelcomeWirePayload {
@@ -556,66 +562,83 @@ const getBrowserDeviceName = (): string => {
   return `${browser} (${platform})`;
 };
 
-let activeRegistrationPromise: Promise<StoredDeviceIdentity | null> | null = null;
-let activeRegistrationUserId: string | null = null;
+const activeRegistrations = new Map<string, Promise<StoredDeviceIdentity | null>>();
 
-export const ensureDeviceRegistered = async (
-  userId: string
-): Promise<StoredDeviceIdentity | null> => {
-  if (!userId || !isVaultUnlocked(userId)) return null;
-  if (activeRegistrationPromise && activeRegistrationUserId === userId) {
-    return activeRegistrationPromise;
-  }
-
-  activeRegistrationUserId = userId;
+const registerBrowserDevice = async (userId: string, options?: { signal: AbortSignal; replaceRevoked: boolean }) => {
+  const signal = options?.signal;
   const register = async () => {
-    try {
-      let identity = await getStoredDeviceIdentity(userId);
-      const isNewIdentity = !identity;
-      if (!identity) {
-        identity = await generateDeviceCryptoIdentity(userId, getBrowserDeviceName());
-      }
-
-      if (isNewIdentity) await saveDeviceIdentity(identity);
-      const initialKeyPackages = await generateSignedKeyPackages(identity, isNewIdentity ? 15 : 5);
-      const res = await api.post<{
-        device: { id: string; approvedAt: string | null };
-        availableKeyPackageCount: number;
-      }>('/mls/devices', {
-        deviceId: identity.deviceId,
-        deviceName: identity.deviceName,
-        signaturePublicKey: identity.signaturePublicKeyBase64,
-        credential: identity.credentialJson,
-        initialKeyPackages
-      });
-
-      if (!res.data?.device?.approvedAt) return null;
-
-      if (res.data?.device?.id && res.data.device.id !== identity.deviceId) {
-        identity = { ...identity, deviceId: res.data.device.id };
-        await saveDeviceIdentity(identity);
-        const reSignedPackages = await generateSignedKeyPackages(identity, 10);
-        await api.post('/mls/key-packages', {
-          deviceId: identity.deviceId,
-          keyPackages: reSignedPackages
-        });
-      } else {
-        await saveDeviceIdentity(identity);
-      }
-
-      return identity;
-    } catch (err) {
-      console.warn('[MLS] Cihaz kaydı uyarısı:', err);
-      return null;
-    } finally {
-      activeRegistrationPromise = null;
-      activeRegistrationUserId = null;
+    signal?.throwIfAborted();
+    let identity = await getStoredDeviceIdentity(userId);
+    const isNewIdentity = !identity;
+    if (!identity) {
+      identity = await generateDeviceCryptoIdentity(userId, getBrowserDeviceName());
+      signal?.throwIfAborted();
+      await saveDeviceIdentity(identity);
     }
+
+    const registerIdentity = async (candidate: StoredDeviceIdentity, count: number) => api.post<{
+      device: { id: string; approvedAt: string | null };
+    }>('/mls/devices', {
+      deviceId: candidate.deviceId,
+      deviceName: candidate.deviceName,
+      signaturePublicKey: candidate.signaturePublicKeyBase64,
+      credential: candidate.credentialJson,
+      initialKeyPackages: await generateSignedKeyPackages(candidate, count)
+    }, { signal });
+
+    const { data } = await registerIdentity(identity, isNewIdentity ? 15 : 5).catch(async (error: unknown) => {
+      const response = (error as { response?: { status?: number; data?: { code?: string } } })?.response;
+      if (!options?.replaceRevoked || response?.status !== 403 || response.data?.code !== 'DEVICE_ACCESS_REVOKED') {
+        throw error;
+      }
+      signal?.throwIfAborted();
+      identity = await generateDeviceCryptoIdentity(userId, getBrowserDeviceName());
+      signal?.throwIfAborted();
+      await saveDeviceIdentity(identity);
+      return registerIdentity(identity, 15);
+    });
+
+    signal?.throwIfAborted();
+    const device = data?.device;
+    if (!device?.id) throw new Error('Cihaz kaydı tamamlanamadı.');
+    const idChanged = device.id !== identity.deviceId;
+    if (idChanged) {
+      identity = { ...identity, deviceId: device.id };
+      await saveDeviceIdentity(identity);
+    }
+    if (idChanged && device.approvedAt) {
+      const keyPackages = await generateSignedKeyPackages(identity, 10);
+      await api.post('/mls/key-packages', { deviceId: identity.deviceId, keyPackages }, { signal });
+    }
+    return { identity, approved: Boolean(device.approvedAt) };
   };
-  activeRegistrationPromise = typeof navigator !== 'undefined' && navigator.locks
-    ? navigator.locks.request('mls-device-registration:' + userId, register)
+
+  return typeof navigator !== 'undefined' && navigator.locks
+    ? navigator.locks.request('mls-device-registration:' + userId, { signal }, register)
     : register();
-  return activeRegistrationPromise;
+};
+
+export const ensureDeviceRegistered = async (userId: string): Promise<StoredDeviceIdentity | null> => {
+  if (!userId || !isVaultUnlocked(userId)) return null;
+  const existing = activeRegistrations.get(userId);
+  if (existing) return existing;
+  const registration = registerBrowserDevice(userId)
+    .then(({ identity, approved }) => approved ? identity : null)
+    .catch((error) => {
+      console.warn('[MLS] Cihaz kaydı uyarısı:', error);
+      return null;
+    })
+    .finally(() => activeRegistrations.delete(userId));
+  activeRegistrations.set(userId, registration);
+  return registration;
+};
+
+export const registerDeviceForAccountVault = async (userId: string, signal: AbortSignal): Promise<StoredDeviceIdentity> => {
+  // An in-flight background registration might reject a revoked device. Allow the
+  // explicit vault unlock its own attempt, using the latest stored device identity.
+  await activeRegistrations.get(userId);
+  const { identity } = await registerBrowserDevice(userId, { signal, replaceRevoked: true });
+  return identity;
 };
 
 type DirectoryDevice = {
@@ -624,10 +647,12 @@ type DirectoryDevice = {
   signaturePublicKey: string;
   approvedByDeviceId: string | null;
   approvalSignature: string | null;
+  approvedByVault?: boolean;
   revokedAt: string | null;
 };
 
-type DeviceDirectory = { userIds: string[]; devices: DirectoryDevice[]; isGroup: boolean; adminId: string | null };
+type DeviceDirectory = { userIds: string[]; devices: DirectoryDevice[]; isGroup: boolean; adminId: string | null;
+  vaultAuthorities?: { userId: string; issuerId: string; historyPublicKey: string; publicKey: string; signature: string }[] };
 
 const approvalBytes = (userId: string, approverId: string, deviceId: string, publicKey: string) =>
   textEncoder.encode(JSON.stringify(['mls-device-approval-v1', userId, approverId, deviceId, publicKey]));
@@ -673,15 +698,22 @@ const loadDevicePolicy = async (localUserId: string, conversationId: string) => 
       throw new Error('Hesabın güvenlik anahtarı değişti.');
     }
     const verified = new Set([root.id]);
+    const vault = data.vaultAuthorities?.find((entry) => entry.userId === userId);
     for (let pass = 0; pass < devices.length; pass++) {
       let changed = false;
       for (const device of devices) {
         if (verified.has(device.id) || !device.approvedByDeviceId || !device.approvalSignature ||
             !verified.has(device.approvedByDeviceId)) continue;
         const signer = devices.find((candidate) => candidate.id === device.approvedByDeviceId)!;
-        if (await cs.signature.verify(base64ToBytes(signer.signaturePublicKey),
-          approvalBytes(userId, signer.id, device.id, device.signaturePublicKey),
-          base64ToBytes(device.approvalSignature))) {
+        const signedByVault = device.approvedByVault && vault?.issuerId === signer.id &&
+          await cs.signature.verify(base64ToBytes(signer.signaturePublicKey),
+            textEncoder.encode(JSON.stringify(['account-vault-authority-v1', userId, signer.id, vault.historyPublicKey, vault.publicKey])),
+            base64ToBytes(vault.signature)) &&
+          await cs.signature.verify(base64ToBytes(vault.publicKey),
+            textEncoder.encode(JSON.stringify(['account-vault-device-v1', userId, device.id, device.signaturePublicKey])),
+            base64ToBytes(device.approvalSignature));
+        if (signedByVault || (!device.approvedByVault && await cs.signature.verify(base64ToBytes(signer.signaturePublicKey),
+          approvalBytes(userId, signer.id, device.id, device.signaturePublicKey), base64ToBytes(device.approvalSignature)))) {
           verified.add(device.id);
           changed = true;
         }
@@ -895,10 +927,21 @@ const _handleIncomingCommitUnlocked = async (
 
     const policy = await loadDevicePolicy(userId, commitRecord.conversationId);
     const leaves = extractRatchetNodesFromTsMlsTree(clientState);
+    const publicCommit = decodedMlsMsg[0].wireformat === 'mls_public_message' ? decodedMlsMsg[0].publicMessage.content : null;
     const cs = await getTsMlsCiphersuite();
     const procResult = await processMessage(
       decodedMlsMsg[0], clientState, emptyPskIndex, (incoming) => {
         if (incoming.kind !== 'commit') return 'reject';
+        if (parsedCommit.external) {
+          if (!publicCommit || publicCommit.sender.senderType !== 'new_member_commit' || publicCommit.contentType !== 'commit') return 'reject';
+          const leaf = publicCommit.commit.path?.leafNode;
+          if (leaf?.credential.credentialType !== 'basic') return 'reject';
+          const [account, deviceId] = textDecoder.decode(leaf.credential.identity).split(':');
+          const device = policy.active.get(deviceId);
+          return deviceId === commitRecord.senderDeviceId && device?.userId === account &&
+            device.signaturePublicKey === bytesToBase64(leaf.signaturePublicKey) && !leaves.some((node) => node.deviceId === deviceId) &&
+            incoming.proposals.length === 1 && incoming.proposals[0].proposal.proposalType === 'external_init' ? 'accept' : 'reject';
+        }
         const sender = leaves.find((node) => node.leafIndex === incoming.senderLeafIndex);
         if (!sender || sender.deviceId !== commitRecord.senderDeviceId || !policy.valid(sender)) return 'reject';
         return incoming.proposals.every(({ proposal }) => {
@@ -960,11 +1003,12 @@ const _syncConversationFromServerUnlocked = async (
   userId: string,
   conversationId: string
 ): Promise<StoredConversationMlsState | null> => {
-  const identity = await ensureDeviceRegistered(userId);
+  const identity = await getStoredDeviceIdentity(userId) ?? await ensureDeviceRegistered(userId);
   if (!identity) return null;
 
   let currentState = await getConversationMlsState(userId, conversationId);
-  const sinceEpoch = currentState?.tsMlsStateBase64 ? currentState.currentEpoch : 0;
+  const pending = await readPendingMlsCommit(userId, conversationId);
+  const sinceEpoch = currentState?.tsMlsStateBase64 ? currentState.currentEpoch : Math.max(0, (pending?.state.currentEpoch ?? 1) - 1);
 
   try {
     const res = await api.get<{
@@ -993,7 +1037,6 @@ const _syncConversationFromServerUnlocked = async (
     const welcomes = [...(res.data?.welcomes || [])].sort((a, b) => a.epoch - b.epoch);
     const commits = [...(res.data?.commits || [])].sort((a, b) => a.epoch - b.epoch);
 
-    const pending = await readPendingMlsCommit(userId, conversationId);
     if (pending && commits.some((commit) => commit.epoch === pending.state.currentEpoch &&
         commit.senderDeviceId === identity.deviceId && commit.commitData === pending.commitData)) {
       await saveConversationMlsState(userId, pending.state, { clearPendingCommit: true });
@@ -1025,7 +1068,8 @@ const _syncConversationFromServerUnlocked = async (
 
     if ((currentState?.currentEpoch ?? 0) !== res.data.currentEpoch) return null;
     return currentState;
-  } catch {
+  } catch (error) {
+    if (isRateLimited(error)) throw error;
     return null;
   }
 };
@@ -1044,7 +1088,7 @@ const _rotateConversationEpochUnlocked = async (
   conversationId: string,
   _activeParticipantUserIds: string[]
 ): Promise<StoredConversationMlsState | null> => {
-  const identity = await ensureDeviceRegistered(userId);
+  const identity = await getStoredDeviceIdentity(userId) ?? await ensureDeviceRegistered(userId);
   if (!identity) return null;
 
   const cs = await getTsMlsCiphersuite();
@@ -1218,7 +1262,8 @@ const _rotateConversationEpochUnlocked = async (
     groupId,
     epoch: nextEpoch,
     senderDeviceId: identity.deviceId,
-    tsMlsCommitBase64
+    tsMlsCommitBase64,
+    groupInfoBase64: await encodeExternalGroupInfo(nextClientState, cs)
   };
 
   const commitData = JSON.stringify(commitWire);
@@ -1266,6 +1311,47 @@ export const rotateConversationEpoch = async (
   );
 };
 
+const encodeExternalGroupInfo = async (state: ClientState, cs: CiphersuiteImpl) => bytesToBase64(encodeMlsMessage({
+  version: 'mls10', wireformat: 'mls_group_info', groupInfo: await createGroupInfoWithExternalPubAndRatchetTree(state, [], cs)
+}));
+
+const joinExistingConversation = async (userId: string, conversationId: string, policy: Awaited<ReturnType<typeof loadDevicePolicy>>) => {
+  const identity = await getStoredDeviceIdentity(userId);
+  if (!identity || !policy.active.has(identity.deviceId)) return null;
+  try {
+    const path = `/mls/conversations/${conversationId}`;
+    const { data } = await api.get<{ epoch: number; groupInfo: string | null }>(`${path}/group-info`, { params: { deviceId: identity.deviceId } });
+    if (!data.groupInfo) return null;
+    const bytes = base64ToBytes(data.groupInfo);
+    const info = decodeMlsMessage(bytes, 0);
+    if (!info || info[1] !== bytes.length || info[0].wireformat !== 'mls_group_info' ||
+        textDecoder.decode(info[0].groupInfo.groupContext.groupId) !== `mls:${conversationId}` ||
+        Number(info[0].groupInfo.groupContext.epoch) !== data.epoch) return null;
+    const cs = await getTsMlsCiphersuite();
+    const signer = base64ToBytes(identity.signaturePrivateKeyPkcs8Base64);
+    const pair = await generateKeyPackageWithKey({ credentialType: 'basic', identity: textEncoder.encode(`${userId}:${identity.deviceId}`) },
+      defaultCapabilities(), defaultLifetime, [], { signKey: signer, publicKey: base64ToBytes(identity.signaturePublicKeyBase64) }, cs);
+    const joined = await joinGroupExternal(info[0].groupInfo, pair.publicPackage, pair.privatePackage, false, cs);
+    const roster = extractRatchetNodesFromTsMlsTree(joined.newState);
+    if (!roster.every(policy.valid) || roster.filter((leaf) => leaf.deviceId === identity.deviceId).length !== 1) return null;
+    const epoch = Number(joined.newState.groupContext.epoch);
+    const ratchetTree = JSON.stringify(roster);
+    const commitData = JSON.stringify({ version: 2, groupId: `mls:${conversationId}`, epoch, senderDeviceId: identity.deviceId, external: true,
+      tsMlsCommitBase64: bytesToBase64(encodeMlsMessage({ version: 'mls10', wireformat: 'mls_public_message', publicMessage: joined.publicMessage })),
+      groupInfoBase64: await encodeExternalGroupInfo(joined.newState, cs) } satisfies MlsCommitWirePayload);
+    const deliverySignature = bytesToBase64(await cs.signature.sign(signer, textEncoder.encode(JSON.stringify([
+      'mls-delivery-commit-v1', conversationId, epoch, identity.deviceId, commitData, ratchetTree, []
+    ]))));
+    const state = buildStoredStateFromTsMls(conversationId, null, joined.newState);
+    await savePendingMlsCommit(userId, state, commitData);
+    await api.post(`${path}/commits`, { epoch, senderDeviceId: identity.deviceId, commitData, deliverySignature, ratchetTree, welcomes: [] });
+    await saveConversationMlsState(userId, state, { clearPendingCommit: true });
+    return state;
+  } catch {
+    return _syncConversationFromServerUnlocked(userId, conversationId);
+  }
+};
+
 const _ensureConversationMlsEpochUnlocked = async (
   userId: string,
   conversationId: string,
@@ -1273,6 +1359,10 @@ const _ensureConversationMlsEpochUnlocked = async (
 ): Promise<StoredConversationMlsState | null> => {
   const synced = await _syncConversationFromServerUnlocked(userId, conversationId);
   const policy = await loadDevicePolicy(userId, conversationId);
+  if (!synced?.tsMlsStateBase64 && !(await getConversationMlsState(userId, conversationId))?.tsMlsStateBase64) {
+    const joined = await joinExistingConversation(userId, conversationId, policy);
+    if (joined) return joined;
+  }
   if (synced?.tsMlsStateBase64 && synced.currentEpoch > 0) {
     const roster = synced.ratchetTree;
     const pending = Array.from(policy.active.values()).some((device) =>
@@ -1304,7 +1394,7 @@ export const encryptOutgoingMessage = async (
   encryptedFileMetadata: null;
 } | null> => {
   return withConversationMlsLock(userId, conversationId, async () => {
-    const identity = await ensureDeviceRegistered(userId);
+    const identity = await getStoredDeviceIdentity(userId) ?? await ensureDeviceRegistered(userId);
     if (!identity) return null;
 
     const state = await _ensureConversationMlsEpochUnlocked(
@@ -1371,17 +1461,43 @@ export const encryptOutgoingMessage = async (
  * yalnızca `ts-mls` `ClientState.keySchedule.exporterSecret` üzerinden türetir (M5).
  */
 const deliverQueued = async (userId: string, item: StoredMlsDelivery) => {
-  const payload = {
-    content: '', protocolVersion: 2, epoch: item.epoch,
-    senderDeviceId: item.senderDeviceId, ciphertext: item.ciphertext
+  const identity = await getStoredDeviceIdentity(userId);
+  if (!identity || identity.deviceId !== item.senderDeviceId) throw new Error('Mesajın gönderici anahtarı bulunamadı.');
+  const cs = await getTsMlsCiphersuite();
+  const deliver = async () => {
+    const historyDelivery = await createAccountHistoryDelivery(userId, item,
+      (bytes) => cs.signature.sign(base64ToBytes(identity.signaturePrivateKeyPkcs8Base64), bytes));
+    const payload = {
+      content: '', protocolVersion: 2, epoch: item.epoch,
+      senderDeviceId: item.senderDeviceId, ciphertext: item.ciphertext, historyDelivery
+    };
+    return item.editId ? api.put<Message>('/messages/' + item.editId, payload) :
+      api.post<Message>('/messages', {
+        ...payload, ...item.delivery, conversationId: item.conversationId, clientId: item.clientId,
+        fileName: item.delivery?.fileKey ? 'encrypted.enc' : undefined
+      });
   };
-  const response = item.editId ? await api.put<Message>('/messages/' + item.editId, payload) :
-    await api.post<Message>('/messages', {
-      ...payload, ...item.delivery, conversationId: item.conversationId, clientId: item.clientId,
-      fileName: item.delivery?.fileKey ? 'encrypted.enc' : undefined
+  let response;
+  try {
+    response = await deliver().catch((error) => {
+      if (error?.response?.data?.code === 'HISTORY_RECIPIENTS_CHANGED') return deliver();
+      throw error;
     });
+  } catch (error) {
+    if (isMissingRecipientVault(error)) await removeQueuedMlsDelivery(userId, item.conversationId, item.clientId);
+    throw error;
+  }
   await removeQueuedMlsDelivery(userId, item.conversationId, item.clientId);
   return response;
+};
+
+const isMissingRecipientVault = (error: unknown) => (error as { response?: { data?: { code?: string } } })?.response?.data?.code === 'HISTORY_VAULT_REQUIRED';
+const isRateLimited = (error: unknown) => (error as { response?: { status?: number } })?.response?.status === 429;
+
+export const messageDeliveryError = (error: unknown, fallback: string) => {
+  if (isRateLimited(error)) return 'Gönderim hızı sınırına ulaşıldı. Biraz bekleyip tekrar dene.';
+  if (isMissingRecipientVault(error)) return 'Gönderim için bu sohbetteki tüm kullanıcıların mesaj kasasını kurması gerekiyor.';
+  return fallback;
 };
 
 export const deliverMlsMessage = (userId: string, conversationId: string, clientId: string) =>
@@ -1443,9 +1559,17 @@ export const getActiveConversationCallMediaKey = async (
  * `unprotectPrivateMessage` ile çözer, göndericinin `Ed25519` imzasını ilgili epoch'un
  * `RatchetTree` yaprağıyla doğrular (H6) ve şifreli yerel kasaya indeksler.
  */
-export const decryptIncomingMessage = async (
+const pendingDecryption = (message: Message): Message => ({
+  ...message,
+  content: '',
+  decryptionPending: true,
+  encryptedFileMetadata: null
+});
+
+const decryptMlsIncomingMessage = async (
   userId: string,
-  message: Message
+  message: Message,
+  allowServerSync = true
 ): Promise<Message> => {
   if (!message || message.isDeletedForEveryone || message.content === '🚫 Bu mesaj silindi') {
     return message;
@@ -1470,10 +1594,7 @@ export const decryptIncomingMessage = async (
     return message;
   }
 
-  if (!message.ciphertext) return { ...message, content: '🔒 Şifreli mesaj eksik.', fileUrl: undefined };
-  if (!isVaultUnlocked(userId)) {
-    return { ...message, content: '🔒 Bu cihazda şifreli geçmiş henüz açılamadı.', fileUrl: undefined, encryptedFileMetadata: null };
-  }
+  if (!message.ciphertext || !isVaultUnlocked(userId)) return pendingDecryption(message);
   return withConversationMlsLock(userId, message.conversationId, async () => {
     const targetEpoch = message.epoch ?? 1;
     const isLegacy = message.protocolVersion === 1;
@@ -1489,6 +1610,7 @@ export const decryptIncomingMessage = async (
       return {
         ...message,
         content: cached.content,
+        decryptionPending: false,
         fileName: cached.encryptedFileMetadata?.originalFileName || message.fileName,
         encryptedFileMetadata: cached.encryptedFileMetadata
           ? JSON.stringify(cached.encryptedFileMetadata)
@@ -1537,6 +1659,7 @@ export const decryptIncomingMessage = async (
       return {
         ...message,
         content: selfSentCached.content,
+        decryptionPending: false,
         fileName: parsedMeta?.originalFileName || message.fileName,
         encryptedFileMetadata: parsedMeta ? JSON.stringify(parsedMeta) : null
       };
@@ -1544,18 +1667,12 @@ export const decryptIncomingMessage = async (
 
     // 3. Konuşmanın ilgili epoch durumunu kontrol et; gerideysek sunucudan senkronize et
     let state = await getConversationMlsState(userId, message.conversationId);
-    if (!state || !state.tsMlsStateBase64 || state.currentEpoch < targetEpoch) {
+    if (allowServerSync && (!state || !state.tsMlsStateBase64 || state.currentEpoch < targetEpoch)) {
       state = await _syncConversationFromServerUnlocked(userId, message.conversationId);
     }
 
     if (!state || !state.tsMlsStateBase64) {
-      return {
-        ...message,
-        content:
-          '🔒 Bu cihazda mesajın anahtarı bulunamadı.',
-        fileUrl: undefined,
-        encryptedFileMetadata: null
-      };
+      return pendingDecryption(message);
     }
 
     try {
@@ -1571,7 +1688,7 @@ export const decryptIncomingMessage = async (
         ? state.tsMlsStatesByEpoch?.[targetEpoch] : state.tsMlsStateBase64;
       if (!stateBase64ForDecrypt ||
           (isHistoricalEpoch && Date.now() - (state.retainedEpochAt?.[targetEpoch] ?? 0) > 86_400_000)) {
-        return { ...message, content: '🔒 Bu cihazda mesajın anahtarı bulunamadı.', fileUrl: undefined, encryptedFileMetadata: null };
+        return pendingDecryption(message);
       }
       const clientState = deserializeTsMlsClientState(stateBase64ForDecrypt);
 
@@ -1641,25 +1758,133 @@ export const decryptIncomingMessage = async (
       return {
         ...message,
         content: decrypted.content,
+        decryptionPending: false,
         fileName: parsedMeta?.originalFileName || message.fileName,
         encryptedFileMetadata: parsedMeta ? JSON.stringify(parsedMeta) : null,
         replyTo: hydratedReplyTo
       };
     } catch (err) {
       console.warn('[MLS] PrivateMessage çözme hatası:', err);
-      return { ...message, content: '🔒 Şifreli mesaj doğrulanamadı.', fileUrl: undefined, encryptedFileMetadata: null };
+      return pendingDecryption(message);
     }
+  }).catch((error) => {
+    console.warn('[MLS] Mesaj geçmişi okunamadı:', error);
+    return pendingDecryption(message);
   });
+};
+
+export const decryptIncomingMessage = async (userId: string, message: Message, allowServerSync = true): Promise<Message> => {
+  if (!message?.protocolVersion || !message.ciphertext || message.isDeletedForEveryone) {
+    return decryptMlsIncomingMessage(userId, message, allowServerSync);
+  }
+
+  const localState = message.historyDelivery && isVaultUnlocked(userId)
+    ? await getConversationMlsState(userId, message.conversationId).catch(() => null) : null;
+  const localMls = localState?.currentEpoch === message.epoch
+    ? await decryptMlsIncomingMessage(userId, message, false) : null;
+  const restored = localMls && !localMls.decryptionPending ? null :
+    await recoverAccountHistoryMessage(userId, message) ?? await recoverDeliveredHistoryMessage(userId, message);
+  if (restored) {
+    const metadata = restored.encryptedFileMetadata;
+    await cacheDecryptedMessage(userId, {
+      id: message.id, conversationId: message.conversationId, senderId: message.senderId, senderUsername: message.sender?.username,
+      createdAt: message.createdAt ?? new Date().toISOString(), protocolVersion: message.protocolVersion, epoch: message.epoch ?? 1,
+      senderDeviceId: message.senderDeviceId, ciphertext: message.ciphertext, clientId: message.clientId, isEdit: Boolean(message.editedAt),
+      content: restored.content, encryptedFileMetadata: metadata, fileKey: message.fileKey, fileType: message.fileType,
+      fileName: metadata?.originalFileName ?? message.fileName, replyToId: message.replyToId
+    }).catch(() => undefined);
+    return {
+      ...message, content: restored.content, decryptionPending: false,
+      fileName: metadata?.originalFileName || message.fileName,
+      encryptedFileMetadata: metadata ? JSON.stringify(metadata) : null
+    };
+  }
+
+  const decrypted = localMls ?? await decryptMlsIncomingMessage(userId, message, allowServerSync);
+  const delivery = message.historyDelivery;
+  if (!decrypted.decryptionPending && !(delivery?.vaultOnly && (delivery.key || delivery.keys?.[userId]))) {
+    queueAccountHistoryMessage(userId, {
+      id: decrypted.id, conversationId: decrypted.conversationId, ciphertext: message.ciphertext, content: decrypted.content,
+      encryptedFileMetadata: decrypted.encryptedFileMetadata ? JSON.parse(decrypted.encryptedFileMetadata) as EncryptedFileMetadata : null
+    });
+  }
+  return decrypted;
+};
+
+export const startAutomaticHistoryRepair = (userId: string, signal: AbortSignal) => {
+  if (signal.aborted) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let identity: StoredDeviceIdentity | null = null;
+  let registered = false;
+  let publishedExistingGroups = false;
+
+  const run = async () => {
+    if (signal.aborted) return;
+    let retryAfter = 60_000;
+    try {
+      identity ??= await ensureDeviceRegistered(userId);
+      if (!identity || signal.aborted) return;
+      const device = identity;
+      const cs = await getTsMlsCiphersuite();
+      const sign = (bytes: Uint8Array) => cs.signature.sign(base64ToBytes(device.signaturePrivateKeyPkcs8Base64), bytes);
+      if (!registered) {
+        await registerHistoryDevice(userId, device.deviceId, sign, signal);
+        registered = true;
+        retryAfter = 12_000;
+      }
+      if (!publishedExistingGroups) {
+        let cursor: string | null = null;
+        do {
+          const page: { data: { items: { id: string; isActive?: boolean; isDeleted?: boolean }[]; nextCursor: string | null } } = await api.get('/conversations', {
+            params: { limit: 100, cursor: cursor ?? undefined }, signal
+          });
+          for (const conversation of page.data.items) {
+            if (signal.aborted) return;
+            if (conversation.isActive === false || conversation.isDeleted) continue;
+            const state = await getConversationMlsState(userId, conversation.id);
+            if (!state?.tsMlsStateBase64 || state.currentEpoch < 1) continue;
+            const url = `/mls/conversations/${conversation.id}/group-info`;
+            try {
+              const { data } = await api.get<{ epoch: number; groupInfo: string | null }>(url, { params: { deviceId: device.deviceId }, signal });
+              if (data.groupInfo || data.epoch !== state.currentEpoch) continue;
+              const groupInfo = await encodeExternalGroupInfo(deserializeTsMlsClientState(state.tsMlsStateBase64), cs);
+              const signature = bytesToBase64(await sign(textEncoder.encode(JSON.stringify(['mls-group-info-v1', conversation.id,
+                state.currentEpoch, device.deviceId, groupInfo]))));
+              await api.put(url, { epoch: state.currentEpoch, deviceId: device.deviceId, groupInfo, signature }, { signal });
+            } catch {
+              // A concurrent commit can supersede the local epoch.
+            }
+          }
+          cursor = page.data.nextCursor;
+        } while (cursor && !signal.aborted);
+        publishedExistingGroups = true;
+      }
+      const sync = () => syncAuthoredHistory(userId, device.deviceId, sign, (message) => decryptMlsIncomingMessage(userId, message, false), signal);
+      if (navigator.locks) {
+        await navigator.locks.request(`history-repair:${userId}:${device.deviceId}`, { ifAvailable: true }, (lock) => lock ? sync() : undefined);
+      } else {
+        await sync();
+      }
+    } catch {
+      retryAfter = 15_000;
+    } finally {
+      if (!signal.aborted) timer = setTimeout(() => void run(), retryAfter);
+    }
+  };
+
+  signal.addEventListener('abort', () => { if (timer) clearTimeout(timer); }, { once: true });
+  void run();
 };
 
 export const decryptMessageList = async (
   userId: string,
-  messages: Message[]
+  messages: Message[],
+  allowServerSync = true
 ): Promise<Message[]> => {
   if (!userId || !messages || messages.length === 0) return messages;
   const results: Message[] = [];
   for (const msg of messages) {
-    results.push(await decryptIncomingMessage(userId, msg));
+    results.push(await decryptIncomingMessage(userId, msg, allowServerSync));
   }
   return results;
 };
